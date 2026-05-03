@@ -1,0 +1,2 @@
+title,content,wrong_thinking,correct_solution,answer,category,question_type,error_reason,difficulty,mastery_level,source,tags,knowledge_points,image_path
+示例错题标题,"求 \(\lim_{x\to 0}\frac{\sin x}{x}\)","没有判断等价替换条件","使用基本极限可得结果为 1","1","函数、极限与连续","极限计算","概念不清","中等","未掌握","示例","极限,基本极限","limit_basic","images/001.png"

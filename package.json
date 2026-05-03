@@ -1,0 +1,67 @@
+{
+  "name": "kaoyan-math-mistake-book",
+  "version": "0.1.0",
+  "description": "考研高数错题本桌面端 App",
+  "author": "Aminos",
+  "main": "dist/main/main/main.js",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:main\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --host 127.0.0.1 --configLoader native",
+    "dev:main": "tsc -p tsconfig.main.json --watch",
+    "dev:electron": "wait-on tcp:5173 file:dist/main/main/main.js file:dist/main/preload/preload.js && electron .",
+    "build": "tsc -p tsconfig.main.json && vite build --configLoader native",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
+    "pack:win": "npm run build && electron-builder --win portable --x64"
+  },
+  "build": {
+    "appId": "com.local.kaoyan.math.mistakebook",
+    "productName": "考研高数错题本",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/sql.js/dist/sql-wasm.wasm"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "@xyflow/react": "^12.10.2",
+    "adm-zip": "^0.5.16",
+    "katex": "^0.16.22",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.3",
+    "sql.js": "^1.12.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/sql.js": "^1.4.9",
+    "concurrently": "^9.1.0",
+    "electron": "^38.4.0",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "wait-on": "^8.0.1"
+  }
+}

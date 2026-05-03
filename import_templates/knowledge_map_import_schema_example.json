@@ -1,0 +1,41 @@
+{
+  "textbooks": {
+    "title": "示例高等数学教材",
+    "subject": "高等数学",
+    "edition": "Example",
+    "file_name": "example.pdf",
+    "note": "仅用于说明结构，不包含真实教材内容"
+  },
+  "knowledge_points": [
+    {
+      "node_id": "gaoshu",
+      "parent_node_id": null,
+      "title": "高等数学",
+      "category": "高等数学",
+      "level": 1,
+      "sort_order": 1,
+      "book_page": null,
+      "pdf_page": null,
+      "summary": "示例根节点。",
+      "core_formulas": [],
+      "common_question_types": [],
+      "common_error_reasons": [],
+      "tags": ["高等数学"]
+    },
+    {
+      "node_id": "limit_basic",
+      "parent_node_id": "gaoshu",
+      "title": "基本极限",
+      "category": "函数、极限与连续",
+      "level": 3,
+      "sort_order": 1,
+      "book_page": null,
+      "pdf_page": null,
+      "summary": "示例知识点，不含真实教材页码。",
+      "core_formulas": [],
+      "common_question_types": ["极限计算"],
+      "common_error_reasons": ["概念不清"],
+      "tags": ["极限"]
+    }
+  ]
+}
