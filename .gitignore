@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+release/
+out/
+.vite/
+
+# Logs and environment
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.env
+.env.*
+
+# Local databases and user data
+*.db
+*.sqlite
+*.sqlite3
+data/
+images/
+textbooks/
+exports/
+backups/
+temp/
+
+# Default runtime data directory, if accidentally created inside a repo
+KaoyanMathMistakeBook/
+D:/KaoyanMathMistakeBook/
+D:\KaoyanMathMistakeBook/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
