@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 
 interface ModalOptions {
   title: string;
@@ -21,18 +21,48 @@ export function useModal() {
 }
 
 export function ModalProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<(ModalOptions & { resolve: (value: boolean) => void }) | null>(null);
+  const [state, setState] = useState<ModalOptions | null>(null);
+  const resolveRef = useRef<((value: boolean) => void) | null>(null);
+
+  const handleClose = useCallback((result: boolean) => {
+    if (resolveRef.current) {
+      resolveRef.current(result);
+      resolveRef.current = null;
+    }
+    setState(null);
+  }, []);
 
   const confirm = useCallback((options: ModalOptions) => {
+    // Issue 1: resolve prior promise so it does not hang forever
+    if (resolveRef.current) {
+      resolveRef.current(false);
+      resolveRef.current = null;
+    }
     return new Promise<boolean>((resolve) => {
-      setState({ ...options, resolve });
+      resolveRef.current = resolve;
+      setState(options);
     });
   }, []);
 
-  const handleClose = (result: boolean) => {
-    state?.resolve(result);
-    setState(null);
-  };
+  // Issue 2: resolve on unmount so the promise does not leak
+  useEffect(() => {
+    return () => {
+      if (resolveRef.current) {
+        resolveRef.current(false);
+        resolveRef.current = null;
+      }
+    };
+  }, []);
+
+  // Issue 3: dismiss on Escape key
+  useEffect(() => {
+    if (!state) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleClose(false);
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [state, handleClose]);
 
   return (
     <ModalContext.Provider value={{ confirm }}>
