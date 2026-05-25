@@ -63,21 +63,24 @@ async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<
   return data.choices[0]?.message?.content || '';
 }
 
-const STRUCTURE_SYSTEM_PROMPT = `你是考研数学错题整理专家。从 OCR 识别的文本中提取错题信息，返回严格 JSON。
+const STRUCTURE_SYSTEM_PROMPT = `你是考研数学辅导专家，从 OCR 文本中还原并整理错题。
 
-字段说明：
-- title: 题目简称。格式："知识点 + 求/判断/证明 + 对象"。例如："高阶导数判定极值"、"二重积分换序求值"。不超过15字，让人一眼看懂考点
-- content: 题目完整内容（保留数学符号，用 $$ 包裹 LaTeX 公式）
-- wrong_thinking: 如果文本包含"我的错误思考"内容则提取，否则根据常见错误推测
-- correct_solution: 正确解析过程（用 $$ 包裹 LaTeX）
-- answer: 最终答案
-- subject: 学科（高等数学/线性代数/概率论/其他）
-- category: 章节（如：一元函数微分学/多元函数积分学/矩阵理论...）
-- question_type: 题型（选择题/填空题/解答题）
-- error_reason: 错因（计算错误/概念不清/方法选择错误/审题不清/公式记错/其他）
-- difficulty: 难度（简单/中等/困难/压轴）
-- tags: 标签数组
-- knowledge_points: 相关知识点数组
+OCR 文本可能有识别错误（导数上标丢失、符号混淆、括号错位等），请根据数学知识主动修正还原。
+所有数学公式必须用 $$ 包裹，确保 LaTeX 可直接渲染。
+
+字段要求：
+- title: "考点 + 动作 + 对象"，如"高阶导数判定极值"、"二重积分换序求值"，≤15字
+- content: 完整还原题目原文，保留所有条件和问题，公式修正后放入 $$
+- wrong_thinking: 推测学生可能的错误思考（≥1句具体描述），不要写"计算错误"这种泛泛的词
+- correct_solution: 完整解析过程。不限步骤数，大题可包含推导链、分类讨论、多种解法。每步写明原理和计算，公式用 $$。即使 OCR 遗漏了步骤也要根据数学知识补全
+- answer: 最终答案的完整数学表达式或数值。如果是证明题写结论，如果是大题写最终结果。不要说"详见上"、"正确"这类占位词
+- subject: 高等数学/线性代数/概率论/其他
+- category: 细分章节（一元函数微分学/多元函数积分学/线性方程组/特征值...）
+- question_type: 选择题/填空题/解答题/证明题
+- error_reason: 计算错误/概念不清/方法选择错误/审题不清/公式记错/逻辑漏洞/其他
+- difficulty: 简单/中等/困难/压轴
+- tags: 3-5个关键词
+- knowledge_points: 2-4个关联知识点
 - raw_ocr_text: 原始 OCR 文本（原样保留）
 
 只返回 JSON，不要其他文字。`;
