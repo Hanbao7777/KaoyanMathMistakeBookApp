@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { QuestionFilters } from '../shared/types';
 import { Shell, type PageKey } from './components/Shell';
+import { ToastProvider } from './components/Toast';
 import { AddEditPage } from './pages/AddEditPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DetailPage } from './pages/DetailPage';
@@ -18,6 +19,7 @@ import { StudySupervisorPage } from './pages/StudySupervisorPage';
 import { defaultFocusTimerState, type FocusTimerPatch, type FocusTimerState } from './types/focusTimer';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
+import './styles/toast.css';
 
 const focusTimerStorageKey = 'kaoyan-focus-timer-state-v1';
 
@@ -151,21 +153,23 @@ export default function App() {
   }
 
   return (
-    <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls}>
-      {page === 'dashboard' ? <DashboardPage onAdd={() => navigate('add')} onReview={() => navigate('review')} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} onOpenKnowledgePoint={openKnowledgePoint} onOpenKnowledgeMap={() => navigate('knowledgeMap')} onOpenImport={() => navigate('import')} onOpenLibrary={openLibraryWithFilters} onOpenStudyPage={navigate} /> : null}
-      {page === 'studySupervisor' ? <StudySupervisorPage onNavigate={navigate} /> : null}
-      {page === 'dailyPlan' ? <DailyPlanPage /> : null}
-      {page === 'studyMaterials' ? <StudyMaterialsPage /> : null}
-      {page === 'focusTimer' ? <FocusTimerPage timer={focusTimer} controls={focusTimerControls} /> : null}
-      {page === 'add' ? <AddEditPage editingId={editingId} onSaved={openQuestion} onCancel={() => navigate('library')} /> : null}
-      {page === 'library' ? <LibraryPage onOpenQuestion={openQuestion} onEditQuestion={editQuestion} initialFilters={libraryFilters} /> : null}
-      {page === 'detail' ? <DetailPage questionId={selectedQuestionId} reviewMode={reviewMode} onBack={() => navigate(reviewMode ? 'review' : 'library')} onEdit={editQuestion} onOpenKnowledgePoint={openKnowledgePoint} /> : null}
-      {page === 'review' ? <ReviewPage onOpenQuestion={openQuestion} knowledgeNodeId={reviewKnowledgeNodeId} onKnowledgeTargetConsumed={() => setReviewKnowledgeNodeId(null)} /> : null}
-      {page === 'knowledgeMap' ? <KnowledgeMapPage selectedNodeId={selectedKnowledgeNodeId} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} /> : null}
-      {page === 'questionBank' ? <QuestionBankPage onOpenQuestion={openQuestion} /> : null}
-      {page === 'stats' ? <StatsPage onOpenLibrary={openLibraryWithFilters} onOpenKnowledgePoint={openKnowledgePoint} onOpenQuestion={openQuestion} onOpenImport={() => navigate('import')} onOpenReview={() => navigate('review')} /> : null}
-      {page === 'import' ? <ImportPage /> : null}
-      {page === 'settings' ? <SettingsPage /> : null}
-    </Shell>
+    <ToastProvider>
+      <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls}>
+        {page === 'dashboard' ? <DashboardPage onAdd={() => navigate('add')} onReview={() => navigate('review')} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} onOpenKnowledgePoint={openKnowledgePoint} onOpenKnowledgeMap={() => navigate('knowledgeMap')} onOpenImport={() => navigate('import')} onOpenLibrary={openLibraryWithFilters} onOpenStudyPage={navigate} /> : null}
+        {page === 'studySupervisor' ? <StudySupervisorPage onNavigate={navigate} /> : null}
+        {page === 'dailyPlan' ? <DailyPlanPage /> : null}
+        {page === 'studyMaterials' ? <StudyMaterialsPage /> : null}
+        {page === 'focusTimer' ? <FocusTimerPage timer={focusTimer} controls={focusTimerControls} /> : null}
+        {page === 'add' ? <AddEditPage editingId={editingId} onSaved={openQuestion} onCancel={() => navigate('library')} /> : null}
+        {page === 'library' ? <LibraryPage onOpenQuestion={openQuestion} onEditQuestion={editQuestion} initialFilters={libraryFilters} /> : null}
+        {page === 'detail' ? <DetailPage questionId={selectedQuestionId} reviewMode={reviewMode} onBack={() => navigate(reviewMode ? 'review' : 'library')} onEdit={editQuestion} onOpenKnowledgePoint={openKnowledgePoint} /> : null}
+        {page === 'review' ? <ReviewPage onOpenQuestion={openQuestion} knowledgeNodeId={reviewKnowledgeNodeId} onKnowledgeTargetConsumed={() => setReviewKnowledgeNodeId(null)} /> : null}
+        {page === 'knowledgeMap' ? <KnowledgeMapPage selectedNodeId={selectedKnowledgeNodeId} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} /> : null}
+        {page === 'questionBank' ? <QuestionBankPage onOpenQuestion={openQuestion} /> : null}
+        {page === 'stats' ? <StatsPage onOpenLibrary={openLibraryWithFilters} onOpenKnowledgePoint={openKnowledgePoint} onOpenQuestion={openQuestion} onOpenImport={() => navigate('import')} onOpenReview={() => navigate('review')} /> : null}
+        {page === 'import' ? <ImportPage /> : null}
+        {page === 'settings' ? <SettingsPage /> : null}
+      </Shell>
+    </ToastProvider>
   );
 }
