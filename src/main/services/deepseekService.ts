@@ -61,7 +61,7 @@ async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<
 const STRUCTURE_SYSTEM_PROMPT = `你是考研数学错题整理专家。从 OCR 识别的文本中提取错题信息，返回严格 JSON。
 
 字段说明：
-- title: 简短的题目标题（15字以内）
+- title: 题目简称。格式："知识点 + 求/判断/证明 + 对象"。例如："高阶导数判定极值"、"二重积分换序求值"。不超过15字，让人一眼看懂考点
 - content: 题目完整内容（保留数学符号，用 $$ 包裹 LaTeX 公式）
 - wrong_thinking: 如果文本包含"我的错误思考"内容则提取，否则根据常见错误推测
 - correct_solution: 正确解析过程（用 $$ 包裹 LaTeX）
