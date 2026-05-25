@@ -50,7 +50,7 @@ async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<
         { role: 'user', content: userMessage }
       ],
       temperature: 0.3,
-      max_tokens: 4096
+      max_tokens: 8192
     })
   });
 
@@ -82,29 +82,44 @@ const STRUCTURE_SYSTEM_PROMPT = `你是考研数学错题整理专家。从 OCR 
 
 只返回 JSON，不要其他文字。`;
 
+function buildQuestion(parsed: Record<string, unknown>, rawOcr: string): AiStructuredQuestion {
+  return {
+    title: (parsed.title as string) || '',
+    content: (parsed.content as string) || '',
+    wrong_thinking: (parsed.wrong_thinking as string) || '',
+    correct_solution: (parsed.correct_solution as string) || '',
+    answer: (parsed.answer as string) || '',
+    subject: (parsed.subject as string) || '高等数学',
+    category: (parsed.category as string) || '其他',
+    question_type: (parsed.question_type as string) || '解答题',
+    error_reason: (parsed.error_reason as string) || '其他',
+    difficulty: (parsed.difficulty as string) || '中等',
+    tags: Array.isArray(parsed.tags) ? parsed.tags as string[] : [],
+    knowledge_points: Array.isArray(parsed.knowledge_points) ? parsed.knowledge_points as string[] : [],
+    raw_ocr_text: rawOcr
+  };
+}
+
+function extractJson(text: string): Record<string, unknown> {
+  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*?\})/);
+  const jsonText = match ? match[1].trim() : text.trim();
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    // Try recovery: truncated JSON — append missing closing braces
+    for (const suffix of ['}', '"}', ']"}', ']}"]}']) {
+      try { return JSON.parse(jsonText + suffix); } catch { /* keep trying */ }
+    }
+    throw new Error('JSON 解析失败');
+  }
+}
+
 export async function structureQuestion(ocrTexts: string[]): Promise<AiStructuredQuestion> {
   const combined = ocrTexts.map((t, i) => `[图片 ${i + 1} OCR 文本]\n${t}`).join('\n\n---\n\n');
   const result = await callDeepSeek(STRUCTURE_SYSTEM_PROMPT, combined);
-  // 提取 JSON（DeepSeek 可能包裹在 ```json 中）
-  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*?\})/);
-  const jsonText = jsonMatch ? jsonMatch[1].trim() : result.trim();
   try {
-    const parsed = JSON.parse(jsonText);
-    return {
-      title: parsed.title || '',
-      content: parsed.content || '',
-      wrong_thinking: parsed.wrong_thinking || '',
-      correct_solution: parsed.correct_solution || '',
-      answer: parsed.answer || '',
-      subject: parsed.subject || '高等数学',
-      category: parsed.category || '其他',
-      question_type: parsed.question_type || '解答题',
-      error_reason: parsed.error_reason || '其他',
-      difficulty: parsed.difficulty || '中等',
-      tags: Array.isArray(parsed.tags) ? parsed.tags : [],
-      knowledge_points: Array.isArray(parsed.knowledge_points) ? parsed.knowledge_points : [],
-      raw_ocr_text: combined
-    };
+    const parsed = extractJson(result);
+    return buildQuestion(parsed, combined);
   } catch {
     throw new Error(`AI 返回格式异常，无法解析为 JSON。原始响应：${result.slice(0, 500)}`);
   }
@@ -134,14 +149,12 @@ export async function diagnoseError(questionContent: string, questionAnswer: str
   ].join('\n\n');
 
   const result = await callDeepSeek(DIAGNOSIS_SYSTEM_PROMPT, userMessage);
-  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*?\})/);
-  const jsonText = jsonMatch ? jsonMatch[1].trim() : result.trim();
   try {
-    const parsed = JSON.parse(jsonText);
+    const parsed = extractJson(result);
     return {
-      knowledgeBlindSpot: parsed.knowledgeBlindSpot || '',
-      suggestedKnowledgePoints: Array.isArray(parsed.suggestedKnowledgePoints) ? parsed.suggestedKnowledgePoints : [],
-      suggestedReviewDirection: parsed.suggestedReviewDirection || '',
+      knowledgeBlindSpot: (parsed.knowledgeBlindSpot as string) || result.slice(0, 200),
+      suggestedKnowledgePoints: Array.isArray(parsed.suggestedKnowledgePoints) ? parsed.suggestedKnowledgePoints as string[] : [],
+      suggestedReviewDirection: (parsed.suggestedReviewDirection as string) || '',
       rawResponse: result
     };
   } catch {
