@@ -20,6 +20,8 @@ import {
   submitReviewResult,
   updateQuestion
 } from '../services/databaseService';
+import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
+import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
 import { copyExistingData, getPaths, setDataRoot } from '../services/pathService';
 import { checkImageExists, getImageUrl, openImage, revealImageInFolder } from '../services/imageService';
@@ -91,6 +93,7 @@ import {
 } from '../services/studySupervisorService';
 import type {
   DatabaseBackupKind,
+  DeepSeekSettings,
   DeleteImportBatchOptions,
   ExternalQuestionAttemptInput,
   ExternalQuestionFilters,
@@ -218,4 +221,38 @@ export function registerIpc() {
   handle('study:reviews:get', (date: string) => getDailyReview(date));
   handle('study:reviews:save', (input: DailyReviewInput) => saveDailyReview(input));
   handle('study:dashboard', (date?: string) => getStudySupervisorDashboard(date));
+
+  // DeepSeek Settings
+  handle('deepseek:settings:get', () => getDeepSeekSettings());
+  handle('deepseek:settings:save', (input: DeepSeekSettings) => saveDeepSeekSettings(input));
+
+  // OCR
+  handle('ocr:run', (imagePaths: string[]) => runOcrService(imagePaths));
+
+  // AI Structuring
+  handle('deepseek:structure', (ocrTexts: string[]) => structureQuestionAi(ocrTexts));
+
+  // AI Diagnosis
+  handle('deepseek:diagnose', async (questionId: number) => {
+    const { getQuestion } = await import('../services/databaseService');
+    const question = await getQuestion(questionId);
+    if (!question) throw new Error('错题未找到');
+    return diagnoseErrorAi(
+      question.content,
+      question.answer,
+      question.wrong_thinking || question.wrong_solution,
+      question.correct_solution
+    );
+  });
+
+  // Python env check
+  handle('python:checkEnv', async () => {
+    const { execSync } = await import('node:child_process');
+    const python = getPythonPath();
+    try {
+      execSync(`"${python}" -c "from paddleocr import PaddleOCR; print('OK')"`, { timeout: 30000, encoding: 'utf8' });
+    } catch {
+      throw new Error('无法加载 PaddleOCR。请确认已执行: pip install paddlepaddle paddleocr');
+    }
+  });
 }

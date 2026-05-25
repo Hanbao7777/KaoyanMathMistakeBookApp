@@ -169,18 +169,18 @@ const api: AppApi = {
   loadWindowState: () => invoke<WindowState | null>('window:loadState'),
 
   // DeepSeek settings
-  getDeepSeekSettings: () => invoke<DeepSeekSettings>('deepseek:getSettings'),
-  saveDeepSeekSettings: (input: DeepSeekSettings) => invoke<DeepSeekSettings>('deepseek:saveSettings', input),
+  getDeepSeekSettings: () => invoke<DeepSeekSettings>('deepseek:settings:get'),
+  saveDeepSeekSettings: (input: DeepSeekSettings) => invoke<DeepSeekSettings>('deepseek:settings:save', input),
 
   // OCR
   runOcr: (imagePaths: string[]) => invoke<OcrResult[]>('ocr:run', imagePaths),
-  checkPythonEnv: () => invoke<void>('ocr:checkPythonEnv'),
+  checkPythonEnv: () => invoke<void>('python:checkEnv'),
 
   // AI structuring
-  structureQuestion: (ocrTexts: string[]) => invoke<AiStructuredQuestion>('ai:structureQuestion', ocrTexts),
+  structureQuestion: (ocrTexts: string[]) => invoke<AiStructuredQuestion>('deepseek:structure', ocrTexts),
 
   // AI error diagnosis
-  diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('ai:diagnoseError', questionId),
+  diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('deepseek:diagnose', questionId),
 
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };
