@@ -245,11 +245,21 @@ export function SettingsPage() {
               <h2>DeepSeek AI 设置</h2>
               <p className="muted-text">配置 API Key 后即可使用 AI 智能导入和错因诊断。Key 仅存储在本地数据库中，不会上传。</p>
             </div>
-            <button className="primary-button" type="button" onClick={async () => {
-              if (!deepSeekSettings) return;
-              await window.api.saveDeepSeekSettings(deepSeekSettings);
-              setMessage('DeepSeek 设置已保存');
-            }}>保存 AI 设置</button>
+            <div className="header-actions">
+              <button className="secondary-button" type="button" onClick={async () => {
+                try {
+                  await window.api.testDeepSeekConnection();
+                  toast('DeepSeek 连接成功', 'success');
+                } catch (error) {
+                  toast(`连接失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+                }
+              }}>测试连接</button>
+              <button className="primary-button" type="button" onClick={async () => {
+                if (!deepSeekSettings) return;
+                await window.api.saveDeepSeekSettings(deepSeekSettings);
+                toast('DeepSeek 设置已保存', 'success');
+              }}>保存 AI 设置</button>
+            </div>
           </div>
           <div className="study-form-grid">
             <label>
@@ -263,13 +273,17 @@ export function SettingsPage() {
             </label>
             <label>
               模型
-              <select
+              <input
                 value={deepSeekSettings.model}
                 onChange={(event) => setDeepSeekSettings({ ...deepSeekSettings, model: event.target.value })}
-              >
-                <option value="deepseek-chat">deepseek-chat</option>
-                <option value="deepseek-reasoner">deepseek-reasoner (R1)</option>
-              </select>
+                placeholder="deepseek-chat"
+                list="model-suggestions"
+              />
+              <datalist id="model-suggestions">
+                <option value="deepseek-chat" />
+                <option value="deepseek-reasoner" />
+                <option value="deepseek-v4-flash" />
+              </datalist>
             </label>
             <label>
               API Base URL
@@ -297,10 +311,10 @@ export function SettingsPage() {
               try {
                 await window.api.checkPythonEnv();
                 setPythonStatus('ok');
-                setMessage('Python + PaddleOCR 环境正常');
+                toast('Python + PaddleOCR 环境正常', 'success');
               } catch (error) {
                 setPythonStatus('error');
-                setMessage(`环境检测失败：${error instanceof Error ? error.message : String(error)}`);
+                toast(`环境检测失败：${error instanceof Error ? error.message : String(error)}`, 'error');
               }
             }}
             disabled={pythonStatus === 'checking'}

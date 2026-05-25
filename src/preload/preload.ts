@@ -175,6 +175,7 @@ const api: AppApi = {
   // OCR
   runOcr: (imagePaths: string[]) => invoke<OcrResult[]>('ocr:run', imagePaths),
   checkPythonEnv: () => invoke<void>('python:checkEnv'),
+  testDeepSeekConnection: () => invoke<void>('deepseek:testConnection'),
 
   // AI structuring
   structureQuestion: (ocrTexts: string[]) => invoke<AiStructuredQuestion>('deepseek:structure', ocrTexts),

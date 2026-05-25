@@ -165,6 +165,7 @@ export interface AppApi {
   // OCR
   runOcr: (imagePaths: string[]) => Promise<OcrResult[]>;
   checkPythonEnv: () => Promise<void>;
+  testDeepSeekConnection: () => Promise<void>;
 
   // AI structuring
   structureQuestion: (ocrTexts: string[]) => Promise<AiStructuredQuestion>;

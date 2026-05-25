@@ -255,4 +255,28 @@ export function registerIpc() {
       throw new Error('无法加载 PaddleOCR。请确认已执行: pip install paddlepaddle paddleocr');
     }
   });
+
+  // DeepSeek connection test
+  handle('deepseek:testConnection', async () => {
+    const settings = await getDeepSeekSettings();
+    if (!settings.apiKey) throw new Error('请先填写 API Key');
+
+    const response = await fetch(`${settings.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${settings.apiKey}`
+      },
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [{ role: 'user', content: 'Hello' }],
+        max_tokens: 10
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      throw new Error(`连接失败 (${response.status}): ${errorText.slice(0, 300)}`);
+    }
+  });
 }
