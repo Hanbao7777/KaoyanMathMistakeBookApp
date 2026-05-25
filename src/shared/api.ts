@@ -58,7 +58,8 @@ import type {
   StudySupervisorDashboard,
   StudyTask,
   StudyTaskFilters,
-  StudyTaskInput
+  StudyTaskInput,
+  WindowState
 } from './types';
 
 export interface AppApi {
@@ -150,5 +151,7 @@ export interface AppApi {
   getDailyReview: (date: string) => Promise<DailyReview | null>;
   saveDailyReview: (input: DailyReviewInput) => Promise<DailyReview | null>;
   getStudySupervisorDashboard: (date?: string) => Promise<StudySupervisorDashboard>;
+  saveWindowState: (state: WindowState) => void;
+  loadWindowState: () => Promise<WindowState | null>;
   toFileUrl: (filePath: string) => string;
 }

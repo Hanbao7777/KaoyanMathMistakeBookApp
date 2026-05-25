@@ -794,3 +794,10 @@ export interface DeleteExternalQuestionBatchResult {
   movedAssetPath: string;
 }
 
+export interface WindowState {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+}
+

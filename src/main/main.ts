@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, net, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
 import { initializeDatabase } from './services/databaseService';
 import { persistDatabase, resetDatabaseConnection } from './services/databaseService';
 import { initializePaths } from './services/pathService';
@@ -38,10 +38,38 @@ function registerImageProtocol() {
   });
 }
 
+const windowStatePath = path.join(app.getPath('userData'), 'window-state.json');
+
+function saveWindowState() {
+  if (!mainWindow) return;
+  const bounds = mainWindow.getBounds();
+  const state = {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height
+  };
+  try {
+    fs.writeFileSync(windowStatePath, JSON.stringify(state), 'utf8');
+  } catch { /* ignore */ }
+}
+
+function loadWindowState(): { x?: number; y?: number; width: number; height: number } | null {
+  try {
+    if (fs.existsSync(windowStatePath)) {
+      return JSON.parse(fs.readFileSync(windowStatePath, 'utf8'));
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
 function createWindow() {
+  const savedState = loadWindowState();
   const win = new BrowserWindow({
-    width: 1280,
-    height: 820,
+    width: savedState?.width || 1280,
+    height: savedState?.height || 820,
+    x: savedState?.x,
+    y: savedState?.y,
     minWidth: 980,
     minHeight: 680,
     title: '考研高数错题本',
@@ -54,7 +82,18 @@ function createWindow() {
   });
   mainWindow = win;
 
+  let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  win.on('resize', () => {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(saveWindowState, 500);
+  });
+  win.on('move', () => {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(saveWindowState, 500);
+  });
+
   win.on('close', () => {
+    saveWindowState();
     if (!isQuitting) {
       isQuitting = true;
       app.quit();
@@ -104,6 +143,8 @@ app.whenReady().then(async () => {
       console.warn('[AutoBackup]', error);
     }
     registerImageProtocol();
+    ipcMain.on('window:saveState', () => saveWindowState());
+    ipcMain.handle('window:loadState', () => loadWindowState());
     registerIpc();
     createWindow();
   } catch (error) {

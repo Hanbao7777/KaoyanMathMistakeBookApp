@@ -60,7 +60,8 @@ import type {
   StudySupervisorDashboard,
   StudyTask,
   StudyTaskFilters,
-  StudyTaskInput
+  StudyTaskInput,
+  WindowState
 } from '../shared/types';
 
 type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -160,6 +161,8 @@ const api: AppApi = {
   getDailyReview: (date: string) => invoke<DailyReview | null>('study:reviews:get', date),
   saveDailyReview: (input: DailyReviewInput) => invoke<DailyReview | null>('study:reviews:save', input),
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
+  saveWindowState: (state: WindowState) => ipcRenderer.send('window:saveState', state),
+  loadWindowState: () => invoke<WindowState | null>('window:loadState'),
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };
 
