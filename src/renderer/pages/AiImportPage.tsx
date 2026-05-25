@@ -364,7 +364,8 @@ export function AiImportPage() {
               knowledge_points: []
             }}
             onCancel={reset}
-            onSaved={() => {
+            onSaved={async (saved) => {
+              try { await window.api.recordAiImport(saved.id); } catch { /* non-critical */ }
               setStep('done');
               toast('错题已保存', 'success');
             }}

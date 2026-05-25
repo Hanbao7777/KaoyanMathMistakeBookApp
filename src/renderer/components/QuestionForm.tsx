@@ -1,6 +1,8 @@
 import { ImagePlus, Save, X } from 'lucide-react';
 import type { FormEvent } from 'react';
 import { useEffect, useMemo, useState } from 'react';
+import { useModal } from './Modal';
+import { useToast } from './Toast';
 import {
   CATEGORIES,
   DIFFICULTIES,
@@ -82,8 +84,10 @@ export function QuestionForm({ initial, onCancel, onSaved }: QuestionFormProps) 
   const [form, setForm] = useState<QuestionInput>(defaultForm);
   const [tagText, setTagText] = useState('');
   const [questionImages, setQuestionImages] = useState<QuestionImage[]>([]);
+  const { toast } = useToast();
+  const modal = useModal();
   const [saving, setSaving] = useState(false);
-  const isEditing = Boolean(initial);
+  const isEditing = !!(initial?.id && initial.id > 0);
 
   useEffect(() => {
     if (!initial) {
@@ -127,8 +131,9 @@ export function QuestionForm({ initial, onCancel, onSaved }: QuestionFormProps) 
   }
 
   async function removeExisting(image: QuestionImage) {
-    if (!confirm('确定移除这张错题原图吗？')) return;
-    const deleteFile = confirm('是否同时删除本地图片文件？');
+    const confirmed = await modal.confirm({ title: '移除图片', message: '确定移除这张错题原图吗？', confirmLabel: '移除' });
+    if (!confirmed) return;
+    const deleteFile = await modal.confirm({ title: '删除文件', message: '是否同时删除本地图片文件？', confirmLabel: '一并删除', danger: true });
     await window.api.removeImage(image.id, deleteFile);
     setQuestionImages((current) => current.filter((item) => item.id !== image.id));
   }
@@ -136,7 +141,7 @@ export function QuestionForm({ initial, onCancel, onSaved }: QuestionFormProps) 
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!form.title.trim()) {
-      alert('请填写题目标题');
+      toast('请填写题目标题', 'warning');
       return;
     }
     setSaving(true);

@@ -172,6 +172,7 @@ export interface AppApi {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => Promise<AiDiagnosisResult>;
+  recordAiImport: (questionId: number) => Promise<{ batchId: string }>;
 
   toFileUrl: (filePath: string) => string;
 }

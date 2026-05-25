@@ -279,4 +279,19 @@ export function registerIpc() {
       throw new Error(`连接失败 (${response.status}): ${errorText.slice(0, 300)}`);
     }
   });
+
+  // AI import batch record
+  handle('ai:recordImport', async (questionId: number) => {
+    const { createImportBatch, recordImportBatchItem } = await import('../services/importBatchService');
+    const { getDatabase } = await import('../services/databaseService');
+    const db = await getDatabase();
+    const batchId = await createImportBatch({
+      type: 'wrong_questions',
+      name: `AI 导入 - ${new Date().toLocaleString('zh-CN')}`,
+      source: 'AI 智能导入',
+      sourceFileName: `ai-import-${Date.now()}`
+    });
+    recordImportBatchItem(db, batchId, 'questions', questionId, 'created');
+    return { batchId };
+  });
 }

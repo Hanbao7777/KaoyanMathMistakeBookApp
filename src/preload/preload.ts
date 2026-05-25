@@ -182,6 +182,7 @@ const api: AppApi = {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('deepseek:diagnose', questionId),
+  recordAiImport: (questionId: number) => invoke<{ batchId: string }>('ai:recordImport', questionId),
 
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };
