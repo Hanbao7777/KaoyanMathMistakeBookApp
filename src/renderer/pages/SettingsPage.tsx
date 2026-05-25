@@ -256,8 +256,16 @@ export function SettingsPage() {
               }}>测试连接</button>
               <button className="primary-button" type="button" onClick={async () => {
                 if (!deepSeekSettings) return;
-                await window.api.saveDeepSeekSettings(deepSeekSettings);
-                toast('DeepSeek 设置已保存', 'success');
+                if (!deepSeekSettings.apiKey.trim()) {
+                  toast('请先填写 API Key', 'warning');
+                  return;
+                }
+                try {
+                  await window.api.saveDeepSeekSettings(deepSeekSettings);
+                  toast('AI 设置已保存', 'success');
+                } catch (error) {
+                  toast(`保存失败：${error instanceof Error ? error.message : String(error)}`, 'error');
+                }
               }}>保存 AI 设置</button>
             </div>
           </div>

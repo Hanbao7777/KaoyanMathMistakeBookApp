@@ -22,7 +22,9 @@ export async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
 export async function saveDeepSeekSettings(settings: DeepSeekSettings): Promise<DeepSeekSettings> {
   const db = await getDatabase();
   db.run("CREATE TABLE IF NOT EXISTS sqlite_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  db.run("INSERT OR REPLACE INTO sqlite_settings (key, value) VALUES ('deepseek', ?)", [JSON.stringify(settings)]);
+  const jsonValue = JSON.stringify(settings);
+  const escaped = jsonValue.replace(/'/g, "''");
+  db.run(`INSERT OR REPLACE INTO sqlite_settings (key, value) VALUES ('deepseek', '${escaped}')`);
   return settings;
 }
 
