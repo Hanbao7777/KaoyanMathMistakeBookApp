@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { QuestionFilters } from '../shared/types';
 import { Shell, type PageKey } from './components/Shell';
+import { GlobalSearch } from './components/GlobalSearch';
 import { ModalProvider } from './components/Modal';
 import { ToastProvider } from './components/Toast';
 import { AddEditPage } from './pages/AddEditPage';
@@ -58,6 +59,7 @@ export default function App() {
   const [reviewMode, setReviewMode] = useState(false);
   const [focusTimer, setFocusTimer] = useState<FocusTimerState>(() => readFocusTimerState());
   const [timerTick, setTimerTick] = useState(0);
+  const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem(focusTimerStorageKey, JSON.stringify(focusTimer));
@@ -68,6 +70,17 @@ export default function App() {
     const timer = window.setInterval(() => setTimerTick((value) => value + 1), 1000);
     return () => window.clearInterval(timer);
   }, [focusTimer.status]);
+
+  useEffect(() => {
+    function handleKey(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+        event.preventDefault();
+        setGlobalSearchOpen(true);
+      }
+    }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, []);
 
   const elapsedSeconds = useMemo(() => {
     void timerTick;
@@ -173,6 +186,12 @@ export default function App() {
         {page === 'import' ? <ImportPage /> : null}
         {page === 'settings' ? <SettingsPage /> : null}
       </Shell>
+      <GlobalSearch
+        open={globalSearchOpen}
+        onClose={() => setGlobalSearchOpen(false)}
+        onOpenQuestion={openQuestion}
+        onOpenKnowledgePoint={openKnowledgePoint}
+      />
       </ModalProvider>
     </ToastProvider>
   );
