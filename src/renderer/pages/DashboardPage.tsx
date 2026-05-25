@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData, KnowledgePointReviewStats, QuestionFilters, StudySupervisorDashboard } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
 import type { PageKey } from '../components/Shell';
+import { useToast } from '../components/Toast';
 
 interface DashboardPageProps {
   onAdd: () => void;
@@ -110,6 +111,7 @@ export function DashboardPage({
   onOpenLibrary,
   onOpenStudyPage
 }: DashboardPageProps) {
+  const { toast } = useToast();
   const [data, setData] = useState<DashboardData | null>(null);
   const [studyData, setStudyData] = useState<StudySupervisorDashboard | null>(null);
   const [knowledgeStats, setKnowledgeStats] = useState<KnowledgePointReviewStats[]>([]);
@@ -121,7 +123,7 @@ export function DashboardPage({
         setKnowledgeStats(points);
         setStudyData(study);
       })
-      .catch((error) => alert(error.message));
+      .catch((error) => toast(error.message, 'error'));
   }, []);
 
   const suggested = useMemo(() => sortSuggested(knowledgeStats), [knowledgeStats]);

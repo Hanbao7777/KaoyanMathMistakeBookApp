@@ -2,6 +2,8 @@ import { Pause, Play, RotateCcw, Save, Square } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { StudyMaterial, StudyQuality, StudySession, StudySubject, StudyTask } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 import type { FocusTimerControls, FocusTimerState } from '../types/focusTimer';
 
 function localDate() {
@@ -30,6 +32,8 @@ interface FocusTimerPageProps {
 }
 
 export function FocusTimerPage({ timer, controls }: FocusTimerPageProps) {
+  const { toast } = useToast();
+  const modal = useModal();
   const [subjects, setSubjects] = useState<StudySubject[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
   const [tasks, setTasks] = useState<StudyTask[]>([]);
@@ -58,26 +62,29 @@ export function FocusTimerPage({ timer, controls }: FocusTimerPageProps) {
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, []);
 
   const selectedTask = useMemo(() => tasks.find((task) => task.id === timer.taskId), [tasks, timer.taskId]);
   const availableMaterials = useMemo(() => materials.filter((material) => material.subject_id === timer.subjectId), [materials, timer.subjectId]);
   const todayMinutes = sessions.reduce((sum, session) => sum + session.duration_minutes, 0);
 
-  function reset() {
-    if (timer.status === 'running' && !confirm('计时正在进行，确定重置吗？')) return;
+  async function reset() {
+    if (timer.status === 'running') {
+      const confirmed = await modal.confirm({ title: '操作确认', message: '计时正在进行，确定重置吗？', confirmLabel: '确定重置', danger: true });
+      if (!confirmed) return;
+    }
     controls.reset();
   }
 
   async function saveSession(action: SettlementAction = 'record') {
     const duration = Math.max(1, Math.round(controls.elapsedSeconds / 60));
     if (!timer.startedAt || controls.elapsedSeconds <= 0) {
-      alert('请先开始计时');
+      toast('请先开始计时', 'warning');
       return;
     }
     if (action === 'partial' && !remainingWork.trim()) {
-      alert('请填写还剩什么没完成');
+      toast('请填写还剩什么没完成', 'warning');
       return;
     }
     const finalMaterialId = selectedTask?.material_id || timer.materialId || null;
@@ -150,12 +157,12 @@ export function FocusTimerPage({ timer, controls }: FocusTimerPageProps) {
 
   function requestEndSession() {
     if (!timer.startedAt || controls.elapsedSeconds <= 0) {
-      alert('请先开始计时');
+      toast('请先开始计时', 'warning');
       return;
     }
     if (timer.status === 'running') controls.pause();
     if (!selectedTask) {
-      saveSession('record').catch((error) => alert(error instanceof Error ? error.message : String(error)));
+      saveSession('record').catch((error) => toast(error instanceof Error ? error.message : String(error), 'error'));
       return;
     }
     const duration = Math.max(1, Math.round(controls.elapsedSeconds / 60));
@@ -317,7 +324,7 @@ export function FocusTimerPage({ timer, controls }: FocusTimerPageProps) {
             ) : null}
 
             <div className="form-actions">
-              <button className="primary-button" type="button" onClick={() => saveSession(settlementAction).catch((error) => alert(error instanceof Error ? error.message : String(error)))}>确认保存</button>
+              <button className="primary-button" type="button" onClick={() => saveSession(settlementAction).catch((error) => toast(error instanceof Error ? error.message : String(error), 'error'))}>确认保存</button>
               <button className="secondary-button" type="button" onClick={() => setSettlementOpen(false)}>继续调整</button>
             </div>
           </div>

@@ -29,6 +29,8 @@ import { MATH_SUBJECTS } from '../../shared/options';
 import type { KnowledgePointDetail, KnowledgePointReviewStats, KnowledgePointTreeNode, TextbookPdfStatus } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
 import { FormulaText } from '../components/FormulaText';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 
 interface KnowledgeMapPageProps {
   selectedNodeId?: string | null;
@@ -581,6 +583,8 @@ function KnowledgeFlowCanvas({
 }
 
 export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowledgePoint }: KnowledgeMapPageProps) {
+  const { toast } = useToast();
+  const modal = useModal();
   const [tree, setTree] = useState<KnowledgePointTreeNode[]>([]);
   const [selected, setSelected] = useState<string | null>(selectedNodeId || null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -626,7 +630,7 @@ export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowl
   }
 
   useEffect(() => {
-    loadTree(selectedNodeId).catch((error) => alert(error.message));
+    loadTree(selectedNodeId).catch((error) => toast(error.message, 'error'));
   }, [selectedNodeId]);
 
   useEffect(() => {
@@ -635,7 +639,7 @@ export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowl
       setDetail(null);
       return;
     }
-    loadDetail(selected).catch((error) => alert(error.message));
+    loadDetail(selected).catch((error) => toast(error.message, 'error'));
   }, [selected]);
 
   useEffect(() => {
@@ -655,9 +659,9 @@ export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowl
     if (!detail) return;
     try {
       const result = await window.api.openTextbookPage(detail.node_id);
-      alert(result.message);
+      toast(result.message, 'success');
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       await loadDetail(detail.node_id);
     }
@@ -668,17 +672,17 @@ export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowl
     try {
       const result = await window.api.bindTextbookPdf(detail.node_id);
       if (result?.bound) {
-        alert('教材 PDF 已绑定。');
+        toast('教材 PDF 已绑定。', 'success');
         await loadDetail(detail.node_id);
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
   async function copyPdfPage() {
     if (!hasPage(detail?.pdf_page)) {
-      alert('PDF 页码尚未确认，无法复制。');
+      toast('PDF 页码尚未确认，无法复制。', 'warning');
       return;
     }
     try {
@@ -686,22 +690,24 @@ export function KnowledgeMapPage({ selectedNodeId, onOpenQuestion, onReviewKnowl
       setCopyMessage(`已复制 PDF 页码：${detail?.pdf_page}`);
       window.setTimeout(() => setCopyMessage(''), 2400);
     } catch {
-      alert('复制失败。当前系统或运行环境不支持剪贴板权限。');
+      toast('复制失败。当前系统或运行环境不支持剪贴板权限。', 'error');
     }
   }
 
   async function rematch() {
-    if (!confirm('确定重新匹配已有错题知识点吗？已有关系不会重复插入。')) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: '确定重新匹配已有错题知识点吗？已有关系不会重复插入。', confirmLabel: '确定匹配' });
+    if (!confirmed) return;
     try {
       const result = await window.api.rematchKnowledgePoints();
-      alert(
-        `匹配完成：扫描 ${result.scannedQuestions} 道错题，新增关联 ${result.insertedCount} 条，已存在跳过 ${result.skippedExistingCount} 条，未匹配 ${result.unmatchedQuestions} 道。`
+      toast(
+        `匹配完成：扫描 ${result.scannedQuestions} 道错题，新增关联 ${result.insertedCount} 条，已存在跳过 ${result.skippedExistingCount} 条，未匹配 ${result.unmatchedQuestions} 道。`,
+        'success'
       );
       await loadTree(selected);
       setReviewStats(await window.api.listKnowledgeReviewStats());
       if (selected) await loadDetail(selected);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 

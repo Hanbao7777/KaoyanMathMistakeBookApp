@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react
 import { CATEGORIES, DIFFICULTIES, MATH_SUBJECTS, QUESTION_TYPES } from '../../shared/options';
 import type { ExternalQuestion, ExternalQuestionFilters, ExternalQuestionResult, ExternalQuestionStats } from '../../shared/types';
 import { MarkdownFormulaPreview, MarkdownFormulaText, countMarkdownImages } from '../components/MarkdownFormulaText';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 
 const QUESTION_FORMATS = ['选择题', '填空题', '解答题'];
 const STATUS_OPTIONS = [
@@ -218,6 +220,8 @@ interface DetailProps {
 }
 
 function QuestionBankDetail({ question, onBack, onReload, onBatchDeleted, onOpenQuestion }: DetailProps) {
+  const { toast } = useToast();
+  const modal = useModal();
   const [showAnswer, setShowAnswer] = useState(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -230,7 +234,7 @@ function QuestionBankDetail({ question, onBack, onReload, onBatchDeleted, onOpen
       await window.api.recordExternalQuestionAttempt({ externalQuestionId: question.id, result, note });
       await onReload();
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -241,10 +245,10 @@ function QuestionBankDetail({ question, onBack, onReload, onBatchDeleted, onOpen
     try {
       const result = await window.api.addExternalQuestionToMistakes(question.id);
       await onReload();
-      alert('已加入错题本');
+      toast('已加入错题本', 'success');
       onOpenQuestion(result.question.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -254,7 +258,7 @@ function QuestionBankDetail({ question, onBack, onReload, onBatchDeleted, onOpen
     try {
       await window.api.openExternalQuestionPaper(question.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -262,21 +266,21 @@ function QuestionBankDetail({ question, onBack, onReload, onBatchDeleted, onOpen
     try {
       await window.api.openExternalQuestionSolutionPdf(question.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
   async function deleteBatch() {
     if (!question.import_batch_id) return;
-    const confirmed = window.confirm('确定删除这个题库导入批次吗？该批次的题目和练习记录会被删除。若该批次已有题目加入错题本，App 会保留相关图片/PDF 资源，避免错题图片丢失；否则资源会移入 trash。');
+    const confirmed = await modal.confirm({ title: '操作确认', message: '确定删除这个题库导入批次吗？该批次的题目和练习记录会被删除。若该批次已有题目加入错题本，App 会保留相关图片/PDF 资源，避免错题图片丢失；否则资源会移入 trash。', confirmLabel: '删除批次', danger: true });
     if (!confirmed) return;
     setBusy(true);
     try {
       const result = await window.api.deleteImportBatch(question.import_batch_id, { deleteAssets: true });
-      alert(`已删除题目 ${result.deletedExternalQuestions} 道，练习记录 ${result.deletedAttempts} 条，移动资源 ${result.movedAssets} 个。${result.failedAssets.length ? `\n${result.failedAssets.join('\n')}` : ''}\n删除前备份：${result.backupPath}`);
+      toast(`已删除题目 ${result.deletedExternalQuestions} 道，练习记录 ${result.deletedAttempts} 条，移动资源 ${result.movedAssets} 个。${result.failedAssets.length ? `\n${result.failedAssets.join('\n')}` : ''}\n删除前备份：${result.backupPath}`, 'success');
       await onBatchDeleted();
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -565,6 +569,7 @@ function PracticeSession({
   onExit: () => void;
   onOpenQuestion: (id: number) => void;
 }) {
+  const { toast } = useToast();
   const [sessionQuestions, setSessionQuestions] = useState(initialQuestions);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
@@ -592,7 +597,7 @@ function PracticeSession({
       await window.api.recordExternalQuestionAttempt({ externalQuestionId: current.id, result, note });
       setResults((existing) => ({ ...existing, [current.id]: result }));
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -606,7 +611,7 @@ function PracticeSession({
       setAddedIds((existing) => new Set(existing).add(result.question.id));
       setSessionQuestions((existing) => existing.map((question) => question.id === current.id ? { ...question, added_to_mistakes: 1, created_question_id: result.question.id } : question));
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setBusy(false);
     }
@@ -617,7 +622,7 @@ function PracticeSession({
     try {
       await window.api.openExternalQuestionPaper(current.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -626,7 +631,7 @@ function PracticeSession({
     try {
       await window.api.openExternalQuestionSolutionPdf(current.id);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -719,6 +724,7 @@ function PracticeSession({
 }
 
 export function QuestionBankPage({ onOpenQuestion }: { onOpenQuestion: (id: number) => void }) {
+  const { toast } = useToast();
   const [stats, setStats] = useState<ExternalQuestionStats>(emptyStats);
   const [filters, setFilters] = useState<ExternalQuestionFilters>({ status: 'all' });
   const [questions, setQuestions] = useState<ExternalQuestion[]>([]);
@@ -740,7 +746,7 @@ export function QuestionBankPage({ onOpenQuestion }: { onOpenQuestion: (id: numb
       setStats(nextStats);
       setQuestions(nextQuestions);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setLoading(false);
     }
@@ -794,18 +800,18 @@ export function QuestionBankPage({ onOpenQuestion }: { onOpenQuestion: (id: numb
       const allQuestions = await window.api.listExternalQuestions({});
       const candidates = filterPracticeCandidates(allQuestions, practiceSettings);
       if (!candidates.length) {
-        alert('暂无符合条件的题目，可以放宽筛选条件后再试。');
+        toast('暂无符合条件的题目，可以放宽筛选条件后再试。', 'warning');
         return;
       }
       const picked = pickPracticeQuestions(candidates, practiceSettings);
       if (picked.length < practiceSettings.count) {
-        alert(`符合条件的题目只有 ${picked.length} 道，本次将使用全部可用题目。`);
+        toast(`符合条件的题目只有 ${picked.length} 道，本次将使用全部可用题目。`, 'warning');
       }
       setPracticeQuestions(picked);
       setPracticeSummary(null);
       setPracticeStage('session');
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setLoading(false);
     }

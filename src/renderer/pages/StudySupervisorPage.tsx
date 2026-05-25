@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import type { DailyReview, StudyQuality, StudyRiskLevel, StudySupervisorDashboard } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
 import type { PageKey } from '../components/Shell';
+import { useToast } from '../components/Toast';
 
 interface StudySupervisorPageProps {
   onNavigate: (page: PageKey) => void;
@@ -36,6 +37,7 @@ function unitOf(material: { custom_unit_name?: string | null; progress_unit: str
 }
 
 export function StudySupervisorPage({ onNavigate }: StudySupervisorPageProps) {
+  const { toast } = useToast();
   const [data, setData] = useState<StudySupervisorDashboard | null>(null);
   const [review, setReview] = useState<DailyReview | null>(null);
   const [mood, setMood] = useState<StudyQuality>('一般');
@@ -56,7 +58,7 @@ export function StudySupervisorPage({ onNavigate }: StudySupervisorPageProps) {
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, []);
 
   async function saveReview() {

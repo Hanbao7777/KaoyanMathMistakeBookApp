@@ -6,6 +6,8 @@ import type { MasteryLevel, Question, ReviewLog, ReviewResult } from '../../shar
 import { EmptyState } from '../components/EmptyState';
 import { FormulaText } from '../components/FormulaText';
 import { ImageGallery } from '../components/ImageGallery';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 import { formatDate, today } from '../utils/date';
 
 interface DetailPageProps {
@@ -53,6 +55,8 @@ function FormulaCard({ title, text, tone = 'plain' }: { title: string; text?: st
 }
 
 export function DetailPage({ questionId, reviewMode = false, onBack, onEdit, onOpenKnowledgePoint }: DetailPageProps) {
+  const { toast } = useToast();
+  const modal = useModal();
   const [question, setQuestion] = useState<Question | null>(null);
   const [logs, setLogs] = useState<ReviewLog[]>([]);
   const [showReviewForm, setShowReviewForm] = useState(false);
@@ -71,15 +75,17 @@ export function DetailPage({ questionId, reviewMode = false, onBack, onEdit, onO
 
   useEffect(() => {
     setShowAnswer(!reviewMode);
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, [questionId, reviewMode]);
 
   if (!questionId) return <div className="page">未选择错题</div>;
   if (!question) return <div className="page">加载中...</div>;
 
   async function remove() {
-    if (!question || !confirm('确定删除这道错题吗？')) return;
-    const deleteImages = confirm('是否同时删除对应图片文件？');
+    if (!question) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: '确定删除这道错题吗？', confirmLabel: '删除', danger: true });
+    if (!confirmed) return;
+    const deleteImages = await modal.confirm({ title: '删除图片', message: '是否同时删除对应图片文件？', confirmLabel: '是' });
     await window.api.deleteQuestion(question.id, deleteImages);
     onBack();
   }

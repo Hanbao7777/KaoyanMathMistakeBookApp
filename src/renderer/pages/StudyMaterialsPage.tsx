@@ -2,6 +2,8 @@ import { BookOpenCheck, Edit3, Save, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { StudyMaterial, StudyMaterialInput, StudyMaterialStatus, StudyPriority, StudySubject } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 
 const materialTypes = ['教材', '题册', '真题', '背诵', '笔记', '课程', '讲义', '其他'];
 const units = ['页', '章', '题', '讲', '篇', '单元', '年份', '自定义'];
@@ -33,6 +35,8 @@ function riskText(level?: string) {
 }
 
 export function StudyMaterialsPage() {
+  const { toast } = useToast();
+  const modal = useModal();
   const [subjects, setSubjects] = useState<StudySubject[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
   const [form, setForm] = useState<StudyMaterialInput>(emptyForm);
@@ -54,16 +58,16 @@ export function StudyMaterialsPage() {
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, [subjectFilter, riskFilter]);
 
   async function saveMaterial() {
     if (!form.name.trim()) {
-      alert('请填写资料名称');
+      toast('请填写资料名称', 'warning');
       return;
     }
     if (form.progress_unit === '自定义' && !form.custom_unit_name?.trim()) {
-      alert('自定义进度单位不能为空');
+      toast('自定义进度单位不能为空', 'warning');
       return;
     }
     if (editingId) await window.api.updateStudyMaterial(editingId, form);
@@ -93,7 +97,8 @@ export function StudyMaterialsPage() {
   }
 
   async function remove(material: StudyMaterial) {
-    if (!confirm(`确定删除资料「${material.name}」吗？关联任务不会崩溃，资料会被软删除。`)) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: `确定删除资料「${material.name}」吗？关联任务不会崩溃，资料会被软删除。`, confirmLabel: '删除', danger: true });
+    if (!confirmed) return;
     await window.api.deleteStudyMaterial(material.id);
     await load();
   }

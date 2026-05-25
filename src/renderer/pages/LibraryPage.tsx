@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { CATEGORIES, DIFFICULTIES, ERROR_REASONS, MASTERY_LEVELS, MATH_SUBJECTS, QUESTION_TYPES, SOURCES } from '../../shared/options';
 import type { PdfExportMode, PdfExportResult, Question, QuestionFilters } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
+import { useModal } from '../components/Modal';
 import { QuestionCard } from '../components/QuestionCard';
+import { useToast } from '../components/Toast';
 
 interface LibraryPageProps {
   onOpenQuestion: (id: number) => void;
@@ -120,6 +122,8 @@ function activeFilterBadges(filters: QuestionFilters) {
 }
 
 export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: LibraryPageProps) {
+  const { toast } = useToast();
+  const modal = useModal();
   const [filters, setFilters] = useState<QuestionFilters>(emptyFilters);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -136,7 +140,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, [filters]);
 
   useEffect(() => {
@@ -153,8 +157,9 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
   }), [questions]);
 
   async function remove(id: number) {
-    if (!confirm(T.deleteConfirm)) return;
-    const deleteImages = confirm(T.deleteImagesConfirm);
+    const confirmed = await modal.confirm({ title: '操作确认', message: T.deleteConfirm, confirmLabel: '删除', danger: true });
+    if (!confirmed) return;
+    const deleteImages = await modal.confirm({ title: '删除图片', message: T.deleteImagesConfirm, confirmLabel: '是' });
     await window.api.deleteQuestion(id, deleteImages);
     await load();
   }
@@ -162,7 +167,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
   async function exportPdf() {
     const ids = questions.map((question) => question.id);
     if (exportScope === 'current' && !ids.length) {
-      alert(T.exportEmpty);
+      toast(T.exportEmpty, 'warning');
       return;
     }
     setExporting(true);
@@ -176,7 +181,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
       });
       setExportResult(result);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setExporting(false);
     }

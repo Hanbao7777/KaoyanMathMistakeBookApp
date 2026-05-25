@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { Question } from '../../shared/types';
 import { QuestionForm } from '../components/QuestionForm';
+import { useToast } from '../components/Toast';
 
 interface AddEditPageProps {
   editingId: number | null;
@@ -9,6 +10,7 @@ interface AddEditPageProps {
 }
 
 export function AddEditPage({ editingId, onSaved, onCancel }: AddEditPageProps) {
+  const { toast } = useToast();
   const [question, setQuestion] = useState<Question | null>(null);
 
   useEffect(() => {
@@ -16,7 +18,7 @@ export function AddEditPage({ editingId, onSaved, onCancel }: AddEditPageProps) 
       setQuestion(null);
       return;
     }
-    window.api.getQuestion(editingId).then(setQuestion).catch((error) => alert(error.message));
+    window.api.getQuestion(editingId).then(setQuestion).catch((error) => toast(error.message, 'error'));
   }, [editingId]);
 
   if (editingId && !question) return <div className="page">加载中...</div>;

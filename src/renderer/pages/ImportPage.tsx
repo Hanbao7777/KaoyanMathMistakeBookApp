@@ -1,6 +1,7 @@
 import { BookOpen, CheckCircle2, Download, FileJson, FileQuestion, FileSpreadsheet, FileUp, PackageOpen, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import type { KnowledgeMapImportResult, QuestionBankImportResult, StructuredImportPreview, StructuredImportResult } from '../../shared/types';
+import { useToast } from '../components/Toast';
 
 function FileStructure({ lines }: { lines: string[] }) {
   return (
@@ -173,6 +174,7 @@ function QuestionBankResultPanel({ result }: { result: QuestionBankImportResult 
 }
 
 export function ImportPage() {
+  const { toast } = useToast();
   const [preview, setPreview] = useState<StructuredImportPreview | null>(null);
   const [result, setResult] = useState<StructuredImportResult | null>(null);
   const [knowledgeResult, setKnowledgeResult] = useState<KnowledgeMapImportResult | null>(null);
@@ -195,7 +197,7 @@ export function ImportPage() {
             : await window.api.prepareZipImport();
       if (next) setPreview(next);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setLoading(false);
     }
@@ -217,7 +219,7 @@ export function ImportPage() {
       const next = await window.api.importKnowledgeMapZip();
       if (next) setKnowledgeResult(next);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setLoading(false);
     }
@@ -246,7 +248,7 @@ export function ImportPage() {
       const next = await window.api.importQuestionBankZip();
       if (next) setQuestionBankResult(next);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setLoading(false);
     }

@@ -2,6 +2,8 @@ import { CheckCircle2, ClipboardList, Plus, SkipForward, Trash2 } from 'lucide-r
 import { useEffect, useMemo, useState } from 'react';
 import type { StudyMaterial, StudyPriority, StudySubject, StudyTask, StudyTaskInput, StudyTaskStatus } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 
 const taskTypes = ['看课', '刷题', '整理错题', '复习错题', '背诵', '阅读', '做笔记', '模拟测试', '整理资料', '其他'];
 const statuses: StudyTaskStatus[] = ['未开始', '进行中', '部分完成', '已完成', '已跳过'];
@@ -37,6 +39,8 @@ function statusTone(status: StudyTaskStatus) {
 }
 
 export function DailyPlanPage() {
+  const { toast } = useToast();
+  const modal = useModal();
   const [subjects, setSubjects] = useState<StudySubject[]>([]);
   const [materials, setMaterials] = useState<StudyMaterial[]>([]);
   const [tasks, setTasks] = useState<StudyTask[]>([]);
@@ -62,7 +66,7 @@ export function DailyPlanPage() {
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, []);
 
   const availableMaterials = useMemo(
@@ -72,7 +76,7 @@ export function DailyPlanPage() {
 
   async function saveTask() {
     if (!form.title.trim()) {
-      alert('请填写任务标题');
+      toast('请填写任务标题', 'warning');
       return;
     }
     try {
@@ -83,7 +87,7 @@ export function DailyPlanPage() {
       setMessage(editingId ? '任务已更新' : '任务已添加');
       await load();
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -153,7 +157,8 @@ export function DailyPlanPage() {
   }
 
   async function deleteTask(task: StudyTask) {
-    if (!confirm(`确定删除任务「${task.title}」吗？`)) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: `确定删除任务「${task.title}」吗？`, confirmLabel: '删除', danger: true });
+    if (!confirmed) return;
     await window.api.deleteStudyTask(task.id);
     await load();
   }
@@ -301,7 +306,7 @@ export function DailyPlanPage() {
             ) : null}
 
             <div className="form-actions">
-              <button className="primary-button" type="button" onClick={() => completeTask().catch((error) => alert(error instanceof Error ? error.message : String(error)))}>确认完成</button>
+              <button className="primary-button" type="button" onClick={() => completeTask().catch((error) => toast(error instanceof Error ? error.message : String(error), 'error'))}>确认完成</button>
               <button className="secondary-button" type="button" onClick={() => setPendingCompleteTask(null)}>取消</button>
             </div>
           </div>

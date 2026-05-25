@@ -1,6 +1,7 @@
 import { AlertTriangle, BarChart3, BookOpen, CheckCircle2, Target, TrendingUp } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData, KnowledgePointReviewStats, Question, QuestionFilters, StatsData } from '../../shared/types';
+import { useToast } from '../components/Toast';
 
 interface StatsPageProps {
   onOpenLibrary?: (filters?: QuestionFilters) => void;
@@ -137,6 +138,7 @@ function focusQuestions(questions: Question[]) {
 }
 
 export function StatsPage({ onOpenLibrary, onOpenKnowledgePoint, onOpenQuestion, onOpenImport, onOpenReview }: StatsPageProps) {
+  const { toast } = useToast();
   const [stats, setStats] = useState<StatsData | null>(null);
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [knowledgeStats, setKnowledgeStats] = useState<KnowledgePointReviewStats[]>([]);
@@ -155,7 +157,7 @@ export function StatsPage({ onOpenLibrary, onOpenKnowledgePoint, onOpenQuestion,
         setKnowledgeStats(nextKnowledgeStats);
         setQuestions(nextQuestions);
       })
-      .catch((error) => alert(error.message));
+      .catch((error) => toast(error.message, 'error'));
   }, []);
 
   const masteryItems = useMemo(() => masteryDistribution(questions), [questions]);

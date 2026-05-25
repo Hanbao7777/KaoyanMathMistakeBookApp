@@ -5,6 +5,7 @@ import type { KnowledgePointReviewStats, KnowledgeReviewMode, Question, ReviewBu
 import { EmptyState } from '../components/EmptyState';
 import { FormulaText } from '../components/FormulaText';
 import { ImageGallery } from '../components/ImageGallery';
+import { useToast } from '../components/Toast';
 import { formatDate } from '../utils/date';
 
 interface ReviewPageProps {
@@ -175,6 +176,7 @@ function AnswerCard({ title, text, tone }: { title: string; text?: string; tone:
 }
 
 export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetConsumed }: ReviewPageProps) {
+  const { toast } = useToast();
   const [buckets, setBuckets] = useState<ReviewBuckets | null>(null);
   const [knowledgeStats, setKnowledgeStats] = useState<KnowledgePointReviewStats[]>([]);
   const [knowledgePicker, setKnowledgePicker] = useState(false);
@@ -203,7 +205,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, []);
 
   useEffect(() => {
@@ -214,7 +216,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
       .then((statsValue) => {
         if (statsValue) setActiveKnowledge(statsValue);
       })
-      .catch((error) => alert(error.message))
+      .catch((error) => toast(error.message, 'error'))
       .finally(() => onKnowledgeTargetConsumed?.());
   }, [knowledgeNodeId, includeChildren, onKnowledgeTargetConsumed]);
 
@@ -230,7 +232,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
 
   async function beginSession(title: string, questions: Question[], meta: SessionMeta = {}) {
     if (!questions.length) {
-      alert(title + ' ' + T.noQuestions);
+      toast(title + ' ' + T.noQuestions, 'warning');
       return;
     }
     setSessionTitle(title);
@@ -272,7 +274,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
         modeLabel: mode === 'due' ? T.dueMode : T.allMode
       });
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -295,7 +297,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
         if (refreshed) setActiveKnowledge(refreshed);
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -323,7 +325,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
     setFinished(false);
     setKnowledgePicker(false);
     setKnowledgeMessage('');
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }
 
   const overview = useMemo(() => {

@@ -1,6 +1,8 @@
 ﻿import { Database, Download, FileSpreadsheet, FolderCog, FolderOpen, HardDriveDownload, Info, RotateCcw, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { AppPaths, DatabaseBackupInfo, ImportBatch, ImportBatchDetail, LegacyExternalQuestionGroup, StudySettings } from '../../shared/types';
+import { useModal } from '../components/Modal';
+import { useToast } from '../components/Toast';
 
 const T = {
   loading: '\u52a0\u8f7d\u4e2d...',
@@ -56,6 +58,8 @@ function formatTime(value: string) {
 }
 
 export function SettingsPage() {
+  const { toast } = useToast();
+  const modal = useModal();
   const [paths, setPaths] = useState<AppPaths | null>(null);
   const [backups, setBackups] = useState<DatabaseBackupInfo[]>([]);
   const [batches, setBatches] = useState<ImportBatch[]>([]);
@@ -83,7 +87,7 @@ export function SettingsPage() {
   }
 
   useEffect(() => {
-    load().catch((error) => alert(error.message));
+    load().catch((error) => toast(error.message, 'error'));
   }, []);
 
   async function exportJson() {
@@ -99,15 +103,17 @@ export function SettingsPage() {
   async function importJson() {
     const file = await window.api.chooseJson();
     if (!file) return;
-    if (!confirm(T.jsonImportConfirm)) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: T.jsonImportConfirm, confirmLabel: '确认导入', danger: true });
+    if (!confirmed) return;
     const result = await window.api.importData(file);
     setMessage(`导入完成，已创建备份：${result.backup}`);
     await load();
   }
 
   async function clearData() {
-    if (!confirm(T.clearConfirm)) return;
-    const deleteImages = confirm(T.clearImagesConfirm);
+    const confirmed = await modal.confirm({ title: '操作确认', message: T.clearConfirm, confirmLabel: '清空', danger: true });
+    if (!confirmed) return;
+    const deleteImages = await modal.confirm({ title: '删除图片', message: T.clearImagesConfirm, confirmLabel: '是' });
     await window.api.clearAllData(deleteImages);
     setMessage('已清空全部数据');
     await load();
@@ -116,7 +122,7 @@ export function SettingsPage() {
   async function changeRoot() {
     const root = await window.api.chooseRoot();
     if (!root) return;
-    const migrate = confirm(T.migrateConfirm);
+    const migrate = await modal.confirm({ title: '迁移数据', message: T.migrateConfirm, confirmLabel: '迁移' });
     const next = await window.api.setRoot(root, migrate);
     setPaths(next);
     setMessage(`数据保存位置已更改为：${next.root}`);
@@ -134,14 +140,16 @@ export function SettingsPage() {
   }
 
   async function restoreBackup(fileName: string) {
-    if (!confirm(T.restoreConfirm)) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: T.restoreConfirm, confirmLabel: '恢复', danger: true });
+    if (!confirmed) return;
     const result = await window.api.restoreDatabaseBackup(fileName);
     setMessage(`${result.message} 恢复来源：${result.restoredFrom}；恢复前保护备份：${result.beforeRestoreBackup}`);
     await load();
   }
 
   async function deleteBackup(fileName: string) {
-    if (!confirm(T.deleteConfirm)) return;
+    const confirmed = await modal.confirm({ title: '操作确认', message: T.deleteConfirm, confirmLabel: '删除', danger: true });
+    if (!confirmed) return;
     await window.api.deleteDatabaseBackup(fileName);
     setMessage(`已删除备份：${fileName}`);
     await load();
