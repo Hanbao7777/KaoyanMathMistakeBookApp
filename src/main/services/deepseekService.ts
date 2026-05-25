@@ -104,23 +104,40 @@ function buildQuestion(parsed: Record<string, unknown>, rawOcr: string): AiStruc
 }
 
 function extractJson(text: string): Record<string, unknown> {
-  const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*?\})/);
-  const jsonText = match ? match[1].trim() : text.trim();
+  // 1) Try raw response directly (most common case)
+  try { return JSON.parse(text.trim()); } catch { /* fall through */ }
 
-  // Truncation detection: JSON response must end with } (not counting whitespace)
-  if (!jsonText.trimEnd().endsWith('}')) {
-    throw new Error('AI 输出被截断（可能 token 不足），请重试');
+  // 2) Extract from ```json ... ``` wrapper
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    try { return JSON.parse(fenceMatch[1].trim()); } catch { /* fall through */ }
+    return extractJson(fenceMatch[1].trim()); // Recurse without fence
   }
 
-  try {
-    return JSON.parse(jsonText);
-  } catch {
-    // Try recovery: truncated JSON — append missing closing braces
-    for (const suffix of ['}', '"}', ']"}', ']}"]}']) {
-      try { return JSON.parse(jsonText + suffix); } catch { /* keep trying */ }
+  // 3) Balanced-brace extraction: find first { and track depth
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('AI 返回格式异常，未找到 JSON 对象');
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\') { escape = true; continue; }
+    if (ch === '"') { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const extracted = text.slice(start, i + 1);
+        return JSON.parse(extracted);
+      }
     }
-    throw new Error('JSON 解析失败');
   }
+
+  throw new Error('AI 输出被截断（可能 token 不足），请重试');
 }
 
 export async function structureQuestion(ocrTexts: string[]): Promise<AiStructuredQuestion> {
