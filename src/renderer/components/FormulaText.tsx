@@ -50,16 +50,50 @@ export function latexNormalize(input: string) {
     .replace(/\\frac\s*([A-Za-z0-9])\s*(\\[A-Za-z]+|[A-Za-z0-9])/g, '\\frac{$1}{$2}');
 }
 
+function autoCloseLatex(formula: string): string {
+  let result = formula;
+  // Strip trailing incomplete commands (ending with backslash or broken \frac etc)
+  result = result.replace(/\\(?:frac|sqrt|lim|sum|int|left|right|cdot|times|leq|geq|neq|sin|cos|tan|ln|arctan|pi|theta|alpha|beta|gamma|infty|to|ldots|cdots)?\s*\{?\s*\[?\s*\(?\s*$/g, '');
+  // Auto-close unmatched braces
+  let depth = 0;
+  for (const ch of result) {
+    if (ch === '{') depth++;
+    if (ch === '}') depth--;
+  }
+  if (depth > 0) result += '}'.repeat(depth);
+  // Fix \frac{X} without second arg → \frac{X}{?}
+  result = result.replace(/\\frac\{([^}]*)\}(?!\{)/g, '\\frac{$1}{?}');
+  // Fix unclosed $ and $$ delimiters
+  const dollarCount = (result.match(/(?<!\$)\$(?!\$)/g) || []).length;
+  if (dollarCount % 2 === 1) result += '$';
+  const ddCount = (result.match(/\$\$/g) || []).length;
+  if (ddCount % 2 === 1) result += '$$';
+  return result;
+}
+
 function renderFormulaHtml(formula: string, displayMode: boolean) {
+  const normalized = latexNormalize(formula);
   try {
-    return katex.renderToString(latexNormalize(formula), {
+    return katex.renderToString(normalized, {
       displayMode,
       throwOnError: true,
       strict: false,
       output: 'html'
     });
-  } catch (error) {
-    console.warn('[FormulaText] KaTeX render failed:', { formula, error });
+  } catch {
+    // Auto-close unclosed LaTeX and retry
+    const closed = autoCloseLatex(normalized);
+    if (closed !== normalized) {
+      try {
+        return katex.renderToString(closed, {
+          displayMode,
+          throwOnError: true,
+          strict: false,
+          output: 'html'
+        });
+      } catch { /* still broken, fall through */ }
+    }
+    console.warn('[FormulaText] KaTeX render failed:', { formula, closed });
     return null;
   }
 }
@@ -185,12 +219,12 @@ function renderSegment(segment: Segment, key: string) {
 
   const html = renderFormulaHtml(segment.value, segment.displayMode);
   if (!html) {
-    return (
-      <span key={key} className="formula-error">
-        {segment.original}
-        <small>公式格式可能有误。</small>
-      </span>
-    );
+    // KaTeX couldn't render — show sanitized text without broken LaTeX markup
+    const clean = segment.value
+      .replace(/\\[a-zA-Z]+\{?/g, '')
+      .replace(/[{}^_]/g, '')
+      .trim();
+    return <span key={key} className="formula-text">{clean || '?'}</span>;
   }
 
   const Tag = segment.displayMode ? 'div' : 'span';

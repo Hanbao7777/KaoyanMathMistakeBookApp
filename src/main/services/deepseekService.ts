@@ -33,7 +33,7 @@ export async function saveDeepSeekSettings(settings: DeepSeekSettings): Promise<
   return settings;
 }
 
-async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<string> {
+async function callDeepSeek(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {
   const settings = await getDeepSeekSettings();
   if (!settings.apiKey) throw new Error('请先在设置中配置 DeepSeek API Key');
 
@@ -50,7 +50,7 @@ async function callDeepSeek(systemPrompt: string, userMessage: string): Promise<
         { role: 'user', content: userMessage }
       ],
       temperature: 0.3,
-      max_tokens: 8192
+      max_tokens: maxTokens
     })
   });
 
@@ -106,6 +106,12 @@ function buildQuestion(parsed: Record<string, unknown>, rawOcr: string): AiStruc
 function extractJson(text: string): Record<string, unknown> {
   const match = text.match(/```(?:json)?\s*([\s\S]*?)```/) || text.match(/(\{[\s\S]*?\})/);
   const jsonText = match ? match[1].trim() : text.trim();
+
+  // Truncation detection: JSON response must end with } (not counting whitespace)
+  if (!jsonText.trimEnd().endsWith('}')) {
+    throw new Error('AI 输出被截断（可能 token 不足），请重试');
+  }
+
   try {
     return JSON.parse(jsonText);
   } catch {
@@ -119,7 +125,7 @@ function extractJson(text: string): Record<string, unknown> {
 
 export async function structureQuestion(ocrTexts: string[]): Promise<AiStructuredQuestion> {
   const combined = ocrTexts.map((t, i) => `[图片 ${i + 1} OCR 文本]\n${t}`).join('\n\n---\n\n');
-  const result = await callDeepSeek(STRUCTURE_SYSTEM_PROMPT, combined);
+  const result = await callDeepSeek(STRUCTURE_SYSTEM_PROMPT, combined, 16384);
   try {
     const parsed = extractJson(result);
     return buildQuestion(parsed, combined);
