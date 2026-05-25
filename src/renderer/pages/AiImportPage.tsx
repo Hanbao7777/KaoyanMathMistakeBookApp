@@ -255,11 +255,11 @@ export function AiImportPage() {
             </div>
             <div className="ai-confirm-field">
               <strong>答案</strong>
-              <span>{aiResult.answer || '（未识别）'}</span>
+              <div className="ai-confirm-content"><FormulaText text={aiResult.answer || '（未识别）'} /></div>
             </div>
             <div className="ai-confirm-field">
               <strong>错误思考</strong>
-              <span>{aiResult.wrong_thinking || '（未识别）'}</span>
+              <div className="ai-confirm-content"><FormulaText text={aiResult.wrong_thinking || '（未识别）'} /></div>
             </div>
             {aiResult.tags.length ? (
               <div className="ai-confirm-field" style={{ gridColumn: '1 / -1' }}>
