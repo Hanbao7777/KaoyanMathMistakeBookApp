@@ -49,9 +49,10 @@ function startOcrProcess(): Promise<void> {
 
     log(`Starting Python: ${pythonPath} ${scriptPath}`);
 
-    ocrProcess = spawn(pythonPath, [scriptPath], {
+    ocrProcess = spawn(pythonPath, ['-u', scriptPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true
+      windowsHide: true,
+      env: { ...process.env, PYTHONUNBUFFERED: '1', GLOG_minloglevel: '3' }
     });
 
     let buffer = '';
@@ -122,11 +123,11 @@ function startOcrProcess(): Promise<void> {
 
     setTimeout(() => {
       if (readyPromise !== null) {
-        lastError = 'PaddleOCR 启动超时（60秒）';
+        lastError = 'PaddleOCR 启动超时（180秒）。模型首次加载可能较慢，请重试。';
         reject(new Error(lastError));
         killOcrProcess();
       }
-    }, 60000);
+    }, 180000);
   });
 
   return readyPromise;

@@ -23,11 +23,9 @@ def main():
         sys.exit(1)
 
     try:
+        import os as _os
+        _os.environ['GLOG_minloglevel'] = '3'
         ocr = PaddleOCR(lang='ch', use_angle_cls=True, show_log=False)
-        # Warm up with a dummy recognition to preload models
-        import numpy as np
-        dummy = np.zeros((100, 100, 3), dtype=np.uint8)
-        ocr.ocr(dummy)
     except Exception as e:
         print(json.dumps({"type": "init_error", "message": f"PaddleOCR init failed: {e}"}))
         sys.stdout.flush()
