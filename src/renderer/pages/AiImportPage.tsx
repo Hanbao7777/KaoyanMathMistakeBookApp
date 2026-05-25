@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronRight, Eye, FileUp, Load
 import { useState } from 'react';
 import type { AiStructuredQuestion, OcrResult } from '../../shared/types';
 import { QuestionForm } from '../components/QuestionForm';
+import { FormulaText } from '../components/FormulaText';
 import { useToast } from '../components/Toast';
 
 type WizardStep = 'select' | 'processing' | 'confirm' | 'edit' | 'done';
@@ -246,11 +247,11 @@ export function AiImportPage() {
             </div>
             <div className="ai-confirm-field" style={{ gridColumn: '1 / -1' }}>
               <strong>题目内容</strong>
-              <p className="ai-confirm-content">{aiResult.content || '（未识别）'}</p>
+              <div className="ai-confirm-content"><FormulaText text={aiResult.content || '（未识别）'} /></div>
             </div>
             <div className="ai-confirm-field" style={{ gridColumn: '1 / -1' }}>
               <strong>正确解析</strong>
-              <p className="ai-confirm-content">{aiResult.correct_solution || '（未识别）'}</p>
+              <div className="ai-confirm-content"><FormulaText text={aiResult.correct_solution || '（未识别）'} /></div>
             </div>
             <div className="ai-confirm-field">
               <strong>答案</strong>

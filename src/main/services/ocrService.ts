@@ -41,7 +41,8 @@ export async function runOcr(imagePaths: string[]): Promise<OcrResult[]> {
             timeout: 180000,
             maxBuffer: 1024 * 1024,
             windowsHide: true,
-            env: { ...process.env, PYTHONUNBUFFERED: '1', GLOG_minloglevel: '3' }
+            encoding: 'utf8',
+            env: { ...process.env, PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', GLOG_minloglevel: '3' }
           },
           (error, stdout, stderr) => {
             if (error) {
