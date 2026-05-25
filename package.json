@@ -24,6 +24,12 @@
       "package.json",
       "node_modules/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "scripts",
+        "to": "scripts"
+      }
+    ],
     "asarUnpack": [
       "node_modules/sql.js/dist/sql-wasm.wasm"
     ],
