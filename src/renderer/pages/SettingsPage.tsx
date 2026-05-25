@@ -1,6 +1,6 @@
 ﻿import { Database, Download, FileSpreadsheet, FolderCog, FolderOpen, HardDriveDownload, Info, RotateCcw, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { AppPaths, DatabaseBackupInfo, ImportBatch, ImportBatchDetail, LegacyExternalQuestionGroup, StudySettings } from '../../shared/types';
+import type { AppPaths, DatabaseBackupInfo, DeepSeekSettings, ImportBatch, ImportBatchDetail, LegacyExternalQuestionGroup, StudySettings } from '../../shared/types';
 import { useModal } from '../components/Modal';
 import { useToast } from '../components/Toast';
 
@@ -70,20 +70,25 @@ export function SettingsPage() {
   const [pendingDeleteLegacyKey, setPendingDeleteLegacyKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [studySettings, setStudySettings] = useState<StudySettings | null>(null);
+  const [deepSeekSettings, setDeepSeekSettings] = useState<DeepSeekSettings | null>(null);
+  const [pythonPath, setPythonPathState] = useState('');
+  const [pythonStatus, setPythonStatus] = useState<'unknown' | 'checking' | 'ok' | 'error'>('unknown');
 
   async function load() {
-    const [nextPaths, nextBackups, nextBatches, nextLegacyGroups, nextStudySettings] = await Promise.all([
+    const [nextPaths, nextBackups, nextBatches, nextLegacyGroups, nextStudySettings, nextDeepSeek] = await Promise.all([
       window.api.getPaths(),
       window.api.listDatabaseBackups(),
       window.api.listImportBatches(),
       window.api.listLegacyExternalQuestionGroups(),
-      window.api.getStudySettings()
+      window.api.getStudySettings(),
+      window.api.getDeepSeekSettings()
     ]);
     setPaths(nextPaths);
     setBackups(nextBackups);
     setBatches(nextBatches);
     setLegacyGroups(nextLegacyGroups);
     setStudySettings(nextStudySettings);
+    setDeepSeekSettings(nextDeepSeek);
   }
 
   useEffect(() => {
@@ -231,6 +236,96 @@ export function SettingsPage() {
           <button className="settings-card" type="button" onClick={changeRoot}><FolderCog size={22} /><strong>{T.changeRoot}</strong><span>{T.changeRootDesc}</span></button>
           <button className="settings-card danger" type="button" onClick={clearData}><Trash2 size={22} /><strong>{T.clear}</strong><span>{T.clearDesc}</span></button>
         </div>
+      </section>
+
+      {deepSeekSettings ? (
+        <section className="settings-section">
+          <div className="knowledge-card-header">
+            <div>
+              <h2>DeepSeek AI 设置</h2>
+              <p className="muted-text">配置 API Key 后即可使用 AI 智能导入和错因诊断。Key 仅存储在本地数据库中，不会上传。</p>
+            </div>
+            <button className="primary-button" type="button" onClick={async () => {
+              if (!deepSeekSettings) return;
+              await window.api.saveDeepSeekSettings(deepSeekSettings);
+              setMessage('DeepSeek 设置已保存');
+            }}>保存 AI 设置</button>
+          </div>
+          <div className="study-form-grid">
+            <label>
+              API Key
+              <input
+                type="password"
+                value={deepSeekSettings.apiKey}
+                onChange={(event) => setDeepSeekSettings({ ...deepSeekSettings, apiKey: event.target.value })}
+                placeholder="sk-..."
+              />
+            </label>
+            <label>
+              模型
+              <select
+                value={deepSeekSettings.model}
+                onChange={(event) => setDeepSeekSettings({ ...deepSeekSettings, model: event.target.value })}
+              >
+                <option value="deepseek-chat">deepseek-chat</option>
+                <option value="deepseek-reasoner">deepseek-reasoner (R1)</option>
+              </select>
+            </label>
+            <label>
+              API Base URL
+              <input
+                value={deepSeekSettings.baseUrl}
+                onChange={(event) => setDeepSeekSettings({ ...deepSeekSettings, baseUrl: event.target.value })}
+                placeholder="https://api.deepseek.com/v1"
+              />
+            </label>
+          </div>
+        </section>
+      ) : null}
+
+      <section className="settings-section">
+        <div className="knowledge-card-header">
+          <div>
+            <h2>PaddleOCR 环境</h2>
+            <p className="muted-text">OCR 文字识别需要 Python 3.9+ 和 PaddleOCR。请先执行 pip install paddlepaddle paddleocr。</p>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={async () => {
+              setPythonStatus('checking');
+              try {
+                await window.api.checkPythonEnv();
+                setPythonStatus('ok');
+                setMessage('Python + PaddleOCR 环境正常');
+              } catch (error) {
+                setPythonStatus('error');
+                setMessage(`环境检测失败：${error instanceof Error ? error.message : String(error)}`);
+              }
+            }}
+            disabled={pythonStatus === 'checking'}
+          >
+            {pythonStatus === 'checking' ? '检测中...' : '检测环境'}
+          </button>
+        </div>
+        <div className="study-form-grid">
+          <label>
+            Python 路径
+            <input
+              value={pythonPath}
+              onChange={(event) => setPythonPathState(event.target.value)}
+              placeholder="python（默认使用系统 PATH 中的 python）"
+            />
+          </label>
+        </div>
+        {pythonStatus === 'ok' ? <p className="success-box">PaddleOCR 环境正常，可以使用 AI 导入功能。</p> : null}
+        {pythonStatus === 'error' ? (
+          <div className="warning-box">
+            <strong>PaddleOCR 未就绪</strong>
+            <p>请确保已安装 Python 3.9+ 并添加到系统 PATH，然后执行：pip install paddlepaddle paddleocr</p>
+          </div>
+        ) : null}
+        <p className="muted-text">OCR 完全在本地运行，图片不会离开你的电脑。</p>
       </section>
 
       {studySettings ? (
