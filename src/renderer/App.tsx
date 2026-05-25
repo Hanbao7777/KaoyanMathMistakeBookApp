@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { QuestionFilters } from '../shared/types';
 import { Shell, type PageKey } from './components/Shell';
+import { ModalProvider } from './components/Modal';
 import { ToastProvider } from './components/Toast';
 import { AddEditPage } from './pages/AddEditPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -19,6 +20,7 @@ import { StudySupervisorPage } from './pages/StudySupervisorPage';
 import { defaultFocusTimerState, type FocusTimerPatch, type FocusTimerState } from './types/focusTimer';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
+import './styles/modal.css';
 import './styles/toast.css';
 
 const focusTimerStorageKey = 'kaoyan-focus-timer-state-v1';
@@ -154,6 +156,7 @@ export default function App() {
 
   return (
     <ToastProvider>
+      <ModalProvider>
       <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls}>
         {page === 'dashboard' ? <DashboardPage onAdd={() => navigate('add')} onReview={() => navigate('review')} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} onOpenKnowledgePoint={openKnowledgePoint} onOpenKnowledgeMap={() => navigate('knowledgeMap')} onOpenImport={() => navigate('import')} onOpenLibrary={openLibraryWithFilters} onOpenStudyPage={navigate} /> : null}
         {page === 'studySupervisor' ? <StudySupervisorPage onNavigate={navigate} /> : null}
@@ -170,6 +173,7 @@ export default function App() {
         {page === 'import' ? <ImportPage /> : null}
         {page === 'settings' ? <SettingsPage /> : null}
       </Shell>
+      </ModalProvider>
     </ToastProvider>
   );
 }
