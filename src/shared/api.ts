@@ -59,7 +59,11 @@ import type {
   StudyTask,
   StudyTaskFilters,
   StudyTaskInput,
-  WindowState
+  WindowState,
+  DeepSeekSettings,
+  OcrResult,
+  AiStructuredQuestion,
+  AiDiagnosisResult
 } from './types';
 
 export interface AppApi {
@@ -153,5 +157,20 @@ export interface AppApi {
   getStudySupervisorDashboard: (date?: string) => Promise<StudySupervisorDashboard>;
   saveWindowState: (state: WindowState) => void;
   loadWindowState: () => Promise<WindowState | null>;
+
+  // DeepSeek settings
+  getDeepSeekSettings: () => Promise<DeepSeekSettings>;
+  saveDeepSeekSettings: (input: DeepSeekSettings) => Promise<DeepSeekSettings>;
+
+  // OCR
+  runOcr: (imagePaths: string[]) => Promise<OcrResult[]>;
+  checkPythonEnv: () => Promise<void>;
+
+  // AI structuring
+  structureQuestion: (ocrTexts: string[]) => Promise<AiStructuredQuestion>;
+
+  // AI error diagnosis
+  diagnoseError: (questionId: number) => Promise<AiDiagnosisResult>;
+
   toFileUrl: (filePath: string) => string;
 }

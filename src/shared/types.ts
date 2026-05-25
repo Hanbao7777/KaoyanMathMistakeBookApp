@@ -801,3 +801,37 @@ export interface WindowState {
   height: number;
 }
 
+export interface DeepSeekSettings {
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+}
+
+export interface OcrResult {
+  text: string;
+  confidence: number;
+  processingTimeMs: number;
+}
+
+export interface AiStructuredQuestion {
+  title: string;
+  content: string;
+  wrong_thinking: string;
+  correct_solution: string;
+  answer: string;
+  subject: string;
+  category: string;
+  question_type: string;
+  error_reason: string;
+  difficulty: string;
+  tags: string[];
+  knowledge_points: string[];
+  raw_ocr_text: string;
+}
+
+export interface AiDiagnosisResult {
+  knowledgeBlindSpot: string;
+  suggestedKnowledgePoints: string[];
+  suggestedReviewDirection: string;
+  rawResponse: string;
+}

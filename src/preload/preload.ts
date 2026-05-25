@@ -3,11 +3,14 @@ import type { AppApi } from '../shared/api';
 import type {
   AppPaths,
   AddExternalQuestionToMistakesResult,
+  AiDiagnosisResult,
+  AiStructuredQuestion,
   BindTextbookPdfResult,
   DashboardData,
   DatabaseBackupInfo,
   DatabaseBackupKind,
   DatabaseBackupResult,
+  DeepSeekSettings,
   DeleteExternalQuestionBatchResult,
   DeleteImportBatchOptions,
   DeleteImportBatchResult,
@@ -29,6 +32,7 @@ import type {
   KnowledgeRematchResult,
   KnowledgeReviewMode,
   MasteryLevel,
+  OcrResult,
   OpenTextbookResult,
   PdfExportOptions,
   PdfExportResult,
@@ -163,6 +167,21 @@ const api: AppApi = {
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
   saveWindowState: (state: WindowState) => ipcRenderer.send('window:saveState', state),
   loadWindowState: () => invoke<WindowState | null>('window:loadState'),
+
+  // DeepSeek settings
+  getDeepSeekSettings: () => invoke<DeepSeekSettings>('deepseek:getSettings'),
+  saveDeepSeekSettings: (input: DeepSeekSettings) => invoke<DeepSeekSettings>('deepseek:saveSettings', input),
+
+  // OCR
+  runOcr: (imagePaths: string[]) => invoke<OcrResult[]>('ocr:run', imagePaths),
+  checkPythonEnv: () => invoke<void>('ocr:checkPythonEnv'),
+
+  // AI structuring
+  structureQuestion: (ocrTexts: string[]) => invoke<AiStructuredQuestion>('ai:structureQuestion', ocrTexts),
+
+  // AI error diagnosis
+  diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('ai:diagnoseError', questionId),
+
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };
 
