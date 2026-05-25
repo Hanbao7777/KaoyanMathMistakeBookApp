@@ -194,6 +194,10 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   const [feedback, setFeedback] = useState<SubmitFeedback | null>(null);
   const [undoData, setUndoData] = useState<{ questionId: number; previousMastery: string | null } | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const submitRef = useRef(submit);
+  submitRef.current = submit;
+  const nextQuestionRef = useRef(nextQuestion);
+  nextQuestionRef.current = nextQuestion;
   const [stats, setStats] = useState<SessionStats>(emptyStats);
   const [finished, setFinished] = useState(false);
 
@@ -351,6 +355,33 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
     ];
   }, [buckets]);
 
+  useEffect(() => {
+    if (!inSession || finished) return;
+
+    function handleKey(event: KeyboardEvent) {
+      const tag = (event.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (event.key === ' ') {
+        event.preventDefault();
+        if (!showAnswer) {
+          setShowAnswer(true);
+        }
+      } else if (event.key === '1' && showAnswer && !feedback) {
+        submitRef.current('correct');
+      } else if (event.key === '2' && showAnswer && !feedback) {
+        submitRef.current('wrong');
+      } else if (event.key === '3' && showAnswer && !feedback) {
+        submitRef.current('no_idea');
+      } else if ((event.key === 'n' || event.key === 'N') && feedback) {
+        nextQuestionRef.current();
+      }
+    }
+
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [inSession, finished, showAnswer, feedback, currentIndex]);
+
   if (!buckets) return <div className="page">{T.loading}</div>;
 
   if (finished) {
@@ -374,33 +405,6 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
       </div>
     );
   }
-
-  useEffect(() => {
-    if (!inSession || finished) return;
-
-    function handleKey(event: KeyboardEvent) {
-      const tag = (event.target as HTMLElement).tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-
-      if (event.key === ' ') {
-        event.preventDefault();
-        if (!showAnswer) {
-          setShowAnswer(true);
-        }
-      } else if (event.key === '1' && showAnswer && !feedback) {
-        submit('correct');
-      } else if (event.key === '2' && showAnswer && !feedback) {
-        submit('wrong');
-      } else if (event.key === '3' && showAnswer && !feedback) {
-        submit('no_idea');
-      } else if ((event.key === 'n' || event.key === 'N') && feedback) {
-        nextQuestion();
-      }
-    }
-
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [inSession, finished, showAnswer, feedback, currentIndex]);
 
   if (inSession && current) {
     const hasSubmitted = Boolean(feedback);
