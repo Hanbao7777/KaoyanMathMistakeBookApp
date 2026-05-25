@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
 import { initializeDatabase } from './services/databaseService';
 import { persistDatabase, resetDatabaseConnection } from './services/databaseService';
+import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
 import { ensureDailyAutoBackup } from './services/backupService';
@@ -181,5 +182,6 @@ app.on('will-quit', () => {
   } catch {
     // Protocol may not have been registered if startup failed early.
   }
+  killOcrProcess();
   resetDatabaseConnection();
 });
