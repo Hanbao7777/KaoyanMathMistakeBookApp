@@ -1,5 +1,5 @@
 ﻿import { BookOpen, CheckCircle2, Eye, HelpCircle, Search, Shuffle, Target, XCircle } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { KnowledgePointReviewStats, KnowledgeReviewMode, Question, ReviewBuckets, ReviewResultV2 } from '../../shared/types';
 import { EmptyState } from '../components/EmptyState';
@@ -111,7 +111,7 @@ const T = {
   recorded: '已记录',
   masteryChange: '掌握程度',
   next: '下次复习',
-  shortcutHint: '提示：空格显示答案，1/2/3 可作为后续快捷键预留。'
+  shortcutHint: '快捷键：空格 显示答案 · 1 做对 · 2 做错 · 3 没思路 · N 下一题'
 };
 
 const emptyStats: SessionStats = { correct: 0, wrong: 0, no_idea: 0 };
@@ -192,6 +192,8 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [feedback, setFeedback] = useState<SubmitFeedback | null>(null);
+  const [undoData, setUndoData] = useState<{ questionId: number; previousMastery: string | null } | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [stats, setStats] = useState<SessionStats>(emptyStats);
   const [finished, setFinished] = useState(false);
 
@@ -280,6 +282,11 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
 
   async function submit(result: ReviewResultV2) {
     if (!current) return;
+    setUndoData({
+      questionId: current.id,
+      previousMastery: current.mastery_level
+    });
+
     try {
       const response = await window.api.submitReviewResult({ questionId: current.id, result });
       setFeedback({
@@ -296,7 +303,11 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
         const refreshed = await window.api.getKnowledgePointReviewStats(activeKnowledge.node_id, includeChildren);
         if (refreshed) setActiveKnowledge(refreshed);
       }
+
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      undoTimerRef.current = setTimeout(() => setUndoData(null), 5000);
     } catch (error) {
+      setUndoData(null);
       toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
@@ -315,6 +326,8 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   }
 
   function backToCenter() {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setUndoData(null);
     setSessionTitle('');
     setSessionMeta({});
     setSessionQuestions([]);
@@ -361,6 +374,33 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
       </div>
     );
   }
+
+  useEffect(() => {
+    if (!inSession || finished) return;
+
+    function handleKey(event: KeyboardEvent) {
+      const tag = (event.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (event.key === ' ') {
+        event.preventDefault();
+        if (!showAnswer) {
+          setShowAnswer(true);
+        }
+      } else if (event.key === '1' && showAnswer && !feedback) {
+        submit('correct');
+      } else if (event.key === '2' && showAnswer && !feedback) {
+        submit('wrong');
+      } else if (event.key === '3' && showAnswer && !feedback) {
+        submit('no_idea');
+      } else if ((event.key === 'n' || event.key === 'N') && feedback) {
+        nextQuestion();
+      }
+    }
+
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [inSession, finished, showAnswer, feedback, currentIndex]);
 
   if (inSession && current) {
     const hasSubmitted = Boolean(feedback);
@@ -427,6 +467,28 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
                     <span>{T.masteryChange}：{feedback.masteryBefore || '暂无'} → {feedback.masteryAfter || current.mastery_level}</span>
                     <span>{T.next}：{formatDate(feedback.nextReviewAt)}</span>
                     <small>{feedback.message}</small>
+                    {undoData ? (
+                      <button
+                        className="secondary-button compact-button"
+                        type="button"
+                        onClick={async () => {
+                          if (!undoData) return;
+                          await window.api.markMastery(undoData.questionId, (undoData.previousMastery as '未掌握' | '较弱' | '一般' | '较好' | '已掌握') || '未掌握');
+                          setUndoData(null);
+                          if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+                          setFeedback(null);
+                          setStats((value) => {
+                            const next = { ...value };
+                            if (feedback.result === 'correct') next.correct -= 1;
+                            else if (feedback.result === 'wrong') next.wrong -= 1;
+                            else next.no_idea -= 1;
+                            return next;
+                          });
+                        }}
+                      >
+                        撤销 (5秒内)
+                      </button>
+                    ) : null}
                   </div>
                 ) : null}
                 {feedback ? <button className="primary-button" type="button" onClick={nextQuestion}>{currentIndex >= sessionQuestions.length - 1 ? T.viewSummary : T.nextQuestion}</button> : null}
