@@ -1,6 +1,7 @@
 ﻿import { ExternalLink, FolderOpen, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { ImageUrlResult, QuestionImage } from '../../shared/types';
+import { useToast } from './Toast';
 
 interface GalleryItem {
   image: QuestionImage;
@@ -14,6 +15,7 @@ interface ImageGalleryProps {
 
 export function ImageGallery({ images, emptyText }: ImageGalleryProps) {
   const showDebugInfo = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
+  const { toast } = useToast();
   const [items, setItems] = useState<GalleryItem[]>([]);
   const [preview, setPreview] = useState<GalleryItem | null>(null);
   const [failedIds, setFailedIds] = useState<Set<number>>(new Set());
@@ -57,7 +59,7 @@ export function ImageGallery({ images, emptyText }: ImageGalleryProps) {
     try {
       await window.api.openImage(imagePath);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 
@@ -65,7 +67,7 @@ export function ImageGallery({ images, emptyText }: ImageGalleryProps) {
     try {
       await window.api.revealImageInFolder(imagePath);
     } catch (error) {
-      alert(error instanceof Error ? error.message : String(error));
+      toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
 

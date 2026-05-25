@@ -149,6 +149,8 @@ export function QuestionForm({ initial, onCancel, onSaved }: QuestionFormProps) 
       const payload = { ...form, title: form.title.trim(), tags: textToTags(tagText), solutionImageSources: [] };
       const saved = isEditing && initial ? await window.api.updateQuestion(initial.id, payload) : await window.api.createQuestion(payload);
       onSaved(saved);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
       setSaving(false);
     }

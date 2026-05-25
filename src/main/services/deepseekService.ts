@@ -23,8 +23,13 @@ export async function saveDeepSeekSettings(settings: DeepSeekSettings): Promise<
   const db = await getDatabase();
   db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const jsonValue = JSON.stringify(settings);
-  const escaped = jsonValue.replace(/'/g, "''");
-  db.run(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('deepseek', '${escaped}')`);
+  const stmt = db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)");
+  try {
+    stmt.bind(['deepseek', jsonValue]);
+    stmt.step();
+  } finally {
+    stmt.free();
+  }
   return settings;
 }
 
@@ -81,7 +86,7 @@ export async function structureQuestion(ocrTexts: string[]): Promise<AiStructure
   const combined = ocrTexts.map((t, i) => `[图片 ${i + 1} OCR 文本]\n${t}`).join('\n\n---\n\n');
   const result = await callDeepSeek(STRUCTURE_SYSTEM_PROMPT, combined);
   // 提取 JSON（DeepSeek 可能包裹在 ```json 中）
-  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*\})/);
+  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*?\})/);
   const jsonText = jsonMatch ? jsonMatch[1].trim() : result.trim();
   try {
     const parsed = JSON.parse(jsonText);
@@ -129,7 +134,7 @@ export async function diagnoseError(questionContent: string, questionAnswer: str
   ].join('\n\n');
 
   const result = await callDeepSeek(DIAGNOSIS_SYSTEM_PROMPT, userMessage);
-  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*\})/);
+  const jsonMatch = result.match(/```(?:json)?\s*([\s\S]*?)```/) || result.match(/(\{[\s\S]*?\})/);
   const jsonText = jsonMatch ? jsonMatch[1].trim() : result.trim();
   try {
     const parsed = JSON.parse(jsonText);
