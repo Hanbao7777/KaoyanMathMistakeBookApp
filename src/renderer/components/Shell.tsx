@@ -1,8 +1,8 @@
-import { BarChart3, BookMarked, BookOpen, BookOpenCheck, Clock3, FileQuestion, FileUp, Home, Library, ListTodo, PlusCircle, RotateCcw, Settings, ShieldCheck } from 'lucide-react';
+import { BarChart3, BookMarked, BookOpen, BookOpenCheck, Clock3, FileQuestion, FileUp, Home, Library, ListTodo, PlusCircle, RotateCcw, Settings, ShieldCheck, Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { FocusTimerControls, FocusTimerState } from '../types/focusTimer';
 
-export type PageKey = 'dashboard' | 'studySupervisor' | 'dailyPlan' | 'studyMaterials' | 'focusTimer' | 'add' | 'library' | 'detail' | 'review' | 'knowledgeMap' | 'questionBank' | 'stats' | 'import' | 'settings';
+export type PageKey = 'dashboard' | 'studySupervisor' | 'dailyPlan' | 'studyMaterials' | 'focusTimer' | 'add' | 'library' | 'detail' | 'review' | 'knowledgeMap' | 'questionBank' | 'stats' | 'import' | 'aiImport' | 'settings';
 
 interface ShellProps {
   page: PageKey;
@@ -21,6 +21,7 @@ const navGroups = [
       { key: 'dailyPlan', label: '每日计划', icon: ListTodo },
       { key: 'focusTimer', label: '专注计时', icon: Clock3 },
       { key: 'review', label: '复习', icon: RotateCcw },
+      { key: 'aiImport', label: 'AI 导入', icon: Sparkles },
       { key: 'knowledgeMap', label: '知识地图', icon: BookMarked },
       { key: 'questionBank', label: '题库训练', icon: FileQuestion }
     ]

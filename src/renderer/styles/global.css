@@ -6358,3 +6358,62 @@ button:disabled,
   text-align: center;
   color: var(--color-text-muted);
 }
+
+/* AI Import Wizard */
+.ai-import-upload-zone {
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-xl);
+  padding: 40px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease;
+}
+
+.ai-import-upload-zone:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+
+.ai-import-drop-hint {
+  display: grid;
+  gap: 10px;
+  justify-items: center;
+  color: var(--color-text-muted);
+}
+
+.ai-import-drop-hint strong {
+  color: var(--color-text-main);
+  font-size: 18px;
+}
+
+.ai-import-preview {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  color: var(--color-success);
+}
+
+.ai-import-file-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.ai-import-file-list code {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.ai-import-tips-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}

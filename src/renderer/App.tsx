@@ -5,6 +5,7 @@ import { GlobalSearch } from './components/GlobalSearch';
 import { ModalProvider } from './components/Modal';
 import { ToastProvider } from './components/Toast';
 import { AddEditPage } from './pages/AddEditPage';
+import { AiImportPage } from './pages/AiImportPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DetailPage } from './pages/DetailPage';
 import { DailyPlanPage } from './pages/DailyPlanPage';
@@ -184,6 +185,7 @@ export default function App() {
         {page === 'questionBank' ? <QuestionBankPage onOpenQuestion={openQuestion} /> : null}
         {page === 'stats' ? <StatsPage onOpenLibrary={openLibraryWithFilters} onOpenKnowledgePoint={openKnowledgePoint} onOpenQuestion={openQuestion} onOpenImport={() => navigate('import')} onOpenReview={() => navigate('review')} /> : null}
         {page === 'import' ? <ImportPage /> : null}
+        {page === 'aiImport' ? <AiImportPage /> : null}
         {page === 'settings' ? <SettingsPage /> : null}
       </Shell>
       <GlobalSearch
