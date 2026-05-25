@@ -3,6 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { REVIEW_RESULTS } from '../../shared/options';
 import type { MasteryLevel, Question, ReviewLog, ReviewResult } from '../../shared/types';
+import { AiDiagnosisPanel } from '../components/AiDiagnosisPanel';
 import { EmptyState } from '../components/EmptyState';
 import { FormulaText } from '../components/FormulaText';
 import { ImageGallery } from '../components/ImageGallery';
@@ -226,6 +227,10 @@ export function DetailPage({ questionId, reviewMode = false, onBack, onEdit, onO
                 </div>
               ) : <p className="muted-text">暂无复习记录</p>}
             </section>
+          ) : null}
+
+          {showAnswer ? (
+            <AiDiagnosisPanel questionId={question.id} />
           ) : null}
         </aside>
       </section>

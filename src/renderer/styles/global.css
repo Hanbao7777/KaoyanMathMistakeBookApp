@@ -6417,3 +6417,28 @@ button:disabled,
   color: var(--color-text-secondary);
   line-height: 1.7;
 }
+
+.ai-diagnosis-panel {
+  border-color: #cfe0f7;
+}
+
+.ai-diagnosis-result {
+  display: grid;
+  gap: 14px;
+}
+
+.ai-diagnosis-section {
+  display: grid;
+  gap: 6px;
+}
+
+.ai-diagnosis-section strong {
+  color: var(--color-text-main);
+  font-size: 14px;
+}
+
+.ai-diagnosis-section p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  line-height: 1.7;
+}
