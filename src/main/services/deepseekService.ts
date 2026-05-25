@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS: DeepSeekSettings = {
 export async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
   const db = await getDatabase();
   try {
-    const row = db.exec("SELECT value FROM sqlite_settings WHERE key = 'deepseek'");
+    const row = db.exec("SELECT value FROM app_settings WHERE key = 'deepseek'");
     if (row.length && row[0].values.length) {
       const parsed = JSON.parse(row[0].values[0][0] as string);
       return { ...DEFAULT_SETTINGS, ...parsed };
@@ -21,10 +21,10 @@ export async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
 
 export async function saveDeepSeekSettings(settings: DeepSeekSettings): Promise<DeepSeekSettings> {
   const db = await getDatabase();
-  db.run("CREATE TABLE IF NOT EXISTS sqlite_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const jsonValue = JSON.stringify(settings);
   const escaped = jsonValue.replace(/'/g, "''");
-  db.run(`INSERT OR REPLACE INTO sqlite_settings (key, value) VALUES ('deepseek', '${escaped}')`);
+  db.run(`INSERT OR REPLACE INTO app_settings (key, value) VALUES ('deepseek', '${escaped}')`);
   return settings;
 }
 
