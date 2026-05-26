@@ -199,6 +199,7 @@ function parseTags(raw: string): string[] {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch {
+    console.error('parseTags: invalid JSON', raw);
     return [];
   }
 }
@@ -830,6 +831,10 @@ export async function getTickTickSettings(): Promise<TickTickSettings> {
 }
 
 export async function saveTickTickSettings(settings: TickTickSettings): Promise<TickTickSettings> {
+  if (settings.pomodoro && settings.pomodoro.focusMinutes < 1) {
+    throw new Error('focusMinutes must be >= 1');
+  }
+
   const db = await getDatabase();
   ensureAppSettings(db);
 

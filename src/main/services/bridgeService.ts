@@ -159,14 +159,14 @@ export async function generateAutoReviewTasks(): Promise<{ created: number }> {
   return { created };
 }
 
-async function getOrCreateDefaultList(db: any): Promise<string> {
+async function getOrCreateDefaultList(db: import('sql.js').Database): Promise<string> {
   const result = db.exec("SELECT id FROM ticktick_lists LIMIT 1");
   if (result.length && result[0].values.length) return result[0].values[0][0] as string;
 
   const listId = 'list_default';
   const now = new Date().toISOString();
   db.run(
-    "INSERT INTO ticktick_lists (id, name, color, icon, sort_order, created_at, updated_at) VALUES (?, '收集箱', '#4a90d9', 'inbox', 0, ?, ?)",
+    "INSERT OR IGNORE INTO ticktick_lists (id, name, color, icon, sort_order, created_at, updated_at) VALUES (?, '收集箱', '#4a90d9', 'inbox', 0, ?, ?)",
     [listId, now, now]
   );
   return listId;
