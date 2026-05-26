@@ -165,6 +165,57 @@ const api: AppApi = {
   getDailyReview: (date: string) => invoke<DailyReview | null>('study:reviews:get', date),
   saveDailyReview: (input: DailyReviewInput) => invoke<DailyReview | null>('study:reviews:save', input),
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
+
+  // TickTick Lists
+  listTickTickLists: () => invoke('ticktick:lists:list'),
+  getTickTickList: (id: string) => invoke('ticktick:lists:get', id),
+  createTickTickList: (input: any) => invoke('ticktick:lists:create', input),
+  updateTickTickList: (id: string, input: any) => invoke('ticktick:lists:update', id, input),
+  deleteTickTickList: (id: string) => invoke('ticktick:lists:delete', id),
+  reorderTickTickLists: (ids: string[]) => invoke('ticktick:lists:reorder', ids),
+
+  // TickTick Tasks
+  listTickTickTasks: (filters?: any) => invoke('ticktick:tasks:list', filters),
+  getTickTickTask: (id: string) => invoke('ticktick:tasks:get', id),
+  createTickTickTask: (input: any) => invoke('ticktick:tasks:create', input),
+  updateTickTickTask: (id: string, input: any) => invoke('ticktick:tasks:update', id, input),
+  deleteTickTickTask: (id: string) => invoke('ticktick:tasks:delete', id),
+  completeTickTickTask: (id: string) => invoke('ticktick:tasks:complete', id),
+  uncompleteTickTickTask: (id: string) => invoke('ticktick:tasks:uncomplete', id),
+  getTodayTickTickTasks: () => invoke('ticktick:tasks:today'),
+
+  // TickTick Tags
+  listTickTickTags: () => invoke('ticktick:tags:list'),
+
+  // TickTick Focus Sessions
+  listTickTickFocusSessions: (filters?: any) => invoke('ticktick:focus:list', filters),
+  createTickTickFocusSession: (input: any) => invoke('ticktick:focus:create', input),
+
+  // TickTick Bridge
+  getTickTickTaskBridges: (taskId: string) => invoke('ticktick:bridge:task', taskId),
+  createTickTickBridge: (input: any) => invoke('ticktick:bridge:create', input),
+  deleteTickTickBridge: (id: number) => invoke('ticktick:bridge:delete', id),
+  getBridgesForLinked: (linkedType: any, linkedId: string) => invoke('ticktick:bridge:linked', linkedType, linkedId),
+
+  // TickTick Calendar
+  getTickTickCalendarMonth: (year: number, month: number) => invoke('ticktick:calendar:month', year, month),
+
+  // TickTick AI
+  aiDecomposeTask: (input: any) => invoke('ticktick:ai:decompose', input),
+  aiGenerateDailyPlan: () => invoke('ticktick:ai:dailyPlan'),
+  aiGenerateReview: (type: 'daily' | 'weekly') => invoke('ticktick:ai:review', type),
+
+  // TickTick Settings
+  getTickTickSettings: () => invoke('ticktick:settings:get'),
+  saveTickTickSettings: (settings: any) => invoke('ticktick:settings:save', settings),
+
+  // White Noise
+  getTickTickWhiteNoiseState: () => invoke('ticktick:whiteNoise:get'),
+  setTickTickWhiteNoiseState: (state: any) => invoke('ticktick:whiteNoise:set', state),
+
+  // Sync
+  triggerReviewTaskGeneration: () => invoke('ticktick:sync:generateReviewTasks'),
+
   saveWindowState: (state: WindowState) => ipcRenderer.send('window:saveState', state),
   loadWindowState: () => invoke<WindowState | null>('window:loadState'),
 
