@@ -63,7 +63,27 @@ import type {
   DeepSeekSettings,
   OcrResult,
   AiStructuredQuestion,
-  AiDiagnosisResult
+  AiDiagnosisResult,
+  TickTickList,
+  TickTickListInput,
+  TickTickTask,
+  TickTickTaskInput,
+  TickTickTaskFilters,
+  TickTickTag,
+  TickTickFocusSession,
+  TickTickFocusSessionInput,
+  TickTickBridge,
+  TickTickBridgeInput,
+  TickTickBridgeLinkedType,
+  TickTickAiPlan,
+  TickTickCalendarDay,
+  TickTickAiDecompositionInput,
+  TickTickAiDecompositionResult,
+  TickTickAiDailyPlanResult,
+  TickTickAiReviewResult,
+  TickTickPomodoroSettings,
+  TickTickSettings,
+  TickTickWhiteNoise
 } from './types';
 
 export interface AppApi {
@@ -173,6 +193,56 @@ export interface AppApi {
   // AI error diagnosis
   diagnoseError: (questionId: number) => Promise<AiDiagnosisResult>;
   recordAiImport: (questionId: number) => Promise<{ batchId: string }>;
+
+  // TickTick Lists
+  listTickTickLists: () => Promise<TickTickList[]>;
+  getTickTickList: (id: string) => Promise<TickTickList | null>;
+  createTickTickList: (input: TickTickListInput) => Promise<TickTickList>;
+  updateTickTickList: (id: string, input: TickTickListInput) => Promise<TickTickList | null>;
+  deleteTickTickList: (id: string) => Promise<boolean>;
+  reorderTickTickLists: (ids: string[]) => Promise<void>;
+
+  // TickTick Tasks
+  listTickTickTasks: (filters?: TickTickTaskFilters) => Promise<TickTickTask[]>;
+  getTickTickTask: (id: string) => Promise<TickTickTask | null>;
+  createTickTickTask: (input: TickTickTaskInput) => Promise<TickTickTask>;
+  updateTickTickTask: (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => Promise<TickTickTask | null>;
+  deleteTickTickTask: (id: string) => Promise<boolean>;
+  completeTickTickTask: (id: string) => Promise<TickTickTask | null>;
+  uncompleteTickTickTask: (id: string) => Promise<TickTickTask | null>;
+  getTodayTickTickTasks: () => Promise<{ overdue: TickTickTask[]; today: TickTickTask[]; upcoming: TickTickTask[] }>;
+
+  // TickTick Tags
+  listTickTickTags: () => Promise<TickTickTag[]>;
+
+  // TickTick Focus Sessions
+  listTickTickFocusSessions: (filters?: { date?: string; taskId?: string }) => Promise<TickTickFocusSession[]>;
+  createTickTickFocusSession: (input: TickTickFocusSessionInput) => Promise<TickTickFocusSession>;
+
+  // TickTick Bridge
+  getTickTickTaskBridges: (taskId: string) => Promise<TickTickBridge[]>;
+  createTickTickBridge: (input: TickTickBridgeInput) => Promise<TickTickBridge>;
+  deleteTickTickBridge: (id: number) => Promise<boolean>;
+  getBridgesForLinked: (linkedType: TickTickBridgeLinkedType, linkedId: string) => Promise<TickTickBridge[]>;
+
+  // TickTick Calendar
+  getTickTickCalendarMonth: (year: number, month: number) => Promise<TickTickCalendarDay[]>;
+
+  // TickTick AI
+  aiDecomposeTask: (input: TickTickAiDecompositionInput) => Promise<TickTickAiDecompositionResult>;
+  aiGenerateDailyPlan: () => Promise<TickTickAiDailyPlanResult>;
+  aiGenerateReview: (type: 'daily' | 'weekly') => Promise<TickTickAiReviewResult>;
+
+  // TickTick Settings
+  getTickTickSettings: () => Promise<TickTickSettings>;
+  saveTickTickSettings: (settings: TickTickSettings) => Promise<TickTickSettings>;
+
+  // White Noise
+  getTickTickWhiteNoiseState: () => Promise<{ enabled: boolean; noise: TickTickWhiteNoise }>;
+  setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => Promise<void>;
+
+  // Auto review task creation
+  triggerReviewTaskGeneration: () => Promise<{ created: number }>;
 
   toFileUrl: (filePath: string) => string;
 }
