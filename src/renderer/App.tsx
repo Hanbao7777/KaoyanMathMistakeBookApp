@@ -24,6 +24,7 @@ import 'katex/dist/katex.min.css';
 import './styles/global.css';
 import './styles/modal.css';
 import './styles/toast.css';
+import './styles/ticktick.css';
 
 const focusTimerStorageKey = 'kaoyan-focus-timer-state-v1';
 
