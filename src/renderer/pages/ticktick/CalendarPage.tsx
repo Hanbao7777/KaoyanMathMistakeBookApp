@@ -1,6 +1,6 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import type { TickTickCalendarDay } from '../../../shared/types';
+import type { TickTickCalendarDay, TickTickTask } from '../../../shared/types';
 
 export function CalendarPage() {
   const today = new Date();
@@ -9,6 +9,8 @@ export function CalendarPage() {
   const [days, setDays] = useState<TickTickCalendarDay[]>([]);
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedTasks, setSelectedTasks] = useState<TickTickTask[]>([]);
+  const [showDayDetail, setShowDayDetail] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -36,6 +38,13 @@ export function CalendarPage() {
   function nextMonth() {
     if (month === 12) { setYear(year + 1); setMonth(1); }
     else setMonth(month + 1);
+  }
+
+  async function handleDayClick(date: string) {
+    setSelectedDate(date);
+    setShowDayDetail(true);
+    const tasks = await window.api.listTickTickTasks({ dueDate: date, includeCompleted: true });
+    setSelectedTasks(tasks.filter(t => !t.parent_id));
   }
 
   function goToday() {
@@ -76,7 +85,7 @@ export function CalendarPage() {
             if (!day) return <div key={`empty-${i}`} className="day-cell" style={{ background: 'var(--tt-bg-hover)' }} />;
             const isToday = day.date === todayStr;
             return (
-              <div key={day.date} className={`day-cell ${isToday ? 'today' : ''}`} onClick={() => setSelectedDate(day.date)}>
+              <div key={day.date} className={`day-cell ${isToday ? 'today' : ''}`} onClick={() => handleDayClick(day.date)}>
                 <span className="day-num">{parseInt(day.date.split('-')[2], 10)}</span>
                 {day.task_count > 0 ? <span className="day-badge tasks">{day.completed_count}/{day.task_count} 任务</span> : null}
                 {day.review_due_count > 0 ? <span className="day-badge reviews">{day.review_due_count} 复习</span> : null}
@@ -89,6 +98,20 @@ export function CalendarPage() {
       ) : (
         <div className="tt-empty">{view === 'week' ? '周' : '日'}视图将在后续版本中提供</div>
       )}
+
+      {showDayDetail && selectedDate ? (
+        <div style={{ marginTop: 16, padding: 16, background: 'var(--tt-bg-sidebar)', borderRadius: 'var(--tt-radius-md)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+            <strong>{selectedDate}</strong>
+            <button onClick={() => setShowDayDetail(false)} type="button" style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-secondary)' }}>✕</button>
+          </div>
+          {selectedTasks.length > 0 ? selectedTasks.map(t => (
+            <div key={t.id} style={{ padding: '6px 0', fontSize: 13, borderBottom: '1px solid var(--tt-border-light)' }}>
+              <span style={{ textDecoration: t.is_completed ? 'line-through' : 'none', color: t.is_completed ? 'var(--tt-text-muted)' : 'var(--tt-text)' }}>{t.title}</span>
+            </div>
+          )) : <div style={{ fontSize: 12, color: 'var(--tt-text-muted)' }}>当天没有任务</div>}
+        </div>
+      ) : null}
     </div>
   );
 }

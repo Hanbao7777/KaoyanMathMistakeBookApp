@@ -2,6 +2,7 @@ import { Calendar, Hash, List, Plus } from 'lucide-react';
 import { useState, useRef } from 'react';
 import { parseTaskInput } from '../../utils/nlpDateParser';
 import type { TickTickList } from '../../../shared/types';
+import { useToast } from '../../components/Toast';
 
 interface QuickAddBarProps {
   defaultListId?: string;
@@ -10,6 +11,7 @@ interface QuickAddBarProps {
 }
 
 export function QuickAddBar({ defaultListId, lists, onTaskCreated }: QuickAddBarProps) {
+  const { toast } = useToast();
   const [text, setText] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -37,9 +39,8 @@ export function QuickAddBar({ defaultListId, lists, onTaskCreated }: QuickAddBar
       });
       setText('');
       onTaskCreated();
-    } catch (e) {
-      // Error is handled by the global error boundary
-      console.error('Failed to create task:', e);
+    } catch (e: any) {
+      toast(e.message || '创建任务失败', 'error');
     }
   }
 

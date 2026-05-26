@@ -22,8 +22,17 @@ export function KanbanPage() {
   useEffect(() => { load(); }, []);
 
   async function moveTask(taskId: string, toListId: string) {
-    await window.api.updateTickTickTask(taskId, { list_id: toListId } as any);
+    const prevTasks = [...tasks];
+    const task = tasks.find(t => t.id === taskId);
+    const prevListId = task?.list_id;
+    // Optimistic update
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, list_id: toListId } : t));
+    try {
+      await window.api.updateTickTickTask(taskId, { list_id: toListId } as any);
+    } catch {
+      // Rollback
+      setTasks(prevTasks);
+    }
   }
 
   function handleDragStart(e: React.DragEvent, taskId: string) {

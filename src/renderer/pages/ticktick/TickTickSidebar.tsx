@@ -38,6 +38,13 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
 
   useEffect(() => { load(); }, [page]);
 
+  // Reload on window focus to keep counts fresh
+  useEffect(() => {
+    const onFocus = () => load();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
+
   return (
     <aside className="ticktick-sidebar">
       {/* User area */}

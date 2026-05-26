@@ -1,5 +1,5 @@
 import { ChevronDown } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
@@ -20,22 +20,28 @@ export function TodayPage() {
   const [collapsed, setCollapsed] = useState<Set<GroupKey>>(new Set(['completed']));
   const [loading, setLoading] = useState(true);
 
+  const versionRef = useRef(0);
+  const togglingRef = useRef(false);
+
   async function load() {
+    const version = ++versionRef.current;
     try {
       const [l, todayData] = await Promise.all([
         window.api.listTickTickLists(),
         window.api.getTodayTickTickTasks(),
       ]);
+      if (version !== versionRef.current) return;
       setLists(l);
       setOverdue(todayData.overdue);
       setToday(todayData.today);
       setUpcoming(todayData.upcoming);
 
-      // Load today's completed tasks
+      // Load today's completed tasks (by completion date, not just due date)
       const todayLocal = new Date();
-      const todayStr = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, '0')}-${String(todayLocal.getDate()).padStart(2, '0')}`;
-      const allToday = await window.api.listTickTickTasks({ dueDate: todayStr, includeCompleted: true });
-      setCompleted(allToday.filter(t => t.is_completed && !t.parent_id));
+      const todayStr2 = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, '0')}-${String(todayLocal.getDate()).padStart(2, '0')}`;
+      const allCompleted = await window.api.listTickTickTasks({ includeCompleted: true });
+      if (version !== versionRef.current) return;
+      setCompleted(allCompleted.filter(t => t.is_completed && !t.parent_id && t.completed_at && t.completed_at.startsWith(todayStr2)));
     } catch (e) { console.error('TodayPage', e); }
     setLoading(false);
   }
@@ -43,13 +49,20 @@ export function TodayPage() {
   useEffect(() => { load(); }, []);
 
   async function handleToggle(task: TickTickTask) {
-    // Optimistic update
+    if (togglingRef.current) return;
+    togglingRef.current = true;
+
     const newCompleted = task.is_completed ? 0 : 1;
+    // Optimistic update for all three groups
+    setOverdue(prev => prev.map(t => t.id === task.id ? { ...t, is_completed: newCompleted } : t));
     setToday(prev => prev.map(t => t.id === task.id ? { ...t, is_completed: newCompleted } : t));
+    setUpcoming(prev => prev.map(t => t.id === task.id ? { ...t, is_completed: newCompleted } : t));
 
     try {
       if (task.is_completed) {
         await window.api.uncompleteTickTickTask(task.id);
+        // Also undo sync
+        try { await window.api.undoReviewTaskSync(task.id, task.title); } catch {}
       } else {
         await window.api.completeTickTickTask(task.id);
         // Sync to mistake book review via bridge
@@ -60,11 +73,14 @@ export function TodayPage() {
           } catch (e) { console.error('Sync review failed:', e); }
         }
       }
-      await load(); // Reconcile with server state
+      versionRef.current++;
+      await load();
     } catch (e) {
       console.error('TodayPage:toggle', e);
       toast('操作失败，请重试', 'error');
-      await load(); // Revert on failure
+      await load();
+    } finally {
+      togglingRef.current = false;
     }
   }
 

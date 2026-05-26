@@ -176,16 +176,30 @@ export function parseTaskInput(raw: string): ParsedTaskInput {
     }
   }
 
+  // Pre-check: try absolute date patterns first to avoid relative-date-wins issue
+  // e.g. "明天3月15日" should use 3月15日, not 明天
+  const absDatePreMatch = result.title.match(/\d{1,2}月\d{1,2}[日号]?|\d{4}[-/]\d{1,2}[-/]\d{1,2}/);
+  if (absDatePreMatch) {
+    const parsedAbs = parseAbsoluteDate(absDatePreMatch[0]);
+    if (parsedAbs) {
+      result.due_date = parsedAbs;
+      result.title = result.title.replace(absDatePreMatch[0], '').trim();
+    }
+  }
+
   // Extract compound date+time: "明天下午3点"
-  const dateTimeMatch = result.title.match(/(今天|明天|后天|大后天|\d+天后|下?周[一二三四五六日天]|\d{1,2}月\d{1,2}[日号]?)(早上|上午|中午|下午|傍晚|晚上|今晚)?(\d{1,2})?(点(半|(\d{1,2})分?)?)?/);
+  // Absolute dates first in alternation so "3月15日下午3点" matches correctly
+  const dateTimeMatch = result.title.match(/(\d{1,2}月\d{1,2}[日号]?|\d{4}[-/]\d{1,2}[-/]\d{1,2}|下个月\d{1,2}[日号]?|\d+天后|下?周[一二三四五六日天]|大后天|后天|明天|今天)(早上|上午|中午|下午|傍晚|晚上|今晚)?(\d{1,2})?(点(半|(\d{1,2})分?)?)?/);
   if (dateTimeMatch) {
     const datePart = dateTimeMatch[1];
     const timePrefix = dateTimeMatch[2] || '';
     const hourPart = dateTimeMatch[3] || '';
     const minuteSuffix = dateTimeMatch[4] || '';
 
-    const parsedDate = parseDateWord(datePart) || parseRelativeDay(datePart) || parseWeekday(datePart) || parseAbsoluteDate(datePart);
-    if (parsedDate) result.due_date = parsedDate;
+    if (!result.due_date) {
+      const parsedDate = parseDateWord(datePart) || parseRelativeDay(datePart) || parseWeekday(datePart) || parseAbsoluteDate(datePart);
+      if (parsedDate) result.due_date = parsedDate;
+    }
 
     if (hourPart) {
       const timeStr = timePrefix + hourPart + minuteSuffix;

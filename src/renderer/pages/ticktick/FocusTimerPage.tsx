@@ -36,10 +36,53 @@ export function FocusTimerPage() {
   // Track last saved session to avoid double-save
   const lastSavedSession = useRef(-1);
 
+  // Track actual session start time for precision and persistence
+  const sessionStartRef = useRef<number>(0);
+  const breakTotalRef = useRef(0);
+
   useEffect(() => {
     window.api.getTickTickSettings().then(s => { setSettings(s); setSettingsLoaded(true); });
     window.api.listTickTickTasks({ includeCompleted: false }).then(setTasks);
   }, []);
+
+  // Restore timer state from localStorage on mount
+  const TIMER_STORAGE_KEY = 'kaoyan-ticktick-timer-state';
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(TIMER_STORAGE_KEY);
+      if (saved) {
+        const state = JSON.parse(saved);
+        setStatus(state.status || 'idle');
+        if (state.status === 'running') {
+          // Timer was running - recompute remaining time
+          const elapsed = Math.floor((Date.now() - state.sessionStartTime) / 1000);
+          const remaining = Math.max(0, state.totalSeconds - elapsed);
+          setSecondsLeft(remaining);
+          if (remaining > 0) {
+            // Resume the running timer
+            sessionStartRef.current = state.sessionStartTime;
+            // The timer will auto-resume after state updates
+          }
+        } else {
+          setSecondsLeft(state.secondsLeft);
+        }
+        setTotalSeconds(state.totalSeconds);
+        setCompletedSessions(state.completedSessions || 0);
+        setCurrentSession(state.currentSession || 1);
+        setWhiteNoise(state.whiteNoise || 'none');
+        setBoundTaskId(state.boundTaskId || null);
+        if (state.sessionStartTime) sessionStartRef.current = state.sessionStartTime;
+      }
+    } catch {}
+  }, []);
+
+  // Save timer state to localStorage on changes and unmount
+  useEffect(() => {
+    return () => {
+      const state = { status, secondsLeft, totalSeconds, completedSessions, currentSession, whiteNoise, boundTaskId, sessionStartTime: sessionStartRef.current };
+      localStorage.setItem(TIMER_STORAGE_KEY, JSON.stringify(state));
+    };
+  }, [status, secondsLeft, totalSeconds, completedSessions, currentSession, whiteNoise, boundTaskId]);
 
   function clearTimer() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
@@ -53,26 +96,22 @@ export function FocusTimerPage() {
 
     if (prevStatus === 'running') {
       // Focus session ended → save and start break
-      const minutes = focusMinutes;
-      const now = new Date();
-      const saveKey = sess * 100 + completedSessions;
-      if (lastSavedSession.current !== saveKey) {
-        lastSavedSession.current = saveKey;
-        window.api.createTickTickFocusSession({
-          task_id: boundTaskId,
-          start_time: new Date(now.getTime() - minutes * 60000).toISOString(),
-          end_time: now.toISOString(),
-          duration_minutes: minutes,
-          session_type: 'focus',
-          completed: 1,
-          white_noise: whiteNoiseRef.current as any,
-        }).catch((e) => { console.error('FocusTimer:saveSession', e); });
-      }
+      const actualDuration = Math.round((Date.now() - sessionStartRef.current) / 60000);
+      window.api.createTickTickFocusSession({
+        task_id: boundTaskId,
+        start_time: new Date(sessionStartRef.current).toISOString(),
+        end_time: new Date().toISOString(),
+        duration_minutes: Math.max(1, actualDuration),
+        session_type: 'focus',
+        completed: 1,
+        white_noise: whiteNoiseRef.current as any,
+      }).catch((e) => { console.error('FocusTimer:saveSession', e); });
 
       setCompletedSessions(prev => prev + 1);
 
       const isLastInSet = sess % sessionsBeforeLong === 0;
       const breakSecs = isLastInSet ? longBreak * 60 : shortBreak * 60;
+      breakTotalRef.current = breakSecs;
       setStatus('break');
       setSecondsLeft(breakSecs);
       setTotalSeconds(breakSecs);
@@ -80,12 +119,17 @@ export function FocusTimerPage() {
       // Auto-start break after a tick
       breakTimeoutRef.current = setTimeout(() => {
         if (statusRef.current !== 'break') return; // guard against skip
+        sessionStartRef.current = Date.now();
         const interval = setInterval(() => {
-          setSecondsLeft(prev => {
-            if (prev <= 1) { clearInterval(interval); handleSessionEnd(); return 0; }
-            return prev - 1;
-          });
-        }, 1000);
+          const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 1000);
+          const remaining = Math.max(0, breakTotalRef.current - elapsed);
+          setSecondsLeft(remaining);
+          if (remaining <= 0) {
+            clearInterval(interval);
+            intervalRef.current = null;
+            handleSessionEnd();
+          }
+        }, 250);
         intervalRef.current = interval;
       }, 500);
 
@@ -105,13 +149,19 @@ export function FocusTimerPage() {
       setSecondsLeft(focusMinutes * 60);
       setTotalSeconds(focusMinutes * 60);
     }
+    sessionStartRef.current = Date.now();
     setStatus('running');
     const interval = setInterval(() => {
-      setSecondsLeft(prev => {
-        if (prev <= 1) { clearInterval(interval); handleSessionEnd(); return 0; }
-        return prev - 1;
-      });
-    }, 1000);
+      const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 1000);
+      const totalSecs = statusRef.current === 'break' ? breakTotalRef.current : focusMinutes * 60;
+      const remaining = Math.max(0, totalSecs - elapsed);
+      setSecondsLeft(remaining);
+      if (remaining <= 0) {
+        clearInterval(interval);
+        intervalRef.current = null;
+        handleSessionEnd();
+      }
+    }, 250);
     intervalRef.current = interval;
   }
 
