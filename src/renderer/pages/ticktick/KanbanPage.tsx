@@ -7,6 +7,7 @@ export function KanbanPage() {
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [loading, setLoading] = useState(true);
+  const [dragOverListId, setDragOverListId] = useState<string | null>(null);
 
   async function load() {
     const [l, t] = await Promise.all([
@@ -27,12 +28,33 @@ export function KanbanPage() {
 
   function handleDragStart(e: React.DragEvent, taskId: string) {
     e.dataTransfer.setData('taskId', taskId);
+    e.dataTransfer.effectAllowed = 'move';
+  }
+
+  function handleDragEnd() {
+    setDragOverListId(null);
+  }
+
+  function handleDragOver(e: React.DragEvent, listId: string) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setDragOverListId(listId);
+  }
+
+  function handleDragLeave() {
+    setDragOverListId(null);
   }
 
   function handleDrop(e: React.DragEvent, listId: string) {
     e.preventDefault();
+    setDragOverListId(null);
     const taskId = e.dataTransfer.getData('taskId');
     if (taskId) moveTask(taskId, listId);
+  }
+
+  function handleCardClick(e: React.MouseEvent, task: TickTickTask) {
+    e.stopPropagation();
+    setSelectedTask(task);
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-spinner" /></div>;
@@ -45,8 +67,13 @@ export function KanbanPage() {
           return (
             <div
               key={list.id}
-              style={{ flex: '0 0 280px', background: 'var(--tt-bg-sidebar)', borderRadius: 'var(--tt-radius-md)', padding: 12, maxHeight: '100%', overflow: 'auto' }}
-              onDragOver={e => e.preventDefault()}
+              style={{
+                flex: '0 0 280px', background: 'var(--tt-bg-sidebar)', borderRadius: 'var(--tt-radius-md)', padding: 12,
+                maxHeight: '100%', overflow: 'auto', transition: 'box-shadow 0.2s',
+                boxShadow: dragOverListId === list.id ? '0 0 0 2px var(--tt-accent)' : 'none',
+              }}
+              onDragOver={e => handleDragOver(e, list.id)}
+              onDragLeave={handleDragLeave}
               onDrop={e => handleDrop(e, list.id)}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, padding: '0 4px' }}>
@@ -59,11 +86,19 @@ export function KanbanPage() {
                   key={task.id}
                   draggable
                   onDragStart={e => handleDragStart(e, task.id)}
-                  style={{ background: 'var(--tt-bg)', borderRadius: 'var(--tt-radius-sm)', padding: '10px 12px', marginBottom: 6, cursor: 'grab', border: '1px solid var(--tt-border-light)', fontSize: 13 }}
+                  onDragEnd={handleDragEnd}
+                  style={{ background: 'var(--tt-bg)', borderRadius: 'var(--tt-radius-sm)', padding: '10px 12px', marginBottom: 6, cursor: 'grab', border: '1px solid var(--tt-border-light)', fontSize: 13, userSelect: 'none' }}
                   className="tt-kanban-card"
-                  onClick={() => setSelectedTask(task)}
                 >
-                  <div>{task.title}</div>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                    <span style={{ flex: 1 }}>{task.title}</span>
+                    <button
+                      onClick={(e) => handleCardClick(e, task)}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-muted)', padding: '0 0 0 8px', fontSize: 14, flexShrink: 0, lineHeight: 1 }}
+                      type="button"
+                      title="编辑任务"
+                    >⋯</button>
+                  </div>
                   {task.tags_list && task.tags_list.length > 0 ? (
                     <div style={{ fontSize: 10, color: 'var(--tt-accent)', marginTop: 4 }}>
                       {task.tags_list.slice(0, 3).map(t => `#${t}`).join(' ')}
