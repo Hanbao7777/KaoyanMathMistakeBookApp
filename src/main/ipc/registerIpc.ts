@@ -124,7 +124,25 @@ import type {
   StudySessionInput,
   StudySettings,
   StudyTaskFilters,
-  StudyTaskInput
+  StudyTaskInput,
+  TickTickList,
+  TickTickListInput,
+  TickTickTask,
+  TickTickTaskInput,
+  TickTickTaskFilters,
+  TickTickTag,
+  TickTickFocusSession,
+  TickTickFocusSessionInput,
+  TickTickBridge,
+  TickTickBridgeInput,
+  TickTickBridgeLinkedType,
+  TickTickAiDecompositionInput,
+  TickTickAiDecompositionResult,
+  TickTickAiDailyPlanResult,
+  TickTickAiReviewResult,
+  TickTickCalendarDay,
+  TickTickSettings,
+  TickTickWhiteNoise
 } from '../../shared/types';
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
@@ -310,16 +328,16 @@ export function registerIpc() {
   // TickTick Lists
   handle('ticktick:lists:list', () => listTickTickLists());
   handle('ticktick:lists:get', (id: string) => getTickTickList(id));
-  handle('ticktick:lists:create', (input: any) => createTickTickList(input));
-  handle('ticktick:lists:update', (id: string, input: any) => updateTickTickList(id, input));
+  handle('ticktick:lists:create', (input: TickTickListInput) => createTickTickList(input));
+  handle('ticktick:lists:update', (id: string, input: TickTickListInput) => updateTickTickList(id, input));
   handle('ticktick:lists:delete', (id: string) => deleteTickTickList(id));
   handle('ticktick:lists:reorder', (ids: string[]) => reorderTickTickLists(ids));
 
   // TickTick Tasks
-  handle('ticktick:tasks:list', (filters?: any) => listTickTickTasks(filters));
+  handle('ticktick:tasks:list', (filters?: TickTickTaskFilters) => listTickTickTasks(filters));
   handle('ticktick:tasks:get', (id: string) => getTickTickTask(id));
-  handle('ticktick:tasks:create', (input: any) => createTickTickTask(input));
-  handle('ticktick:tasks:update', (id: string, input: any) => updateTickTickTask(id, input));
+  handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTask(input));
+  handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTask(id, input));
   handle('ticktick:tasks:delete', (id: string) => deleteTickTickTask(id));
   handle('ticktick:tasks:complete', (id: string) => completeTickTickTask(id));
   handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTickTickTask(id));
@@ -329,26 +347,26 @@ export function registerIpc() {
   handle('ticktick:tags:list', () => listTickTickTags());
 
   // TickTick Focus
-  handle('ticktick:focus:list', (filters?: any) => listTickTickFocusSessions(filters));
-  handle('ticktick:focus:create', (input: any) => createTickTickFocusSession(input));
+  handle('ticktick:focus:list', (filters?: { date?: string; taskId?: string }) => listTickTickFocusSessions(filters));
+  handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSession(input));
 
   // TickTick Bridge
   handle('ticktick:bridge:task', (taskId: string) => getTickTickTaskBridges(taskId));
-  handle('ticktick:bridge:create', (input: any) => createTickTickBridge(input));
+  handle('ticktick:bridge:create', (input: TickTickBridgeInput) => createTickTickBridge(input));
   handle('ticktick:bridge:delete', (id: number) => deleteTickTickBridge(id));
-  handle('ticktick:bridge:linked', (linkedType: any, linkedId: string) => getBridgesForLinked(linkedType, linkedId));
+  handle('ticktick:bridge:linked', (linkedType: TickTickBridgeLinkedType, linkedId: string) => getBridgesForLinked(linkedType, linkedId));
 
   // TickTick Calendar
   handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarMonth(year, month));
 
   // TickTick AI
-  handle('ticktick:ai:decompose', (input: any) => aiDecomposeTask(input));
+  handle('ticktick:ai:decompose', (input: TickTickAiDecompositionInput) => aiDecomposeTask(input));
   handle('ticktick:ai:dailyPlan', () => aiGenerateDailyPlan());
   handle('ticktick:ai:review', (type: 'daily' | 'weekly') => aiGenerateReview(type));
 
   // TickTick Settings
   handle('ticktick:settings:get', () => getTickTickSettings());
-  handle('ticktick:settings:save', (settings: any) => saveTickTickSettings(settings));
+  handle('ticktick:settings:save', (settings: TickTickSettings) => saveTickTickSettings(settings));
 
   // TickTick Sync
   handle('ticktick:sync:reviewTask', (taskId: string, taskTitle: string, actualMinutes: number) => syncTaskCompletedToReview(taskId, taskTitle, actualMinutes));
@@ -363,7 +381,7 @@ export function registerIpc() {
     } catch { /* ignore */ }
     return { enabled: false, noise: 'none' };
   });
-  handle('ticktick:whiteNoise:set', async (state: any) => {
+  handle('ticktick:whiteNoise:set', async (state: { enabled: boolean; noise: TickTickWhiteNoise }) => {
     const db = await (await import('../services/databaseService')).getDatabase();
     db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);

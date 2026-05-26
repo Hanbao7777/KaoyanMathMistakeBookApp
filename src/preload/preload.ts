@@ -65,7 +65,25 @@ import type {
   StudyTask,
   StudyTaskFilters,
   StudyTaskInput,
-  WindowState
+  WindowState,
+  TickTickList,
+  TickTickListInput,
+  TickTickTask,
+  TickTickTaskInput,
+  TickTickTaskFilters,
+  TickTickTag,
+  TickTickFocusSession,
+  TickTickFocusSessionInput,
+  TickTickBridge,
+  TickTickBridgeInput,
+  TickTickBridgeLinkedType,
+  TickTickAiDecompositionInput,
+  TickTickAiDecompositionResult,
+  TickTickAiDailyPlanResult,
+  TickTickAiReviewResult,
+  TickTickCalendarDay,
+  TickTickSettings,
+  TickTickWhiteNoise
 } from '../shared/types';
 
 type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -167,55 +185,55 @@ const api: AppApi = {
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
 
   // TickTick Lists
-  listTickTickLists: () => invoke('ticktick:lists:list'),
-  getTickTickList: (id: string) => invoke('ticktick:lists:get', id),
-  createTickTickList: (input: any) => invoke('ticktick:lists:create', input),
-  updateTickTickList: (id: string, input: any) => invoke('ticktick:lists:update', id, input),
-  deleteTickTickList: (id: string) => invoke('ticktick:lists:delete', id),
-  reorderTickTickLists: (ids: string[]) => invoke('ticktick:lists:reorder', ids),
+  listTickTickLists: () => invoke<TickTickList[]>('ticktick:lists:list'),
+  getTickTickList: (id: string) => invoke<TickTickList | null>('ticktick:lists:get', id),
+  createTickTickList: (input: TickTickListInput) => invoke<TickTickList>('ticktick:lists:create', input),
+  updateTickTickList: (id: string, input: TickTickListInput) => invoke<TickTickList | null>('ticktick:lists:update', id, input),
+  deleteTickTickList: (id: string) => invoke<boolean>('ticktick:lists:delete', id),
+  reorderTickTickLists: (ids: string[]) => invoke<void>('ticktick:lists:reorder', ids),
 
   // TickTick Tasks
-  listTickTickTasks: (filters?: any) => invoke('ticktick:tasks:list', filters),
-  getTickTickTask: (id: string) => invoke('ticktick:tasks:get', id),
-  createTickTickTask: (input: any) => invoke('ticktick:tasks:create', input),
-  updateTickTickTask: (id: string, input: any) => invoke('ticktick:tasks:update', id, input),
-  deleteTickTickTask: (id: string) => invoke('ticktick:tasks:delete', id),
-  completeTickTickTask: (id: string) => invoke('ticktick:tasks:complete', id),
-  uncompleteTickTickTask: (id: string) => invoke('ticktick:tasks:uncomplete', id),
-  getTodayTickTickTasks: () => invoke('ticktick:tasks:today'),
+  listTickTickTasks: (filters?: TickTickTaskFilters) => invoke<TickTickTask[]>('ticktick:tasks:list', filters),
+  getTickTickTask: (id: string) => invoke<TickTickTask | null>('ticktick:tasks:get', id),
+  createTickTickTask: (input: TickTickTaskInput) => invoke<TickTickTask>('ticktick:tasks:create', input),
+  updateTickTickTask: (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => invoke<TickTickTask | null>('ticktick:tasks:update', id, input),
+  deleteTickTickTask: (id: string) => invoke<boolean>('ticktick:tasks:delete', id),
+  completeTickTickTask: (id: string) => invoke<TickTickTask | null>('ticktick:tasks:complete', id),
+  uncompleteTickTickTask: (id: string) => invoke<TickTickTask | null>('ticktick:tasks:uncomplete', id),
+  getTodayTickTickTasks: () => invoke<{ overdue: TickTickTask[]; today: TickTickTask[]; upcoming: TickTickTask[] }>('ticktick:tasks:today'),
 
   // TickTick Tags
-  listTickTickTags: () => invoke('ticktick:tags:list'),
+  listTickTickTags: () => invoke<TickTickTag[]>('ticktick:tags:list'),
 
   // TickTick Focus Sessions
-  listTickTickFocusSessions: (filters?: any) => invoke('ticktick:focus:list', filters),
-  createTickTickFocusSession: (input: any) => invoke('ticktick:focus:create', input),
+  listTickTickFocusSessions: (filters?: { date?: string; taskId?: string }) => invoke<TickTickFocusSession[]>('ticktick:focus:list', filters),
+  createTickTickFocusSession: (input: TickTickFocusSessionInput) => invoke<TickTickFocusSession>('ticktick:focus:create', input),
 
   // TickTick Bridge
-  getTickTickTaskBridges: (taskId: string) => invoke('ticktick:bridge:task', taskId),
-  createTickTickBridge: (input: any) => invoke('ticktick:bridge:create', input),
-  deleteTickTickBridge: (id: number) => invoke('ticktick:bridge:delete', id),
-  getBridgesForLinked: (linkedType: any, linkedId: string) => invoke('ticktick:bridge:linked', linkedType, linkedId),
+  getTickTickTaskBridges: (taskId: string) => invoke<TickTickBridge[]>('ticktick:bridge:task', taskId),
+  createTickTickBridge: (input: TickTickBridgeInput) => invoke<TickTickBridge>('ticktick:bridge:create', input),
+  deleteTickTickBridge: (id: number) => invoke<boolean>('ticktick:bridge:delete', id),
+  getBridgesForLinked: (linkedType: TickTickBridgeLinkedType, linkedId: string) => invoke<TickTickBridge[]>('ticktick:bridge:linked', linkedType, linkedId),
 
   // TickTick Calendar
-  getTickTickCalendarMonth: (year: number, month: number) => invoke('ticktick:calendar:month', year, month),
+  getTickTickCalendarMonth: (year: number, month: number) => invoke<TickTickCalendarDay[]>('ticktick:calendar:month', year, month),
 
   // TickTick AI
-  aiDecomposeTask: (input: any) => invoke('ticktick:ai:decompose', input),
-  aiGenerateDailyPlan: () => invoke('ticktick:ai:dailyPlan'),
-  aiGenerateReview: (type: 'daily' | 'weekly') => invoke('ticktick:ai:review', type),
+  aiDecomposeTask: (input: TickTickAiDecompositionInput) => invoke<TickTickAiDecompositionResult>('ticktick:ai:decompose', input),
+  aiGenerateDailyPlan: () => invoke<TickTickAiDailyPlanResult>('ticktick:ai:dailyPlan'),
+  aiGenerateReview: (type: 'daily' | 'weekly') => invoke<TickTickAiReviewResult>('ticktick:ai:review', type),
 
   // TickTick Settings
-  getTickTickSettings: () => invoke('ticktick:settings:get'),
-  saveTickTickSettings: (settings: any) => invoke('ticktick:settings:save', settings),
+  getTickTickSettings: () => invoke<TickTickSettings>('ticktick:settings:get'),
+  saveTickTickSettings: (settings: TickTickSettings) => invoke<TickTickSettings>('ticktick:settings:save', settings),
 
   // White Noise
-  getTickTickWhiteNoiseState: () => invoke('ticktick:whiteNoise:get'),
-  setTickTickWhiteNoiseState: (state: any) => invoke('ticktick:whiteNoise:set', state),
+  getTickTickWhiteNoiseState: () => invoke<{ enabled: boolean; noise: TickTickWhiteNoise }>('ticktick:whiteNoise:get'),
+  setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => invoke<void>('ticktick:whiteNoise:set', state),
 
   // Sync
-  triggerReviewTaskGeneration: () => invoke('ticktick:sync:generateReviewTasks'),
-  syncTickTickTaskCompletedToReview: (taskId, taskTitle, actualMinutes) => invoke('ticktick:sync:reviewTask', taskId, taskTitle, actualMinutes),
+  triggerReviewTaskGeneration: () => invoke<{ created: number }>('ticktick:sync:generateReviewTasks'),
+  syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => invoke<void>('ticktick:sync:reviewTask', taskId, taskTitle, actualMinutes),
 
   saveWindowState: (state: WindowState) => ipcRenderer.send('window:saveState', state),
   loadWindowState: () => invoke<WindowState | null>('window:loadState'),
