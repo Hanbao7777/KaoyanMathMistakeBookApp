@@ -20,6 +20,12 @@ import { StatsPage } from './pages/StatsPage';
 import { StudyMaterialsPage } from './pages/StudyMaterialsPage';
 import { StudySupervisorPage } from './pages/StudySupervisorPage';
 import { defaultFocusTimerState, type FocusTimerPatch, type FocusTimerState } from './types/focusTimer';
+import { TickTickSidebar } from './pages/ticktick/TickTickSidebar';
+import { TodayPage } from './pages/ticktick/TodayPage';
+import { CalendarPage } from './pages/ticktick/CalendarPage';
+import { ListDetailPage } from './pages/ticktick/ListDetailPage';
+import { FocusTimerPage as TickTickFocusTimerPage } from './pages/ticktick/FocusTimerPage';
+import { TickTickSettingsPage } from './pages/ticktick/TickTickSettingsPage';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
 import './styles/modal.css';
@@ -51,6 +57,13 @@ function getElapsedSeconds(timer: FocusTimerState) {
   return Math.max(0, Math.floor(timer.accumulatedSeconds + extra));
 }
 
+function formatSeconds(seconds: number) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
@@ -62,6 +75,10 @@ export default function App() {
   const [focusTimer, setFocusTimer] = useState<FocusTimerState>(() => readFocusTimerState());
   const [timerTick, setTimerTick] = useState(0);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+  const [mode, setMode] = useState<'mistake' | 'ticktick'>('mistake');
+  type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
+  const [ttPage, setTtPage] = useState<TickTickPageKey>('today');
+  const [selectedListId, setSelectedListId] = useState<string | null>(null);
 
   useEffect(() => {
     window.localStorage.setItem(focusTimerStorageKey, JSON.stringify(focusTimer));
@@ -169,10 +186,53 @@ export default function App() {
     setPage('library');
   }
 
+  const showTimer = focusTimer.status !== 'idle' || focusTimerControls.elapsedSeconds > 0;
+  const timerLabel = focusTimer.taskTitle || focusTimer.subjectName || '专注计时';
+
   return (
     <ToastProvider>
       <ModalProvider>
-      <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls}>
+      {mode === 'ticktick' ? (
+        <div className="app-shell">
+          <div className="ticktick-app-shell">
+            <TickTickSidebar
+              page={ttPage}
+              selectedListId={selectedListId}
+              onNavigate={(nextPage, listId) => {
+                setTtPage(nextPage);
+                if (listId) setSelectedListId(listId);
+                else setSelectedListId(null);
+              }}
+              onModeChange={() => setMode('mistake')}
+            />
+            <div className="ticktick-main">
+              {showTimer ? (
+                <div style={{ padding: '8px 24px', background: 'var(--tt-bg-hover)', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid var(--tt-border-light)' }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--tt-accent)' }}>
+                    {focusTimer.status === 'running' ? '专注中' : '已暂停'}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--tt-text-secondary)' }}>{timerLabel}</span>
+                  <span style={{ marginLeft: 'auto', fontFamily: 'monospace', fontWeight: 700 }}>{formatSeconds(focusTimerControls.elapsedSeconds)}</span>
+                  {focusTimer.status === 'running' ? (
+                    <button onClick={focusTimerControls.pause} style={{ padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 12 }} type="button">暂停</button>
+                  ) : (
+                    <button onClick={focusTimerControls.start} style={{ padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 12 }} type="button">继续</button>
+                  )}
+                </div>
+              ) : null}
+              {ttPage === 'today' && <TodayPage />}
+              {ttPage === 'calendar' && <CalendarPage />}
+              {ttPage === 'list' && selectedListId && (
+                <ListDetailPage listId={selectedListId} onBack={() => { setTtPage('today'); setSelectedListId(null); }} />
+              )}
+              {ttPage === 'inbox' && <TodayPage />}
+              {ttPage === 'focus' && <TickTickFocusTimerPage />}
+              {ttPage === 'settings' && <TickTickSettingsPage />}
+            </div>
+          </div>
+        </div>
+      ) : (
+        <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls} mode={mode} onModeChange={setMode}>
         {page === 'dashboard' ? <DashboardPage onAdd={() => navigate('add')} onReview={() => navigate('review')} onOpenQuestion={openQuestion} onReviewKnowledgePoint={openKnowledgeReview} onOpenKnowledgePoint={openKnowledgePoint} onOpenKnowledgeMap={() => navigate('knowledgeMap')} onOpenImport={() => navigate('import')} onOpenLibrary={openLibraryWithFilters} onOpenStudyPage={navigate} /> : null}
         {page === 'studySupervisor' ? <StudySupervisorPage onNavigate={navigate} /> : null}
         {page === 'dailyPlan' ? <DailyPlanPage /> : null}
@@ -188,7 +248,8 @@ export default function App() {
         {page === 'import' ? <ImportPage /> : null}
         {page === 'aiImport' ? <AiImportPage /> : null}
         {page === 'settings' ? <SettingsPage /> : null}
-      </Shell>
+        </Shell>
+      )}
       <GlobalSearch
         open={globalSearchOpen}
         onClose={() => setGlobalSearchOpen(false)}
