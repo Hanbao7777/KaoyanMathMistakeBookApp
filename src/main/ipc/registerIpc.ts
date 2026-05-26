@@ -91,6 +91,18 @@ import {
   updateStudySettings,
   updateStudyTask
 } from '../services/studySupervisorService';
+import {
+  listTickTickLists, getTickTickList, createTickTickList, updateTickTickList, deleteTickTickList, reorderTickTickLists,
+  listTickTickTasks, getTickTickTask, createTickTickTask, updateTickTickTask, deleteTickTickTask,
+  completeTickTickTask, uncompleteTickTickTask, getTodayTickTickTasks,
+  listTickTickTags,
+  listTickTickFocusSessions, createTickTickFocusSession,
+  getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
+  getTickTickCalendarMonth,
+  getTickTickSettings, saveTickTickSettings,
+} from '../services/ticktickService';
+import { syncTaskCompletedToReview, generateAutoReviewTasks } from '../services/bridgeService';
+import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
   DatabaseBackupKind,
   DeepSeekSettings,
@@ -293,5 +305,68 @@ export function registerIpc() {
     });
     recordImportBatchItem(db, batchId, 'questions', questionId, 'created');
     return { batchId };
+  });
+
+  // TickTick Lists
+  handle('ticktick:lists:list', () => listTickTickLists());
+  handle('ticktick:lists:get', (id: string) => getTickTickList(id));
+  handle('ticktick:lists:create', (input: any) => createTickTickList(input));
+  handle('ticktick:lists:update', (id: string, input: any) => updateTickTickList(id, input));
+  handle('ticktick:lists:delete', (id: string) => deleteTickTickList(id));
+  handle('ticktick:lists:reorder', (ids: string[]) => reorderTickTickLists(ids));
+
+  // TickTick Tasks
+  handle('ticktick:tasks:list', (filters?: any) => listTickTickTasks(filters));
+  handle('ticktick:tasks:get', (id: string) => getTickTickTask(id));
+  handle('ticktick:tasks:create', (input: any) => createTickTickTask(input));
+  handle('ticktick:tasks:update', (id: string, input: any) => updateTickTickTask(id, input));
+  handle('ticktick:tasks:delete', (id: string) => deleteTickTickTask(id));
+  handle('ticktick:tasks:complete', (id: string) => completeTickTickTask(id));
+  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTickTickTask(id));
+  handle('ticktick:tasks:today', () => getTodayTickTickTasks());
+
+  // TickTick Tags
+  handle('ticktick:tags:list', () => listTickTickTags());
+
+  // TickTick Focus
+  handle('ticktick:focus:list', (filters?: any) => listTickTickFocusSessions(filters));
+  handle('ticktick:focus:create', (input: any) => createTickTickFocusSession(input));
+
+  // TickTick Bridge
+  handle('ticktick:bridge:task', (taskId: string) => getTickTickTaskBridges(taskId));
+  handle('ticktick:bridge:create', (input: any) => createTickTickBridge(input));
+  handle('ticktick:bridge:delete', (id: number) => deleteTickTickBridge(id));
+  handle('ticktick:bridge:linked', (linkedType: any, linkedId: string) => getBridgesForLinked(linkedType, linkedId));
+
+  // TickTick Calendar
+  handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarMonth(year, month));
+
+  // TickTick AI
+  handle('ticktick:ai:decompose', (input: any) => aiDecomposeTask(input));
+  handle('ticktick:ai:dailyPlan', () => aiGenerateDailyPlan());
+  handle('ticktick:ai:review', (type: 'daily' | 'weekly') => aiGenerateReview(type));
+
+  // TickTick Settings
+  handle('ticktick:settings:get', () => getTickTickSettings());
+  handle('ticktick:settings:save', (settings: any) => saveTickTickSettings(settings));
+
+  // TickTick Sync
+  handle('ticktick:sync:reviewTask', (taskId: string, taskTitle: string, actualMinutes: number) => syncTaskCompletedToReview(taskId, taskTitle, actualMinutes));
+  handle('ticktick:sync:generateReviewTasks', () => generateAutoReviewTasks());
+
+  // White noise state
+  handle('ticktick:whiteNoise:get', async () => {
+    const db = await (await import('../services/databaseService')).getDatabase();
+    try {
+      const result = db.exec("SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'");
+      if (result.length && result[0].values.length) return JSON.parse(result[0].values[0][0] as string);
+    } catch { /* ignore */ }
+    return { enabled: false, noise: 'none' };
+  });
+  handle('ticktick:whiteNoise:set', async (state: any) => {
+    const db = await (await import('../services/databaseService')).getDatabase();
+    db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);
+    (await import('../services/databaseService')).persistDatabase();
   });
 }
