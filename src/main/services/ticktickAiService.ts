@@ -130,12 +130,15 @@ export async function aiDecomposeTask(input: TickTickAiDecompositionInput): Prom
       "title": "具体任务描述",
       "estimated_minutes": 30,
       "priority": "高/中/低",
+      "deadline_days": 0,
       "tags": ["标签1", "标签2"],
       "knowledge_points": []
     }
   ],
   "total_minutes": 120
-}`;
+}
+
+deadline_days: 0=今天, 1=明天, 以此类推。根据任务紧急程度和总时长合理分配。`;
 
   const userMessage = `目标：${input.goal}${extraContext}
 ${input.context?.availableDays ? `用户预计可用天数：${input.context.availableDays}` : ''}
@@ -149,10 +152,14 @@ ${input.context?.weakKnowledgePoints?.length ? `用户提到的薄弱点：${inp
   return {
     subtasks: (json.subtasks || []).map((t: any) => ({
       title: t.title || '',
+      estimated_minutes: t.estimated_minutes || 30,
       estimated_days: Math.max(1, Math.ceil((t.estimated_minutes || 30) / 60)),
+      priority: t.priority || 'none',
+      deadline_days: t.deadline_days ?? Math.ceil((json.total_minutes || 60) / 60),
       tags: t.tags || [],
       knowledge_points: t.knowledge_points || [],
     })),
+    total_minutes: json.total_minutes || 60,
     total_days: Math.max(1, Math.ceil((json.total_minutes || 60) / 60)),
   };
 }

@@ -31,10 +31,19 @@ export function AiDecompositionPanel({ lists, onTasksCreated }: { lists: TickTic
     for (const i of selected) {
       const subtask = result.subtasks[i];
       try {
+        // Compute due_date from deadline_days
+        let due_date: string | null = null;
+        if (subtask.deadline_days != null && subtask.deadline_days >= 0) {
+          const d = new Date();
+          d.setDate(d.getDate() + subtask.deadline_days);
+          due_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        }
         await window.api.createTickTickTask({
           list_id: listId,
           title: subtask.title,
-          estimated_minutes: subtask.estimated_days * 60,
+          estimated_minutes: subtask.estimated_minutes || (subtask.estimated_days * 60),
+          priority: subtask.priority || 'none',
+          due_date: due_date,
           tags: subtask.tags,
           source: 'ai_plan',
         });

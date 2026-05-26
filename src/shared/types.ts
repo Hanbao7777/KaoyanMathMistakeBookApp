@@ -999,10 +999,14 @@ export interface TickTickAiDecompositionResult {
   subtasks: Array<{
     title: string;
     estimated_days: number;
+    estimated_minutes: number;
+    priority: '高' | '中' | '低' | 'none';
+    deadline_days: number;
     tags: string[];
     knowledge_points: string[];
   }>;
   total_days: number;
+  total_minutes: number;
 }
 
 export interface TickTickAiDailyPlanResult {
