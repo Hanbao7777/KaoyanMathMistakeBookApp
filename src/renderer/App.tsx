@@ -66,6 +66,8 @@ function formatSeconds(seconds: number) {
   return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
+type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
+
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
@@ -78,7 +80,6 @@ export default function App() {
   const [timerTick, setTimerTick] = useState(0);
   const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
   const [mode, setMode] = useState<'mistake' | 'ticktick'>('mistake');
-  type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
   const [ttPage, setTtPage] = useState<TickTickPageKey>('today');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
 

@@ -6,6 +6,7 @@ type TimerStatus = 'idle' | 'running' | 'paused' | 'break';
 
 export function FocusTimerPage() {
   const [settings, setSettings] = useState<TickTickSettings | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [status, setStatus] = useState<TimerStatus>('idle');
   const [secondsLeft, setSecondsLeft] = useState(25 * 60);
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
@@ -36,7 +37,7 @@ export function FocusTimerPage() {
   const lastSavedSession = useRef(-1);
 
   useEffect(() => {
-    window.api.getTickTickSettings().then(setSettings);
+    window.api.getTickTickSettings().then(s => { setSettings(s); setSettingsLoaded(true); });
     window.api.listTickTickTasks({ includeCompleted: false }).then(setTasks);
   }, []);
 
@@ -148,6 +149,8 @@ export function FocusTimerPage() {
   const dashOffset = circumference * (1 - progress);
 
   const ringColor = status === 'break' ? 'break' : status === 'paused' ? 'paused' : 'focus';
+
+  if (!settingsLoaded) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
 
   const noiseOptions = [
     { key: 'none', label: '无' },

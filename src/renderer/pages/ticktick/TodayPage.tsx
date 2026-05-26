@@ -4,10 +4,12 @@ import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
+import { useToast } from '../../components/Toast';
 
 type GroupKey = 'overdue' | 'today' | 'upcoming' | 'completed';
 
 export function TodayPage() {
+  const { toast } = useToast();
   const [lists, setLists] = useState<TickTickList[]>([]);
   const [overdue, setOverdue] = useState<TickTickTask[]>([]);
   const [today, setToday] = useState<TickTickTask[]>([]);
@@ -60,6 +62,7 @@ export function TodayPage() {
       await load(); // Reconcile with server state
     } catch (e) {
       console.error('TodayPage:toggle', e);
+      toast('操作失败，请重试', 'error');
       await load(); // Revert on failure
     }
   }

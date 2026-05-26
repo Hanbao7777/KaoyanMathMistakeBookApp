@@ -9,9 +9,11 @@ export function CalendarPage() {
   const [days, setDays] = useState<TickTickCalendarDay[]>([]);
   const [view, setView] = useState<'month' | 'week' | 'day'>('month');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    window.api.getTickTickCalendarMonth(year, month).then(setDays).catch((e) => { console.error('CalendarPage', e); setDays([]); });
+    setLoading(true);
+    window.api.getTickTickCalendarMonth(year, month).then(setDays).catch((e) => { console.error('CalendarPage', e); setDays([]); }).finally(() => setLoading(false));
   }, [year, month]);
 
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -62,13 +64,13 @@ export function CalendarPage() {
         </div>
         <div className="tt-calendar-view-toggle">
           <button className={view === 'month' ? 'active' : ''} onClick={() => setView('month')} type="button">月</button>
-          <button className={view === 'week' ? 'active' : ''} onClick={() => setView('week')} type="button">周</button>
-          <button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')} type="button">日</button>
+          <button className={view === 'week' ? 'active' : ''} onClick={() => setView('week')} type="button" disabled>周</button>
+          <button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')} type="button" disabled>日</button>
         </div>
       </div>
 
       {view === 'month' ? (
-        <div className="tt-month-grid">
+        <div className="tt-month-grid" style={{ opacity: loading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {weekHeaders.map(h => <div key={h} className="day-header">{h}</div>)}
           {cells.map((day, i) => {
             if (!day) return <div key={`empty-${i}`} className="day-cell" style={{ background: 'var(--tt-bg-hover)' }} />;

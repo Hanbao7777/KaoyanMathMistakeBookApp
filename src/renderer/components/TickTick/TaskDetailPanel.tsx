@@ -12,12 +12,12 @@ interface TaskDetailPanelProps {
 
 export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailPanelProps) {
   const { toast } = useToast();
-  const [title, setTitle] = useState(task.title);
-  const [dueDate, setDueDate] = useState(task.due_date || '');
-  const [dueTime, setDueTime] = useState(task.due_time || '');
+  const [title, setTitle] = useState(task.title ?? '');
+  const [dueDate, setDueDate] = useState(task.due_date ?? '');
+  const [dueTime, setDueTime] = useState(task.due_time ?? '');
   const [priority, setPriority] = useState(task.priority);
   const [listId, setListId] = useState(task.list_id);
-  const [note, setNote] = useState(task.note);
+  const [note, setNote] = useState(task.note ?? '');
   const [tags, setTags] = useState((task.tags_list || []).join(', '));
   const [saving, setSaving] = useState(false);
 

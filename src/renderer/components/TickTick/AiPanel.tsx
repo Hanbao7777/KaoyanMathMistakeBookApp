@@ -1,10 +1,12 @@
 import { Sparkles } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useToast } from '../Toast';
-import type { TickTickAiDailyPlanResult, TickTickAiDecompositionResult, TickTickAiReviewResult } from '../../../shared/types';
+import type { TickTickAiDailyPlanResult, TickTickAiDecompositionResult, TickTickAiReviewResult, TickTickList } from '../../../shared/types';
 
-export function AiDecompositionPanel({ onTasksCreated }: { onTasksCreated: () => void }) {
+export function AiDecompositionPanel({ lists, onTasksCreated }: { lists: TickTickList[]; onTasksCreated: () => void }) {
   const { toast } = useToast();
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const [goal, setGoal] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TickTickAiDecompositionResult | null>(null);
@@ -15,16 +17,16 @@ export function AiDecompositionPanel({ onTasksCreated }: { onTasksCreated: () =>
     setLoading(true);
     try {
       const res = await window.api.aiDecomposeTask({ goal: goal.trim() });
+      if (!mountedRef.current) return;
       setResult(res);
       setSelected(new Set(res.subtasks.map((_, i) => i)));
-    } catch (e: any) { toast(e.message || 'AI 请求失败', 'error'); }
-    setLoading(false);
+    } catch (e: any) { if (mountedRef.current) toast(e.message || 'AI 请求失败', 'error'); }
+    if (mountedRef.current) setLoading(false);
   }
 
   async function handleCreate() {
     if (!result) return;
-    const defaultLists = await window.api.listTickTickLists();
-    const listId = defaultLists.length > 0 ? defaultLists[0].id : '';
+    const listId = lists.length > 0 ? lists[0].id : '';
     let created = 0;
     for (const i of selected) {
       const subtask = result.subtasks[i];
@@ -39,6 +41,7 @@ export function AiDecompositionPanel({ onTasksCreated }: { onTasksCreated: () =>
         created++;
       } catch { /* skip failures */ }
     }
+    if (!mountedRef.current) return;
     toast(`已创建 ${created} 个任务`, 'success');
     setResult(null);
     setGoal('');
@@ -74,7 +77,7 @@ export function AiDecompositionPanel({ onTasksCreated }: { onTasksCreated: () =>
                 if (next.has(i)) next.delete(i); else next.add(i);
                 setSelected(next);
               }}>
-                <input type="checkbox" checked={selected.has(i)} onChange={() => {}} style={{ accentColor: 'var(--tt-accent)' }} />
+                <input type="checkbox" checked={selected.has(i)} readOnly style={{ accentColor: 'var(--tt-accent)' }} />
                 <span style={{ flex: 1 }}>{task.title}</span>
                 <span className="time-block">{task.estimated_days}天</span>
               </div>
@@ -89,8 +92,10 @@ export function AiDecompositionPanel({ onTasksCreated }: { onTasksCreated: () =>
   );
 }
 
-export function AiDailyPlanPanel({ onTasksCreated }: { onTasksCreated: () => void }) {
+export function AiDailyPlanPanel({ lists, onTasksCreated }: { lists: TickTickList[]; onTasksCreated: () => void }) {
   const { toast } = useToast();
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TickTickAiDailyPlanResult | null>(null);
 
@@ -98,15 +103,15 @@ export function AiDailyPlanPanel({ onTasksCreated }: { onTasksCreated: () => voi
     setLoading(true);
     try {
       const res = await window.api.aiGenerateDailyPlan();
+      if (!mountedRef.current) return;
       setResult(res);
-    } catch (e: any) { toast(e.message || 'AI 请求失败', 'error'); }
-    setLoading(false);
+    } catch (e: any) { if (mountedRef.current) toast(e.message || 'AI 请求失败', 'error'); }
+    if (mountedRef.current) setLoading(false);
   }
 
   async function handleAccept() {
     if (!result) return;
-    const defaultLists = await window.api.listTickTickLists();
-    const listId = defaultLists.length > 0 ? defaultLists[0].id : '';
+    const listId = lists.length > 0 ? lists[0].id : '';
     let created = 0;
     for (const task of result.suggested_tasks) {
       try {
@@ -120,6 +125,7 @@ export function AiDailyPlanPanel({ onTasksCreated }: { onTasksCreated: () => voi
         created++;
       } catch { /* skip */ }
     }
+    if (!mountedRef.current) return;
     toast(`已添加 ${created} 个建议任务`, 'success');
     setResult(null);
     onTasksCreated();
@@ -158,6 +164,8 @@ export function AiDailyPlanPanel({ onTasksCreated }: { onTasksCreated: () => voi
 
 export function AiReviewPanel() {
   const { toast } = useToast();
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TickTickAiReviewResult | null>(null);
   const [type, setType] = useState<'daily' | 'weekly'>('daily');
@@ -167,9 +175,10 @@ export function AiReviewPanel() {
     setLoading(true);
     try {
       const res = await window.api.aiGenerateReview(reviewType);
+      if (!mountedRef.current) return;
       setResult(res);
-    } catch (e: any) { toast(e.message || 'AI 请求失败', 'error'); }
-    setLoading(false);
+    } catch (e: any) { if (mountedRef.current) toast(e.message || 'AI 请求失败', 'error'); }
+    if (mountedRef.current) setLoading(false);
   }
 
   return (

@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
@@ -16,13 +16,17 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
   const [allLists, setAllLists] = useState<TickTickList[]>([]);
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [loading, setLoading] = useState(true);
+  const versionRef = useRef(0);
 
   async function load() {
+    const version = ++versionRef.current;
+    setLoading(true);
     const [l, t, al] = await Promise.all([
       window.api.getTickTickList(listId),
       window.api.listTickTickTasks({ listId, includeCompleted: true }),
       window.api.listTickTickLists(),
     ]);
+    if (version !== versionRef.current) return;
     setList(l);
     setTasks(t.filter(t => !t.parent_id));
     setAllLists(al);
@@ -61,7 +65,7 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
             <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} />
           ))}
           {tasks.filter(t => t.is_completed).length > 0 ? (
-            <div style={{ marginTop: 16, opacity: 0.5 }}>
+            <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 11, color: 'var(--tt-text-muted)', padding: '8px 0' }}>
                 已完成 · {tasks.filter(t => t.is_completed).length}
               </div>
