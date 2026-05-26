@@ -36,8 +36,6 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
     } catch (e) { console.error('TickTickSidebar', e); }
   }
 
-  useEffect(() => { load(); }, []);
-  // Re-load when page changes (for count updates)
   useEffect(() => { load(); }, [page]);
 
   return (

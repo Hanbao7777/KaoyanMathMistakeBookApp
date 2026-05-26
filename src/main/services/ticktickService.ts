@@ -131,6 +131,11 @@ export async function updateTickTickList(listId: string, input: TickTickListInpu
 
 export async function deleteTickTickList(listId: string): Promise<boolean> {
   const db = await getDatabase();
+  // Clean up bridge entries for all tasks in this list before cascade delete
+  const tasks = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE list_id = ?', [listId]);
+  for (const task of tasks) {
+    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [task.id]);
+  }
   runSql(db, 'DELETE FROM ticktick_lists WHERE id = ?', [listId]);
   persistDatabase();
   return true;
@@ -246,6 +251,10 @@ export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Prom
     // tags is stored as JSON array string; match approximately
     where.push("t.tags LIKE ?");
     params.push(`%"${filters.tag}"%`);
+  }
+
+  if (filters.includeNoDate) {
+    where.push('t.due_date IS NULL');
   }
 
   const sql = `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.due_time ASC, t.sort_order ASC, t.created_at ASC`;
@@ -426,17 +435,20 @@ export async function updateTickTickTask(taskId: string, partial: Partial<TickTi
 
 export async function deleteTickTickTask(taskId: string): Promise<boolean> {
   const db = await getDatabase();
-  // Delete bridge entries first (no cascade defined)
-  runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [taskId]);
-  // Delete subtasks' bridge entries
-  const subtasks = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [taskId]);
-  for (const sub of subtasks) {
-    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [sub.id]);
+  // Recursively collect all descendant task IDs
+  const allIds = [taskId];
+  for (let i = 0; i < allIds.length; i++) {
+    const children = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
+    for (const child of children) allIds.push(child.id);
   }
-  // Delete subtasks
-  runSql(db, 'DELETE FROM ticktick_tasks WHERE parent_id = ?', [taskId]);
-  // Delete the task itself
-  runSql(db, 'DELETE FROM ticktick_tasks WHERE id = ?', [taskId]);
+  // Delete bridge entries for all descendant tasks
+  for (const id of allIds) {
+    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]);
+  }
+  // Delete all descendant tasks
+  for (const id of allIds) {
+    runSql(db, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]);
+  }
   persistDatabase();
   return true;
 }
@@ -675,7 +687,7 @@ export async function getTickTickCalendarMonth(year: number, month: number): Pro
   const sessionsRaw = db.exec(
     `SELECT date(start_time) AS d, COUNT(*) AS cnt
      FROM ticktick_focus_sessions
-     WHERE completed = 1 AND date(start_time) >= ? AND date(start_time) <= ?
+     WHERE session_type = 'focus' AND completed = 1 AND date(start_time) >= ? AND date(start_time) <= ?
      GROUP BY d`,
     [startDate, endDate]
   );

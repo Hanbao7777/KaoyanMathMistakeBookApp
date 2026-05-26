@@ -6,8 +6,6 @@ interface TaskRowProps {
   onToggle: (task: TickTickTask) => void;
 }
 
-const priorityLabels: Record<string, string> = { '高': '!!', '中': '!', '低': '', 'none': '' };
-
 export function TaskRow({ task, onClick, onToggle }: TaskRowProps) {
   const tagsList = task.tags_list || [];
   const subtaskInfo = task.subtask_count ? `子 ${task.subtask_completed || 0}/${task.subtask_count}` : null;
