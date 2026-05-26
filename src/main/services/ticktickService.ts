@@ -659,9 +659,19 @@ export async function createTickTickBridge(input: TickTickBridgeInput): Promise<
   );
   persistDatabase();
 
+  // On duplicate, last_insert_rowid() returns 0; fallback to lookup by unique key
   const lastId = oneSql<{ id: number }>(db, 'SELECT last_insert_rowid() AS id');
-  const row = oneSql<TickTickBridge>(db, 'SELECT * FROM ticktick_bridge WHERE id = ?', [lastId!.id]);
-  return row!;
+  if (lastId && lastId.id > 0) {
+    const row = oneSql<TickTickBridge>(db, 'SELECT * FROM ticktick_bridge WHERE id = ?', [lastId.id]);
+    if (row) return row;
+  }
+
+  // Duplicate was ignored — return existing record
+  const existing = oneSql<TickTickBridge>(db,
+    'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND linked_type = ? AND linked_id = ?',
+    [input.ticktick_task_id, input.linked_type, input.linked_id]
+  );
+  return existing!;
 }
 
 export async function deleteTickTickBridge(bridgeId: number): Promise<boolean> {
