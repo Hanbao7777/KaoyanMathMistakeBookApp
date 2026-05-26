@@ -101,6 +101,10 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
 
+  useEffect(() => {
+    window.api.triggerReviewTaskGeneration().catch(() => {});
+  }, []);
+
   const elapsedSeconds = useMemo(() => {
     void timerTick;
     return getElapsedSeconds(focusTimer);
