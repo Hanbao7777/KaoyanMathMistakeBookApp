@@ -183,7 +183,7 @@ export function parseTaskInput(raw: string): ParsedTaskInput {
     const parsedAbs = parseAbsoluteDate(absDatePreMatch[0]);
     if (parsedAbs) {
       result.due_date = parsedAbs;
-      result.title = result.title.replace(absDatePreMatch[0], '').trim();
+      // Don't remove date from title — let the normal compound regex handle time extraction
     }
   }
 

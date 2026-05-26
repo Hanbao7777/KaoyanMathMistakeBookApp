@@ -61,7 +61,19 @@ export function FocusTimerPage() {
           if (remaining > 0) {
             // Resume the running timer
             sessionStartRef.current = state.sessionStartTime;
-            // The timer will auto-resume after state updates
+            // Auto-resume the countdown interval
+            const interval = setInterval(() => {
+              const elapsed = Math.floor((Date.now() - sessionStartRef.current) / 1000);
+              const totalSecs = statusRef.current === 'break' ? state.totalSeconds : (settings?.pomodoro?.focusMinutes || 25) * 60;
+              const rem = Math.max(0, totalSecs - elapsed);
+              setSecondsLeft(rem);
+              if (rem <= 0) {
+                clearInterval(interval);
+                intervalRef.current = null;
+                handleSessionEnd();
+              }
+            }, 250);
+            intervalRef.current = interval;
           }
         } else {
           setSecondsLeft(state.secondsLeft);
