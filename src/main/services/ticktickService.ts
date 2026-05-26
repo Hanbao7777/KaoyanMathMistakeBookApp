@@ -560,15 +560,28 @@ export async function getTodayTickTickTasks(): Promise<{
 
 export async function listTickTickTags(): Promise<TickTickTag[]> {
   const db = await getDatabase();
+  // Only count active (uncompleted) tasks
   const rows = allSql<TickTickTag & { task_count: number }>(
     db,
     `SELECT tg.*,
        (SELECT COUNT(*) FROM ticktick_tasks t
         WHERE t.tags LIKE '%"' || tg.name || '"%'
-          AND t.parent_id IS NULL) AS task_count
+          AND t.parent_id IS NULL
+          AND t.is_completed = 0) AS task_count
      FROM ticktick_tags tg
      ORDER BY task_count DESC, tg.name ASC`
   );
+  // Clean up tags with zero active tasks
+  const usedTags = allSql<{ name: string }>(db,
+    "SELECT DISTINCT tg.name FROM ticktick_tags tg WHERE EXISTS (SELECT 1 FROM ticktick_tasks t WHERE t.tags LIKE '%\"' || tg.name || '\"%' AND t.is_completed = 0 AND t.parent_id IS NULL)"
+  );
+  const usedSet = new Set(usedTags.map(r => r.name));
+  for (const tag of rows) {
+    if (tag.task_count === 0 && !usedSet.has(tag.name)) {
+      runSql(db, 'DELETE FROM ticktick_tags WHERE id = ?', [tag.id]);
+    }
+  }
+  persistDatabase();
   return rows;
 }
 
