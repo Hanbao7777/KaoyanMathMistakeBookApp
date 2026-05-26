@@ -315,4 +315,86 @@ CREATE INDEX IF NOT EXISTS idx_study_tasks_status ON study_tasks(status);
 CREATE INDEX IF NOT EXISTS idx_study_sessions_date ON study_sessions(session_date);
 CREATE INDEX IF NOT EXISTS idx_study_sessions_subject ON study_sessions(subject_id);
 CREATE INDEX IF NOT EXISTS idx_daily_reviews_date ON daily_reviews(review_date);
+
+CREATE TABLE IF NOT EXISTS ticktick_lists (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT '#4a90d9',
+  icon TEXT DEFAULT 'list',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_folder INTEGER NOT NULL DEFAULT 0,
+  parent_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_tasks (
+  id TEXT PRIMARY KEY,
+  list_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  note TEXT DEFAULT '',
+  due_date TEXT,
+  due_time TEXT,
+  priority TEXT CHECK(priority IN ('none','低','中','高')) DEFAULT 'none',
+  is_completed INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  parent_id TEXT,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  tags TEXT DEFAULT '[]',
+  recurrence_rule TEXT,
+  estimated_minutes INTEGER NOT NULL DEFAULT 0,
+  actual_minutes INTEGER NOT NULL DEFAULT 0,
+  pomodoro_sessions INTEGER NOT NULL DEFAULT 0,
+  source TEXT DEFAULT 'manual',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (list_id) REFERENCES ticktick_lists(id) ON DELETE CASCADE,
+  FOREIGN KEY (parent_id) REFERENCES ticktick_tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_tags (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  color TEXT NOT NULL DEFAULT '#999999'
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_focus_sessions (
+  id TEXT PRIMARY KEY,
+  task_id TEXT,
+  start_time TEXT NOT NULL,
+  end_time TEXT,
+  duration_minutes INTEGER NOT NULL DEFAULT 0,
+  session_type TEXT CHECK(session_type IN ('focus','short_break','long_break')) DEFAULT 'focus',
+  completed INTEGER NOT NULL DEFAULT 1,
+  white_noise TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (task_id) REFERENCES ticktick_tasks(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_bridge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticktick_task_id TEXT NOT NULL,
+  linked_type TEXT NOT NULL CHECK(linked_type IN ('question','knowledge_point','subject','study_task')),
+  linked_id TEXT NOT NULL,
+  sync_review INTEGER NOT NULL DEFAULT 1,
+  sync_mastery INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_ai_plans (
+  id TEXT PRIMARY KEY,
+  plan_date TEXT NOT NULL,
+  raw_response TEXT NOT NULL,
+  tasks_json TEXT NOT NULL,
+  accepted_count INTEGER NOT NULL DEFAULT 0,
+  reviewed INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_list ON ticktick_tasks(list_id);
+CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_date ON ticktick_tasks(due_date);
+CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_parent ON ticktick_tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_task ON ticktick_bridge(ticktick_task_id);
+CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_linked ON ticktick_bridge(linked_type, linked_id);
+CREATE INDEX IF NOT EXISTS idx_ticktick_focus_task ON ticktick_focus_sessions(task_id);
 `;
