@@ -93,42 +93,75 @@ export async function aiDecomposeTask(input: TickTickAiDecompositionInput): Prom
   const db = await getDatabase();
   const today = todayStr();
 
-  const weakResult = db.exec(
-    `SELECT kp.title, kp.category, COUNT(q.id) as question_count
-     FROM knowledge_points kp
-     LEFT JOIN question_knowledge_points qkp ON kp.node_id = qkp.knowledge_node_id
-     LEFT JOIN questions q ON qkp.question_id = q.id
-     WHERE q.mastery_level IN ('未掌握', '较弱')
-     GROUP BY kp.node_id
-     ORDER BY question_count DESC LIMIT 10`
-  );
+  // Detect if the goal is math-related
+  const mathKeywords = ['数学', '高数', '线代', '概率', '错题', '复习', '极限', '导数', '积分', '微分', '级数', '考研'];
+  const isMathGoal = mathKeywords.some(kw => input.goal.includes(kw));
 
-  let weakContext = '';
-  if (weakResult.length && weakResult[0].values.length) {
-    weakContext = weakResult[0].values.map((r: any[]) => `- ${r[0]} (${r[1]}, ${r[2]}道错题)`).join('\n');
+  let extraContext = '';
+  if (isMathGoal) {
+    const weakResult = db.exec(
+      `SELECT kp.title, kp.category, COUNT(q.id) as question_count
+       FROM knowledge_points kp
+       LEFT JOIN question_knowledge_points qkp ON kp.node_id = qkp.knowledge_node_id
+       LEFT JOIN questions q ON qkp.question_id = q.id
+       WHERE q.mastery_level IN ('未掌握', '较弱')
+       GROUP BY kp.node_id
+       ORDER BY question_count DESC LIMIT 5`
+    );
+    if (weakResult.length && weakResult[0].values.length) {
+      extraContext = '\n相关薄弱知识点（仅供参考，仅当与目标相关时纳入）：\n' +
+        weakResult[0].values.map((r: any[]) => `- ${r[0]} (${r[1]}, ${r[2]}道错题)`).join('\n');
+    }
   }
 
-  const systemPrompt = `你是一个考研数学学习规划助手。根据用户的学习目标，拆解为具体的每日任务。
+  // Compute a suggested due date based on available days
+  const availableDays = input.context?.availableDays || 7;
+  const targetDate = new Date();
+  targetDate.setDate(targetDate.getDate() + availableDays);
+
+  const systemPrompt = `你是一个智能任务拆解助手。用户给你一个目标，你将其拆解为具体可执行的子任务。
+
+规则：
+1. 严格按照用户输入的目标来拆解，不要添加不相关的任务
+2. 如果用户提到了时间约束（如"70分钟"），合理分配总时长
+3. 如果用户提到了优先级，输出中体现
+4. 每个子任务要具体、可量化、可直接执行
+5. 标签用中文，描述任务类型
+
 输出格式（严格 JSON）：
 {
   "subtasks": [
-    { "title": "具体任务描述", "estimated_days": 2, "tags": ["刷题", "复习"], "knowledge_points": ["知识点名称"] }
+    {
+      "title": "具体任务描述",
+      "estimated_minutes": 30,
+      "priority": "高/中/低",
+      "tags": ["标签1", "标签2"],
+      "knowledge_points": []
+    }
   ],
-  "total_days": 15
+  "total_minutes": 120,
+  "suggested_priority": "中",
+  "suggested_deadline": "YYYY-MM-DD",
+  "summary": "一句话总结拆解逻辑"
 }`;
 
-  const userMessage = `学习目标：${input.goal}${input.context?.availableDays ? `\n可用天数：${input.context.availableDays} 天` : ''}
-当前薄弱知识点：
-${weakContext || '无数据'}
-${input.context?.weakKnowledgePoints?.length ? `\n用户指定的薄弱点：${input.context.weakKnowledgePoints.join('、')}` : ''}
-请拆解为具体可行的每日任务。每个任务要具体、可执行，标签用中文。`;
+  const userMessage = `目标：${input.goal}${extraContext}
+${input.context?.availableDays ? `用户预计可用天数：${input.context.availableDays}` : ''}
+${input.context?.weakKnowledgePoints?.length ? `用户提到的薄弱点：${input.context.weakKnowledgePoints.join('、')}` : ''}
+
+请拆解为具体可行的子任务。每个子任务要有清晰的标题、合理的预计时长和优先级。`;
 
   const raw = await callDeepSeek(systemPrompt, userMessage, 2048);
   const json = extractJson(raw);
 
   return {
-    subtasks: json.subtasks || [],
-    total_days: json.total_days || 0,
+    subtasks: (json.subtasks || []).map((t: any) => ({
+      title: t.title || '',
+      estimated_days: Math.max(1, Math.ceil((t.estimated_minutes || 30) / 60)),
+      tags: t.tags || [],
+      knowledge_points: t.knowledge_points || [],
+    })),
+    total_days: Math.max(1, Math.ceil((json.total_minutes || 60) / 60)),
   };
 }
 
@@ -166,7 +199,16 @@ export async function aiGenerateDailyPlan(): Promise<TickTickAiDailyPlanResult> 
   const studyResult = db.exec("SELECT daily_target_minutes FROM study_settings LIMIT 1");
   const dailyTarget = studyResult.length && studyResult[0].values.length ? studyResult[0].values[0][0] : 120;
 
-  const systemPrompt = `你是一个考研学习日程规划助手。根据用户的学习数据，生成今日建议任务列表。
+  const hasMathData = reviewContext || overdueContext;
+
+  const systemPrompt = `你是一个智能日程规划助手。根据用户提供的数据，生成今日建议任务列表。
+
+规则：
+1. 如果有待复习内容，优先安排
+2. 如果有过期任务，提醒用户处理
+3. 合理分配时间到上午、下午、晚上三个时间块
+4. 任务要具体、可执行
+
 输出格式（严格 JSON）：
 {
   "suggested_tasks": [
@@ -178,14 +220,14 @@ export async function aiGenerateDailyPlan(): Promise<TickTickAiDailyPlanResult> 
   const userMessage = `今日日期：${today}
 每日学习目标：${dailyTarget} 分钟
 番茄钟设置：专注${settings.pomodoro.focusMinutes}分钟/休息${settings.pomodoro.shortBreakMinutes}分钟
-
+${hasMathData ? `
 到期复习错题：
 ${reviewContext || '无到期复习'}
 
 过期未完成任务：
 ${overdueContext || '无过期任务'}
-
-请生成今日学习计划建议。优先安排薄弱知识点的复习，合理分配时间块。`;
+` : ''}
+请生成今日计划建议。${hasMathData ? '优先安排薄弱知识点的复习，' : ''}合理分配时间块。`;
 
   const raw = await callDeepSeek(systemPrompt, userMessage, 2048);
   const json = extractJson(raw);

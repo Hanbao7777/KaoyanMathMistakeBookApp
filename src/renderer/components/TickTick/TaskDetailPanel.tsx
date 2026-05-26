@@ -1,6 +1,7 @@
-import { X } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import { useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
+import { useModal } from '../Modal';
 import { useToast } from '../Toast';
 
 interface TaskDetailPanelProps {
@@ -11,6 +12,7 @@ interface TaskDetailPanelProps {
 }
 
 export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailPanelProps) {
+  const modal = useModal();
   const { toast } = useToast();
   const [title, setTitle] = useState(task.title ?? '');
   const [dueDate, setDueDate] = useState(task.due_date ?? '');
@@ -20,6 +22,24 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
   const [note, setNote] = useState(task.note ?? '');
   const [tags, setTags] = useState((task.tags_list || []).join(', '));
   const [saving, setSaving] = useState(false);
+
+  async function handleDelete() {
+    const confirmed = await modal.confirm({
+      title: '删除任务',
+      message: `确定要删除「${title}」吗？此操作不可撤销。`,
+      confirmLabel: '删除',
+      danger: true,
+    });
+    if (!confirmed) return;
+    try {
+      await window.api.deleteTickTickTask(task.id);
+      toast('任务已删除', 'success');
+      onClose();
+      onUpdated();
+    } catch (e: any) {
+      toast(e.message || '删除失败', 'error');
+    }
+  }
 
   async function handleSave() {
     setSaving(true);
@@ -109,6 +129,15 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
           {saving ? '保存中...' : '保存修改'}
         </button>
       </form>
+
+      <button
+        onClick={handleDelete}
+        style={{ padding: '10px', borderRadius: 'var(--tt-radius-md)', border: '1px solid var(--tt-danger)', background: 'transparent', color: 'var(--tt-danger)', fontWeight: 600, cursor: 'pointer', marginTop: 8, fontSize: 13 }}
+        type="button"
+      >
+        <Trash2 size={14} style={{ marginRight: 4 }} />
+        删除任务
+      </button>
     </div>
   );
 }

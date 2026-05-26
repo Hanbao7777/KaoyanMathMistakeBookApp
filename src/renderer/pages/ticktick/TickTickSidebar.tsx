@@ -1,4 +1,4 @@
-import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Settings } from 'lucide-react';
+import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Plus, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTag } from '../../../shared/types';
 
@@ -16,6 +16,8 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
   const [tags, setTags] = useState<TickTickTag[]>([]);
   const [todayCount, setTodayCount] = useState(0);
   const [inboxCount, setInboxCount] = useState(0);
+  const [showAddList, setShowAddList] = useState(false);
+  const [newListName, setNewListName] = useState('');
 
   async function load() {
     try {
@@ -37,6 +39,16 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
   }
 
   useEffect(() => { load(); }, [page]);
+
+  async function handleCreateList() {
+    if (!newListName.trim()) return;
+    try {
+      await window.api.createTickTickList({ name: newListName.trim() });
+      setNewListName('');
+      setShowAddList(false);
+      load();
+    } catch (e) { /* ignore */ }
+  }
 
   // Reload on window focus to keep counts fresh
   useEffect(() => {
@@ -93,7 +105,30 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
 
         {/* Lists */}
         <div className="tt-sidebar-section">
-          <div className="tt-sidebar-label">清单</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div className="tt-sidebar-label" style={{ padding: 0 }}>清单</div>
+            <button
+              onClick={() => setShowAddList(!showAddList)}
+              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-muted)', fontSize: 14, padding: '2px 4px' }}
+              type="button"
+              title="创建清单"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+          {showAddList ? (
+            <div style={{ display: 'flex', gap: 4, padding: '4px 0', marginBottom: 4 }}>
+              <input
+                autoFocus
+                value={newListName}
+                onChange={e => setNewListName(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleCreateList(); if (e.key === 'Escape') { setShowAddList(false); setNewListName(''); } }}
+                placeholder="清单名称..."
+                style={{ flex: 1, padding: '4px 8px', borderRadius: 'var(--tt-radius-sm)', border: '1px solid var(--tt-border)', background: 'var(--tt-bg)', color: 'var(--tt-text)', fontSize: 12, outline: 'none' }}
+              />
+              <button onClick={handleCreateList} style={{ padding: '4px 8px', borderRadius: 'var(--tt-radius-sm)', border: 'none', background: 'var(--tt-accent)', color: '#fff', cursor: 'pointer', fontSize: 12 }} type="button">创建</button>
+            </div>
+          ) : null}
           {lists.map((list) => (
             <button
               key={list.id}
