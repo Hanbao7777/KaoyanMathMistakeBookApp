@@ -835,3 +835,207 @@ export interface AiDiagnosisResult {
   suggestedReviewDirection: string;
   rawResponse: string;
 }
+
+// ── TickTick Types ──
+
+export type TickTickPriority = 'none' | '低' | '中' | '高';
+export type TickTickSessionType = 'focus' | 'short_break' | 'long_break';
+export type TickTickBridgeLinkedType = 'question' | 'knowledge_point' | 'subject' | 'study_task';
+export type TickTickTaskSource = 'manual' | 'auto_review' | 'ai_plan';
+export type TickTickWhiteNoise = 'rain' | 'stream' | 'cafe' | 'white' | 'forest' | 'none';
+
+export interface TickTickList {
+  id: string;
+  name: string;
+  color: string;
+  icon: string;
+  sort_order: number;
+  is_folder: number;
+  parent_id: string | null;
+  created_at: string;
+  updated_at: string;
+  task_count?: number;
+}
+
+export interface TickTickListInput {
+  name: string;
+  color?: string;
+  icon?: string;
+  is_folder?: number;
+  parent_id?: string | null;
+}
+
+export interface TickTickTask {
+  id: string;
+  list_id: string;
+  list_name?: string;
+  list_color?: string;
+  title: string;
+  note: string;
+  due_date: string | null;
+  due_time: string | null;
+  priority: TickTickPriority;
+  is_completed: number;
+  completed_at: string | null;
+  parent_id: string | null;
+  sort_order: number;
+  tags: string;
+  tags_list?: string[];
+  recurrence_rule: string | null;
+  estimated_minutes: number;
+  actual_minutes: number;
+  pomodoro_sessions: number;
+  source: TickTickTaskSource;
+  created_at: string;
+  updated_at: string;
+  subtask_count?: number;
+  subtask_completed?: number;
+  bridge_links?: TickTickBridge[];
+}
+
+export interface TickTickTaskInput {
+  list_id: string;
+  title: string;
+  note?: string;
+  due_date?: string | null;
+  due_time?: string | null;
+  priority?: TickTickPriority;
+  parent_id?: string | null;
+  tags?: string[];
+  recurrence_rule?: string | null;
+  estimated_minutes?: number;
+  source?: TickTickTaskSource;
+}
+
+export interface TickTickTaskFilters {
+  listId?: string;
+  dueDate?: string;
+  dueDateBefore?: string;
+  includeCompleted?: boolean;
+  includeNoDate?: boolean;
+  search?: string;
+  tag?: string;
+  priority?: TickTickPriority;
+}
+
+export interface TickTickTag {
+  id: string;
+  name: string;
+  color: string;
+  task_count?: number;
+}
+
+export interface TickTickFocusSession {
+  id: string;
+  task_id: string | null;
+  task_title?: string;
+  start_time: string;
+  end_time: string | null;
+  duration_minutes: number;
+  session_type: TickTickSessionType;
+  completed: number;
+  white_noise: TickTickWhiteNoise | null;
+  created_at: string;
+}
+
+export interface TickTickFocusSessionInput {
+  task_id?: string | null;
+  start_time: string;
+  end_time?: string | null;
+  duration_minutes: number;
+  session_type?: TickTickSessionType;
+  completed?: number;
+  white_noise?: TickTickWhiteNoise | null;
+}
+
+export interface TickTickBridge {
+  id: number;
+  ticktick_task_id: string;
+  linked_type: TickTickBridgeLinkedType;
+  linked_id: string;
+  sync_review: number;
+  sync_mastery: number;
+  created_at: string;
+}
+
+export interface TickTickBridgeInput {
+  ticktick_task_id: string;
+  linked_type: TickTickBridgeLinkedType;
+  linked_id: string;
+  sync_review?: number;
+  sync_mastery?: number;
+}
+
+export interface TickTickAiPlan {
+  id: string;
+  plan_date: string;
+  raw_response: string;
+  tasks_json: string;
+  accepted_count: number;
+  reviewed: number;
+  created_at: string;
+}
+
+export interface TickTickCalendarDay {
+  date: string;
+  task_count: number;
+  completed_count: number;
+  review_due_count: number;
+  pomodoro_count: number;
+  has_ai_plan: boolean;
+  tasks: TickTickTask[];
+}
+
+export interface TickTickAiDecompositionInput {
+  goal: string;
+  context?: {
+    availableDays?: number;
+    weakKnowledgePoints?: string[];
+    subjectId?: string;
+  };
+}
+
+export interface TickTickAiDecompositionResult {
+  subtasks: Array<{
+    title: string;
+    estimated_days: number;
+    tags: string[];
+    knowledge_points: string[];
+  }>;
+  total_days: number;
+}
+
+export interface TickTickAiDailyPlanResult {
+  suggested_tasks: Array<{
+    title: string;
+    time_block: string;
+    priority: TickTickPriority;
+    estimated_minutes: number;
+    linked_type: TickTickBridgeLinkedType | null;
+    linked_id: string | null;
+    reason: string;
+  }>;
+  summary: string;
+}
+
+export interface TickTickAiReviewResult {
+  completion_rate: number;
+  total_focus_minutes: number;
+  correct_rate: number | null;
+  weak_points: string[];
+  suggestion: string;
+}
+
+export interface TickTickPomodoroSettings {
+  focusMinutes: number;
+  shortBreakMinutes: number;
+  longBreakMinutes: number;
+  sessionsBeforeLongBreak: number;
+}
+
+export interface TickTickSettings {
+  pomodoro: TickTickPomodoroSettings;
+  autoCreateReviewTasks: boolean;
+  whiteNoise: TickTickWhiteNoise;
+  defaultListId: string | null;
+}
