@@ -90,7 +90,7 @@ export function TodayPage() {
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
   const weekdayStr = `周${weekdays[todayDate.getDay()]}`;
 
-  if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
+  if (loading) return <div className="ticktick-main-content"><div className="tt-empty"><div className="tt-spinner" />加载中...</div></div>;
 
   const completedCount = completed.length;
 

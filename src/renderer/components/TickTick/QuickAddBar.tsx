@@ -61,6 +61,7 @@ export function QuickAddBar({ defaultListId, lists, onTaskCreated }: QuickAddBar
           onChange={e => setText(e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="添加任务，支持自然语言：明天下午3点复习高数 #考研 @数学 !!高"
+          aria-label="快速添加任务"
         />
         <button className="icon-btn" type="button" title="日期" onClick={() => inputRef.current?.focus()}><Calendar size={14} /></button>
         <button className="icon-btn" type="button" title="标签" onClick={() => inputRef.current?.focus()}><Hash size={14} /></button>

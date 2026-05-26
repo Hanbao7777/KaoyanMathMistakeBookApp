@@ -28,6 +28,7 @@ import { ListDetailPage } from './pages/ticktick/ListDetailPage';
 import { FocusTimerPage as TickTickFocusTimerPage } from './pages/ticktick/FocusTimerPage';
 import { TickTickSettingsPage } from './pages/ticktick/TickTickSettingsPage';
 import { InboxPage } from './pages/ticktick/InboxPage';
+import { formatSeconds } from './utils/formatTime';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
 import './styles/modal.css';
@@ -57,13 +58,6 @@ function getElapsedSeconds(timer: FocusTimerState) {
   if (timer.status !== 'running' || !timer.lastStartedAt) return Math.max(0, Math.floor(timer.accumulatedSeconds));
   const extra = Math.max(0, Math.floor((Date.now() - new Date(timer.lastStartedAt).getTime()) / 1000));
   return Math.max(0, Math.floor(timer.accumulatedSeconds + extra));
-}
-
-function formatSeconds(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
 type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
@@ -105,7 +99,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    window.api.triggerReviewTaskGeneration().catch(() => {});
+    window.api.triggerReviewTaskGeneration().catch((e) => { console.error('triggerReviewTaskGeneration', e); });
   }, []);
 
   const elapsedSeconds = useMemo(() => {

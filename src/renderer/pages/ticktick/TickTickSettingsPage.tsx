@@ -48,19 +48,19 @@ export function TickTickSettingsPage() {
           <h3>番茄钟</h3>
           <div className="tt-setting-row">
             <label>专注时长（分钟）</label>
-            <input type="number" min={5} max={120} value={p.focusMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, focusMinutes: parseInt(e.target.value) || 25 } })} />
+            <input type="number" min={1} max={120} value={p.focusMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, focusMinutes: parseInt(e.target.value) || 0 } })} />
           </div>
           <div className="tt-setting-row">
             <label>短休息（分钟）</label>
-            <input type="number" min={1} max={30} value={p.shortBreakMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, shortBreakMinutes: parseInt(e.target.value) || 5 } })} />
+            <input type="number" min={1} max={30} value={p.shortBreakMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, shortBreakMinutes: parseInt(e.target.value) || 0 } })} />
           </div>
           <div className="tt-setting-row">
             <label>长休息（分钟）</label>
-            <input type="number" min={5} max={60} value={p.longBreakMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, longBreakMinutes: parseInt(e.target.value) || 15 } })} />
+            <input type="number" min={1} max={60} value={p.longBreakMinutes} onChange={e => setSettings({ ...settings, pomodoro: { ...p, longBreakMinutes: parseInt(e.target.value) || 0 } })} />
           </div>
           <div className="tt-setting-row">
             <label>每 N 轮后长休息</label>
-            <input type="number" min={2} max={8} value={p.sessionsBeforeLongBreak} onChange={e => setSettings({ ...settings, pomodoro: { ...p, sessionsBeforeLongBreak: parseInt(e.target.value) || 4 } })} />
+            <input type="number" min={1} max={8} value={p.sessionsBeforeLongBreak} onChange={e => setSettings({ ...settings, pomodoro: { ...p, sessionsBeforeLongBreak: parseInt(e.target.value) || 0 } })} />
           </div>
         </div>
 

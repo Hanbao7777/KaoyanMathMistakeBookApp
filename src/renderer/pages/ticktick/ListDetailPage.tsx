@@ -1,5 +1,5 @@
 import { ArrowLeft } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
@@ -41,6 +41,9 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
     await load();
   }
 
+  const activeTasks = useMemo(() => tasks.filter(t => !t.is_completed), [tasks]);
+  const completedTasks = useMemo(() => tasks.filter(t => t.is_completed), [tasks]);
+
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
   if (!list) return <div className="ticktick-main-content"><div className="tt-empty">清单不存在</div></div>;
 
@@ -61,15 +64,15 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
 
           <QuickAddBar defaultListId={listId} lists={allLists} onTaskCreated={load} />
 
-          {tasks.filter(t => !t.is_completed).map(task => (
+          {activeTasks.map(task => (
             <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} />
           ))}
-          {tasks.filter(t => t.is_completed).length > 0 ? (
+          {completedTasks.length > 0 ? (
             <div style={{ marginTop: 16 }}>
               <div style={{ fontSize: 11, color: 'var(--tt-text-muted)', padding: '8px 0' }}>
-                已完成 · {tasks.filter(t => t.is_completed).length}
+                已完成 · {completedTasks.length}
               </div>
-              {tasks.filter(t => t.is_completed).map(task => (
+              {completedTasks.map(task => (
                 <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} />
               ))}
             </div>

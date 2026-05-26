@@ -1,4 +1,4 @@
-import { Calendar, Clock3, Hash, Inbox, Settings } from 'lucide-react';
+import { Calendar, ClipboardList, Clock3, Hash, Inbox, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTag } from '../../../shared/types';
 
@@ -61,7 +61,7 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
         <div className="tt-sidebar-section">
           <div className="tt-sidebar-label">智能列表</div>
           <button className={`tt-sidebar-item ${page === 'today' ? 'active' : ''}`} onClick={() => onNavigate('today')} type="button">
-            <span style={{ fontSize: 14 }}>📋</span> 今天
+            <ClipboardList size={14} /> 今天
             {todayCount > 0 ? <span className="badge">{todayCount}</span> : null}
           </button>
           <button className={`tt-sidebar-item ${page === 'calendar' ? 'active' : ''}`} onClick={() => onNavigate('calendar')} type="button">
@@ -95,11 +95,11 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
           <div className="tt-sidebar-section">
             <div className="tt-sidebar-label">标签</div>
             {tags.slice(0, 10).map((tag) => (
-              <button key={tag.id} className="tt-sidebar-item" type="button">
+              <div key={tag.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 'var(--tt-radius-sm)', fontSize: 13, color: 'var(--tt-text)', cursor: 'default' }}>
                 <Hash size={12} style={{ color: tag.color }} />
                 {tag.name}
                 {tag.task_count ? <span className="count">{tag.task_count}</span> : null}
-              </button>
+              </div>
             ))}
           </div>
         ) : null}

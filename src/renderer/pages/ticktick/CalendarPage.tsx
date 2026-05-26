@@ -77,7 +77,7 @@ export function CalendarPage() {
             const isToday = day.date === todayStr;
             return (
               <div key={day.date} className={`day-cell ${isToday ? 'today' : ''}`} onClick={() => setSelectedDate(day.date)}>
-                <span className="day-num">{new Date(day.date).getDate()}</span>
+                <span className="day-num">{parseInt(day.date.split('-')[2], 10)}</span>
                 {day.task_count > 0 ? <span className="day-badge tasks">{day.completed_count}/{day.task_count} 任务</span> : null}
                 {day.review_due_count > 0 ? <span className="day-badge reviews">{day.review_due_count} 复习</span> : null}
                 {day.pomodoro_count > 0 ? <span className="day-badge pomo">🍅 {day.pomodoro_count}</span> : null}

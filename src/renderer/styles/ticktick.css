@@ -638,6 +638,21 @@
   font-size: 13px;
 }
 
+/* ── Spinner ── */
+.tt-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--tt-border);
+  border-top-color: var(--tt-accent);
+  border-radius: 50%;
+  animation: ttSpin 0.6s linear infinite;
+  margin: 0 auto 8px;
+}
+@keyframes ttSpin {
+  to { transform: rotate(360deg); }
+}
+
 /* ── Mode Toggle ── */
 .mode-toggle {
   display: flex;

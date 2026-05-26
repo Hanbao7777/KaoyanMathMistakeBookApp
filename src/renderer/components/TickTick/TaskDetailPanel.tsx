@@ -47,7 +47,7 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
     <div className="tt-detail-panel">
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h3>任务详情</h3>
-        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-secondary)' }} type="button">
+        <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-secondary)' }} type="button" aria-label="关闭">
           <X size={18} />
         </button>
       </div>

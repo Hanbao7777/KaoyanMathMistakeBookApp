@@ -1,6 +1,7 @@
 import { BarChart3, BookMarked, BookOpen, BookOpenCheck, CheckSquare, Clock3, FileQuestion, FileUp, Home, Library, ListTodo, PlusCircle, RotateCcw, Settings, ShieldCheck, Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { FocusTimerControls, FocusTimerState } from '../types/focusTimer';
+import { formatSeconds } from '../utils/formatTime';
 
 export type PageKey = 'dashboard' | 'studySupervisor' | 'dailyPlan' | 'studyMaterials' | 'focusTimer' | 'add' | 'library' | 'detail' | 'review' | 'knowledgeMap' | 'questionBank' | 'stats' | 'import' | 'aiImport' | 'settings';
 
@@ -45,13 +46,6 @@ const navGroups = [
     ]
   }
 ] as const;
-
-function formatSeconds(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':');
-}
 
 export function Shell({ page, onNavigate, children, focusTimer, focusTimerControls, mode, onModeChange }: ShellProps) {
   const showTimer = focusTimer && focusTimerControls && (focusTimer.status !== 'idle' || focusTimerControls.elapsedSeconds > 0);

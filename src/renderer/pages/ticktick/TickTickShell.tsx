@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { FocusTimerControls, FocusTimerState } from '../../types/focusTimer';
+import { formatSeconds } from '../../utils/formatTime';
 import { TickTickSidebar } from './TickTickSidebar';
 
 type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
@@ -12,13 +13,6 @@ interface TickTickShellProps {
   children: ReactNode;
   focusTimer?: FocusTimerState;
   focusTimerControls?: FocusTimerControls;
-}
-
-function formatSeconds(seconds: number) {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  return [h, m, s].map((v) => String(v).padStart(2, '0')).join(':');
 }
 
 export function TickTickShell({ page, selectedListId, onNavigate, onModeChange, children, focusTimer, focusTimerControls }: TickTickShellProps) {
