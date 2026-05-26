@@ -18,13 +18,14 @@ export function FocusTimerPage() {
   // Refs hold latest values for the interval callback to read
   const statusRef = useRef<TimerStatus>('idle');
   const currentSessionRef = useRef(1);
-  const secondsLeftRef = useRef(25 * 60);
+  const whiteNoiseRef = useRef('none');
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const breakTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep refs in sync with state
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { currentSessionRef.current = currentSession; }, [currentSession]);
-  useEffect(() => { secondsLeftRef.current = secondsLeft; }, [secondsLeft]);
+  useEffect(() => { whiteNoiseRef.current = whiteNoise; }, [whiteNoise]);
 
   const focusMinutes = settings?.pomodoro?.focusMinutes || 25;
   const shortBreak = settings?.pomodoro?.shortBreakMinutes || 5;
@@ -41,6 +42,7 @@ export function FocusTimerPage() {
 
   function clearTimer() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    if (breakTimeoutRef.current) { clearTimeout(breakTimeoutRef.current); breakTimeoutRef.current = null; }
   }
 
   // useEffect watches secondsLeft: when it hits 0, handle session transition
@@ -67,7 +69,7 @@ export function FocusTimerPage() {
           duration_minutes: minutes,
           session_type: 'focus',
           completed: 1,
-          white_noise: whiteNoise as any,
+          white_noise: whiteNoiseRef.current as any,
         }).catch((e) => { console.error('FocusTimer:saveSession', e); });
       }
 
@@ -80,7 +82,7 @@ export function FocusTimerPage() {
       setTotalSeconds(breakSecs);
 
       // Auto-start break after a tick
-      setTimeout(() => {
+      breakTimeoutRef.current = setTimeout(() => {
         const interval = setInterval(() => {
           setSecondsLeft(prev => {
             if (prev <= 1) { clearInterval(interval); return 0; }
