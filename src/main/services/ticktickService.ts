@@ -69,6 +69,9 @@ export async function getTickTickList(listId: string): Promise<TickTickList | nu
 }
 
 export async function createTickTickList(input: TickTickListInput): Promise<TickTickList> {
+  const name = input.name.trim();
+  if (!name) throw new Error('清单名称不能为空');
+
   const db = await getDatabase();
   const listId = id('list');
   const timestamp = nowIso();
@@ -86,7 +89,7 @@ export async function createTickTickList(input: TickTickListInput): Promise<Tick
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       listId,
-      input.name.trim(),
+      name,
       input.color || '#4a90d9',
       input.icon || 'list',
       sortOrder,
@@ -271,10 +274,29 @@ export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Prom
     }
   }
 
-  // Hydrate each task
+  // Batch-hydrate subtask counts to avoid N+1 queries
+  const taskIds = rows.map((t) => t.id);
+  const subStatsMap = new Map<string, { total: number; completed: number }>();
+  if (taskIds.length > 0) {
+    const placeholders = taskIds.map(() => '?').join(',');
+    const subRows = allSql<{ parent_id: string; total: number; completed: number }>(
+      db,
+      `SELECT parent_id, COUNT(*) AS total, COALESCE(SUM(is_completed), 0) AS completed
+       FROM ticktick_tasks WHERE parent_id IN (${placeholders}) GROUP BY parent_id`,
+      taskIds
+    );
+    for (const r of subRows) {
+      subStatsMap.set(r.parent_id, { total: r.total, completed: r.completed });
+    }
+  }
+
   const result: TickTickTask[] = [];
   for (const task of rows) {
-    result.push(await hydrateTask(db, task));
+    task.tags_list = parseTags(task.tags);
+    const stats = subStatsMap.get(task.id);
+    task.subtask_count = stats?.total ?? 0;
+    task.subtask_completed = stats?.completed ?? 0;
+    result.push(task);
   }
   return result;
 }
@@ -315,6 +337,7 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
   const timestamp = nowIso();
 
   // Next sort_order in the same list
+  // Two-step MAX + increment is safe because Electron's main process is single-threaded
   const maxOrder = oneSql<{ m: number }>(
     db,
     'SELECT MAX(sort_order) AS m FROM ticktick_tasks WHERE list_id = ?',
@@ -623,7 +646,7 @@ export async function createTickTickBridge(input: TickTickBridgeInput): Promise<
 
   runSql(
     db,
-    `INSERT INTO ticktick_bridge (ticktick_task_id, linked_type, linked_id, sync_review, sync_mastery, created_at)
+    `INSERT OR IGNORE INTO ticktick_bridge (ticktick_task_id, linked_type, linked_id, sync_review, sync_mastery, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
       input.ticktick_task_id,
@@ -663,6 +686,8 @@ export async function getBridgesForLinked(
 // ── Calendar ──
 
 export async function getTickTickCalendarMonth(year: number, month: number): Promise<TickTickCalendarDay[]> {
+  if (month < 1 || month > 12) throw new Error('月份必须在 1-12 之间');
+
   const db = await getDatabase();
 
   // Month range

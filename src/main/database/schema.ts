@@ -334,7 +334,7 @@ CREATE TABLE IF NOT EXISTS ticktick_tasks (
   title TEXT NOT NULL,
   note TEXT DEFAULT '',
   due_date TEXT,
-  due_time TEXT,
+  due_time TEXT CHECK(due_time IS NULL OR due_time GLOB '[0-2][0-9]:[0-5][0-9]'),
   priority TEXT CHECK(priority IN ('none','低','中','高')) DEFAULT 'none',
   is_completed INTEGER NOT NULL DEFAULT 0,
   completed_at TEXT,
@@ -345,7 +345,7 @@ CREATE TABLE IF NOT EXISTS ticktick_tasks (
   estimated_minutes INTEGER NOT NULL DEFAULT 0,
   actual_minutes INTEGER NOT NULL DEFAULT 0,
   pomodoro_sessions INTEGER NOT NULL DEFAULT 0,
-  source TEXT DEFAULT 'manual',
+  source TEXT CHECK(source IN ('manual','auto_review','ai_plan')) DEFAULT 'manual',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (list_id) REFERENCES ticktick_lists(id) ON DELETE CASCADE,
@@ -378,7 +378,9 @@ CREATE TABLE IF NOT EXISTS ticktick_bridge (
   linked_id TEXT NOT NULL,
   sync_review INTEGER NOT NULL DEFAULT 1,
   sync_mastery INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (ticktick_task_id) REFERENCES ticktick_tasks(id) ON DELETE CASCADE,
+  UNIQUE(ticktick_task_id, linked_type, linked_id)
 );
 
 CREATE TABLE IF NOT EXISTS ticktick_ai_plans (
@@ -397,4 +399,5 @@ CREATE INDEX IF NOT EXISTS idx_ticktick_tasks_parent ON ticktick_tasks(parent_id
 CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_task ON ticktick_bridge(ticktick_task_id);
 CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_linked ON ticktick_bridge(linked_type, linked_id);
 CREATE INDEX IF NOT EXISTS idx_ticktick_focus_task ON ticktick_focus_sessions(task_id);
+CREATE INDEX IF NOT EXISTS idx_ticktick_ai_plans_date ON ticktick_ai_plans(plan_date);
 `;

@@ -26,9 +26,10 @@ export async function syncTaskCompletedToReview(ticktickTaskId: string, taskTitl
       if (isNaN(questionId)) continue;
 
       // Check if already synced today to avoid duplicates
+      const escapedTitle = taskTitle.replace(/%/g, '\\%').replace(/_/g, '\\_');
       const existing = db.exec(
-        "SELECT id FROM review_logs WHERE question_id = ? AND review_date = ? AND note LIKE ?",
-        [questionId, reviewDate, `%TickTick 任务完成: ${taskTitle}%`]
+        "SELECT id FROM review_logs WHERE question_id = ? AND review_date = ? AND note LIKE ? ESCAPE '\\'",
+        [questionId, reviewDate, `%TickTick 任务完成: ${escapedTitle}%`]
       );
       if (existing.length && existing[0].values.length) continue;
 
@@ -67,7 +68,7 @@ export async function syncReviewToTickTickTask(linkedType: TickTickBridgeLinkedT
     if (!taskResult.length || !taskResult[0].values.length) continue;
 
     db.run(
-      'UPDATE ticktick_tasks SET actual_minutes = actual_minutes + 5, updated_at = ? WHERE id = ?',
+      'UPDATE ticktick_tasks SET updated_at = ? WHERE id = ? AND is_completed = 0',
       [now, bridge.ticktick_task_id]
     );
   }
@@ -117,7 +118,9 @@ export async function generateAutoReviewTasks(): Promise<{ created: number }> {
 
   // Check which questions already have an auto-review task today
   const existingResult = db.exec(
-    "SELECT linked_id FROM ticktick_bridge WHERE linked_type = 'question' AND date(created_at) = ?",
+    `SELECT linked_id FROM ticktick_bridge
+     WHERE linked_type = 'question'
+     AND ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE source = 'auto_review' AND date(created_at) = ?)`,
     [today]
   );
   const existingIds = new Set(
