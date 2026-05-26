@@ -277,6 +277,28 @@ export async function getTickTickTask(taskId: string): Promise<TickTickTask | nu
 
 export async function createTickTickTask(input: TickTickTaskInput): Promise<TickTickTask> {
   const db = await getDatabase();
+
+  // Validate list_id: if empty or nonexistent, auto-create a default list
+  let listId = input.list_id;
+  if (!listId) {
+    const firstList = oneSql<{ id: string }>(db, 'SELECT id FROM ticktick_lists ORDER BY sort_order ASC LIMIT 1');
+    if (!firstList) {
+      // Auto-create a default "收集箱" list
+      const now = nowIso();
+      listId = 'list_default';
+      runSql(db,
+        "INSERT OR IGNORE INTO ticktick_lists (id, name, color, icon, sort_order, created_at, updated_at) VALUES (?, '收集箱', '#4a90d9', 'inbox', 0, ?, ?)",
+        [listId, now, now]
+      );
+    } else {
+      listId = firstList.id;
+    }
+  } else {
+    // Verify the list exists
+    const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
+    if (!listExists) throw new Error(`清单 ${listId} 不存在`);
+  }
+
   const taskId = id('task');
   const timestamp = nowIso();
 
@@ -284,7 +306,7 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
   const maxOrder = oneSql<{ m: number }>(
     db,
     'SELECT MAX(sort_order) AS m FROM ticktick_tasks WHERE list_id = ?',
-    [input.list_id]
+    [listId]
   );
   const sortOrder = (maxOrder?.m ?? -1) + 1;
 
@@ -298,7 +320,7 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
      ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
     [
       taskId,
-      input.list_id,
+      listId,
       input.title.trim(),
       input.note || '',
       input.due_date ?? null,
@@ -719,7 +741,7 @@ const DEFAULT_TICKTICK_SETTINGS: TickTickSettings = {
     longBreakMinutes: 15,
     sessionsBeforeLongBreak: 4,
   },
-  autoCreateReviewTasks: false,
+  autoCreateReviewTasks: true,
   whiteNoise: 'none',
   defaultListId: null,
 };

@@ -1,10 +1,12 @@
 import { Pause, Play, SkipForward, Square } from 'lucide-react';
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TickTickTask, TickTickSettings } from '../../../shared/types';
+
+type TimerStatus = 'idle' | 'running' | 'paused' | 'break';
 
 export function FocusTimerPage() {
   const [settings, setSettings] = useState<TickTickSettings | null>(null);
-  const [status, setStatus] = useState<'idle' | 'running' | 'paused' | 'break'>('idle');
+  const [status, setStatus] = useState<TimerStatus>('idle');
   const [secondsLeft, setSecondsLeft] = useState(25 * 60);
   const [totalSeconds, setTotalSeconds] = useState(25 * 60);
   const [completedSessions, setCompletedSessions] = useState(0);
@@ -12,74 +14,111 @@ export function FocusTimerPage() {
   const [whiteNoise, setWhiteNoise] = useState<string>('none');
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [boundTaskId, setBoundTaskId] = useState<string | null>(null);
+
+  // Refs hold latest values for the interval callback to read
+  const statusRef = useRef<TimerStatus>('idle');
+  const currentSessionRef = useRef(1);
+  const secondsLeftRef = useRef(25 * 60);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Keep refs in sync with state
+  useEffect(() => { statusRef.current = status; }, [status]);
+  useEffect(() => { currentSessionRef.current = currentSession; }, [currentSession]);
+  useEffect(() => { secondsLeftRef.current = secondsLeft; }, [secondsLeft]);
 
   const focusMinutes = settings?.pomodoro?.focusMinutes || 25;
   const shortBreak = settings?.pomodoro?.shortBreakMinutes || 5;
   const longBreak = settings?.pomodoro?.longBreakMinutes || 15;
   const sessionsBeforeLong = settings?.pomodoro?.sessionsBeforeLongBreak || 4;
 
+  // Track last saved session to avoid double-save
+  const lastSavedSession = useRef(-1);
+
   useEffect(() => {
     window.api.getTickTickSettings().then(setSettings);
     window.api.listTickTickTasks({ includeCompleted: false }).then(setTasks);
   }, []);
 
-  const clearTimer = useCallback(() => {
+  function clearTimer() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
-  }, []);
+  }
+
+  // useEffect watches secondsLeft: when it hits 0, handle session transition
+  useEffect(() => {
+    if (secondsLeft > 0) return;
+    if (statusRef.current === 'idle') return;
+
+    clearTimer();
+
+    const prevStatus = statusRef.current;
+    const sess = currentSessionRef.current;
+
+    if (prevStatus === 'running') {
+      // Focus session ended → save and start break
+      const minutes = focusMinutes;
+      const now = new Date();
+      const saveKey = sess * 100 + completedSessions;
+      if (lastSavedSession.current !== saveKey) {
+        lastSavedSession.current = saveKey;
+        window.api.createTickTickFocusSession({
+          task_id: boundTaskId,
+          start_time: new Date(now.getTime() - minutes * 60000).toISOString(),
+          end_time: now.toISOString(),
+          duration_minutes: minutes,
+          session_type: 'focus',
+          completed: 1,
+          white_noise: whiteNoise as any,
+        }).catch(() => {});
+      }
+
+      setCompletedSessions(prev => prev + 1);
+
+      const isLastInSet = sess % sessionsBeforeLong === 0;
+      const breakSecs = isLastInSet ? longBreak * 60 : shortBreak * 60;
+      setStatus('break');
+      setSecondsLeft(breakSecs);
+      setTotalSeconds(breakSecs);
+
+      // Auto-start break after a tick
+      setTimeout(() => {
+        const interval = setInterval(() => {
+          setSecondsLeft(prev => {
+            if (prev <= 1) { clearInterval(interval); return 0; }
+            return prev - 1;
+          });
+        }, 1000);
+        intervalRef.current = interval;
+      }, 500);
+
+    } else if (prevStatus === 'break') {
+      // Break ended → prepare next focus
+      const nextSession = sess + 1;
+      setCurrentSession(nextSession);
+      setStatus('idle');
+      setSecondsLeft(focusMinutes * 60);
+      setTotalSeconds(focusMinutes * 60);
+    }
+  }, [secondsLeft]);
 
   function startTimer() {
-    if (status === 'idle') setTotalSeconds(focusMinutes * 60);
-    setStatus(status === 'break' ? 'running' : 'running');
     clearTimer();
-    intervalRef.current = setInterval(() => {
+    setStatus('running');
+    if (secondsLeft <= 0) {
+      setSecondsLeft(focusMinutes * 60);
+      setTotalSeconds(focusMinutes * 60);
+    }
+    const interval = setInterval(() => {
       setSecondsLeft(prev => {
-        if (prev <= 1) {
-          clearTimer();
-          handleSessionEnd();
-          return 0;
-        }
+        if (prev <= 1) { clearInterval(interval); return 0; }
         return prev - 1;
       });
     }, 1000);
+    intervalRef.current = interval;
   }
 
   function pauseTimer() {
     setStatus('paused');
     clearTimer();
-  }
-
-  function handleSessionEnd() {
-    if (status === 'break' || status === 'idle') {
-      // Break ended, start next focus
-      const nextSession = currentSession + 1;
-      setCurrentSession(nextSession);
-      setStatus('idle');
-      setSecondsLeft(focusMinutes * 60);
-      setTotalSeconds(focusMinutes * 60);
-      return;
-    }
-    // Focus session ended
-    setCompletedSessions(prev => prev + 1);
-    // Save session
-    const now = new Date();
-    window.api.createTickTickFocusSession({
-      task_id: boundTaskId,
-      start_time: new Date(now.getTime() - focusMinutes * 60000).toISOString(),
-      end_time: now.toISOString(),
-      duration_minutes: focusMinutes,
-      session_type: 'focus',
-      completed: 1,
-      white_noise: whiteNoise as any,
-    }).catch(() => {});
-
-    // Start break
-    const isLastInSet = (currentSession) % sessionsBeforeLong === 0;
-    const breakSeconds = isLastInSet ? longBreak * 60 : shortBreak * 60;
-    setStatus('break');
-    setSecondsLeft(breakSeconds);
-    setTotalSeconds(breakSeconds);
-    startTimer();
   }
 
   function skipBreak() {
@@ -98,14 +137,15 @@ export function FocusTimerPage() {
     setTotalSeconds(focusMinutes * 60);
     setCompletedSessions(0);
     setCurrentSession(1);
+    lastSavedSession.current = -1;
   }
 
   // Cleanup on unmount
-  useEffect(() => () => clearTimer(), [clearTimer]);
+  useEffect(() => () => clearTimer(), []);
 
-  const minutes = Math.floor(secondsLeft / 60);
-  const secs = secondsLeft % 60;
-  const progress = totalSeconds > 0 ? secondsLeft / totalSeconds : 0;
+  const minutes = Math.floor(Math.max(0, secondsLeft) / 60);
+  const secs = Math.max(0, secondsLeft) % 60;
+  const progress = totalSeconds > 0 ? Math.max(0, secondsLeft) / totalSeconds : 0;
   const circumference = 2 * Math.PI * 52;
   const dashOffset = circumference * (1 - progress);
 
@@ -113,17 +153,16 @@ export function FocusTimerPage() {
 
   const noiseOptions = [
     { key: 'none', label: '无' },
-    { key: 'rain', label: '🌧 雨声' },
-    { key: 'stream', label: '💧 溪流' },
-    { key: 'cafe', label: '☕ 咖啡馆' },
-    { key: 'white', label: '📡 白噪音' },
-    { key: 'forest', label: '🌲 森林' },
+    { key: 'rain', label: '雨声' },
+    { key: 'stream', label: '溪流' },
+    { key: 'cafe', label: '咖啡馆' },
+    { key: 'white', label: '白噪音' },
+    { key: 'forest', label: '森林' },
   ];
 
   return (
     <div className="ticktick-main-content">
       <div className="tt-timer-page">
-        {/* Ring Timer */}
         <div className="tt-ring-timer">
           <svg viewBox="0 0 120 120" width="220" height="220">
             <circle className="bg-ring" cx="60" cy="60" r="52" />
@@ -137,15 +176,14 @@ export function FocusTimerPage() {
           <div className="timer-text">
             <span className="time-display">{String(minutes).padStart(2, '0')}:{String(secs).padStart(2, '0')}</span>
             <span className="session-label">
-              {status === 'idle' ? '准备就绪' : status === 'running' ? '🍅 专注中' : status === 'paused' ? '⏸ 已暂停' : '☕ 休息中'}
+              {status === 'idle' ? '准备就绪' : status === 'running' ? '专注中' : status === 'paused' ? '已暂停' : '休息中'}
               {' · '}第 {currentSession} 轮
             </span>
           </div>
         </div>
 
-        {/* Controls */}
         <div className="tt-timer-controls">
-          {status === 'running' ? (
+          {status === 'running' || status === 'break' ? (
             <button className="btn-pause" onClick={pauseTimer} type="button"><Pause size={16} /> 暂停</button>
           ) : (
             <button className="btn-start" onClick={startTimer} type="button"><Play size={16} /> 开始</button>
@@ -156,14 +194,12 @@ export function FocusTimerPage() {
           <button className="btn-skip" onClick={resetTimer} type="button"><Square size={14} /> 重置</button>
         </div>
 
-        {/* Session dots */}
         <div className="tt-timer-pomodoro-dots">
           {Array.from({ length: sessionsBeforeLong }, (_, i) => (
-            <div key={i} className={`dot ${i < completedSessions % sessionsBeforeLong || (i < completedSessions && completedSessions >= sessionsBeforeLong) ? 'done' : ''}`} />
+            <div key={i} className={`dot ${i < completedSessions % sessionsBeforeLong ? 'done' : ''}`} />
           ))}
         </div>
 
-        {/* Task binding */}
         <div style={{ width: '100%', maxWidth: 400 }}>
           <label style={{ fontSize: 11, color: 'var(--tt-text-muted)', display: 'block', marginBottom: 4 }}>绑定任务</label>
           <select
@@ -176,7 +212,6 @@ export function FocusTimerPage() {
           </select>
         </div>
 
-        {/* White noise */}
         <div className="tt-noise-picker">
           {noiseOptions.map(opt => (
             <button
@@ -190,7 +225,6 @@ export function FocusTimerPage() {
           ))}
         </div>
 
-        {/* Focus duration setting */}
         <div style={{ fontSize: 12, color: 'var(--tt-text-muted)' }}>
           {focusMinutes} 分钟专注 / {shortBreak} 分钟短休 / {longBreak} 分钟长休 · 每 {sessionsBeforeLong} 轮长休
         </div>

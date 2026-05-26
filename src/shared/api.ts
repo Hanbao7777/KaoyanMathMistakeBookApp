@@ -243,6 +243,7 @@ export interface AppApi {
 
   // Auto review task creation
   triggerReviewTaskGeneration: () => Promise<{ created: number }>;
+  syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => Promise<void>;
 
   toFileUrl: (filePath: string) => string;
 }

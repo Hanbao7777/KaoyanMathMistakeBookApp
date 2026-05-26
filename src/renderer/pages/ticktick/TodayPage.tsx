@@ -43,22 +43,12 @@ export function TodayPage() {
         await window.api.uncompleteTickTickTask(task.id);
       } else {
         await window.api.completeTickTickTask(task.id);
-        // Sync to mistake book review
+        // Sync to mistake book review via bridge
         const bridges = await window.api.getTickTickTaskBridges(task.id);
         if (bridges.some(b => b.sync_review)) {
           try {
-            await window.api.createStudySession({
-              session_date: new Date().toISOString().slice(0, 10),
-              subject_id: 'math',
-              task_id: null,
-              material_id: null,
-              start_time: new Date(Date.now() - 25 * 60000).toISOString(),
-              end_time: new Date().toISOString(),
-              duration_minutes: 25,
-              quality: '良好',
-              note: `TickTick 任务完成: ${task.title}`
-            });
-          } catch { /* sync errors shouldn't block task completion */ }
+            await window.api.syncTickTickTaskCompletedToReview(task.id, task.title, task.estimated_minutes || 25);
+          } catch (e) { console.error('Sync review failed:', e); }
         }
       }
       await load();

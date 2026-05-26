@@ -26,6 +26,7 @@ import { CalendarPage } from './pages/ticktick/CalendarPage';
 import { ListDetailPage } from './pages/ticktick/ListDetailPage';
 import { FocusTimerPage as TickTickFocusTimerPage } from './pages/ticktick/FocusTimerPage';
 import { TickTickSettingsPage } from './pages/ticktick/TickTickSettingsPage';
+import { InboxPage } from './pages/ticktick/InboxPage';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
 import './styles/modal.css';
@@ -197,7 +198,7 @@ export default function App() {
     <ToastProvider>
       <ModalProvider>
       {mode === 'ticktick' ? (
-        <div className="app-shell">
+        <div className="ticktick-root">
           <div className="ticktick-app-shell">
             <TickTickSidebar
               page={ttPage}
@@ -229,7 +230,7 @@ export default function App() {
               {ttPage === 'list' && selectedListId && (
                 <ListDetailPage listId={selectedListId} onBack={() => { setTtPage('today'); setSelectedListId(null); }} />
               )}
-              {ttPage === 'inbox' && <TodayPage />}
+              {ttPage === 'inbox' && <InboxPage />}
               {ttPage === 'focus' && <TickTickFocusTimerPage />}
               {ttPage === 'settings' && <TickTickSettingsPage />}
             </div>
