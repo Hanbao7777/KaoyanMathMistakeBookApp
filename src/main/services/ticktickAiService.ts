@@ -114,17 +114,12 @@ export async function aiDecomposeTask(input: TickTickAiDecompositionInput): Prom
     }
   }
 
-  // Compute a suggested due date based on available days
-  const availableDays = input.context?.availableDays || 7;
-  const targetDate = new Date();
-  targetDate.setDate(targetDate.getDate() + availableDays);
-
   const systemPrompt = `你是一个智能任务拆解助手。用户给你一个目标，你将其拆解为具体可执行的子任务。
 
 规则：
 1. 严格按照用户输入的目标来拆解，不要添加不相关的任务
 2. 如果用户提到了时间约束（如"70分钟"），合理分配总时长
-3. 如果用户提到了优先级，输出中体现
+3. 如果用户提到了优先级，每个子任务的priority字段体现（高/中/低）
 4. 每个子任务要具体、可量化、可直接执行
 5. 标签用中文，描述任务类型
 
@@ -139,10 +134,7 @@ export async function aiDecomposeTask(input: TickTickAiDecompositionInput): Prom
       "knowledge_points": []
     }
   ],
-  "total_minutes": 120,
-  "suggested_priority": "中",
-  "suggested_deadline": "YYYY-MM-DD",
-  "summary": "一句话总结拆解逻辑"
+  "total_minutes": 120
 }`;
 
   const userMessage = `目标：${input.goal}${extraContext}
