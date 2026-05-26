@@ -116,12 +116,11 @@ export async function generateAutoReviewTasks(): Promise<{ created: number }> {
 
   if (!dueResult.length || !dueResult[0].values.length) return { created: 0 };
 
-  // Check which questions already have an auto-review task today
+  // Check which questions already have an uncompleted auto-review task
   const existingResult = db.exec(
     `SELECT linked_id FROM ticktick_bridge
      WHERE linked_type = 'question'
-     AND ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE source = 'auto_review' AND date(created_at) = ?)`,
-    [today]
+     AND ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE source = 'auto_review' AND is_completed = 0)`
   );
   const existingIds = new Set(
     existingResult.length ? existingResult[0].values.map((r) => String(r[0])) : []
@@ -157,6 +156,18 @@ export async function generateAutoReviewTasks(): Promise<{ created: number }> {
 
   persistDatabase();
   return { created };
+}
+
+// Path 5: Undo review sync when task is uncompleted
+export async function undoSyncTaskCompleted(ticktickTaskId: string, taskTitle: string): Promise<void> {
+  const db = await getDatabase();
+  const today = todayStr();
+  // Remove review_logs created by this task today
+  db.run(
+    "DELETE FROM review_logs WHERE review_date = ? AND note LIKE ? ESCAPE '\\'",
+    [today, `%TickTick 任务完成: ${taskTitle.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`]
+  );
+  persistDatabase();
 }
 
 async function getOrCreateDefaultList(db: import('sql.js').Database): Promise<string> {

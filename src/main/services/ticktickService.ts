@@ -259,8 +259,8 @@ export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Prom
 
   if (filters.tag) {
     // tags is stored as JSON array string; match approximately
-    where.push("t.tags LIKE ?");
-    params.push(`%"${filters.tag}"%`);
+    where.push("t.tags LIKE '%\"' || ? || '\"%'");
+    params.push(filters.tag);
   }
 
   if (filters.includeNoDate) {
@@ -375,6 +375,13 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
       timestamp
     ]
   );
+
+  // Write tags to ticktick_tags table
+  const tags = input.tags || [];
+  for (const tag of tags) {
+    runSql(db, 'INSERT OR IGNORE INTO ticktick_tags (id, name, color) VALUES (?, ?, ?)', [`tag_${tag}`, tag, '#999999']);
+  }
+
   persistDatabase();
   return (await getTickTickTask(taskId))!;
 }
@@ -859,34 +866,42 @@ export async function saveTickTickSettings(settings: TickTickSettings): Promise<
 
 // ── Habits ──
 
+const togglingHabits = new Set<string>();
+
 export async function listTickTickHabits(): Promise<TickTickHabit[]> {
   const db = await getDatabase();
   const today = localDate();
   const habits = allSql<TickTickHabit>(db, 'SELECT * FROM ticktick_habits ORDER BY sort_order ASC');
+  if (habits.length === 0) return [];
+
+  // Batch load all logs for the last 365 days
+  const since = localDate(new Date(Date.now() - 365 * 86400000));
+  const allLogs = allSql<{ habit_id: string; log_date: string }>(db,
+    'SELECT habit_id, log_date FROM ticktick_habit_logs WHERE habit_id IN (' + habits.map(() => '?').join(',') + ') AND log_date >= ? ORDER BY log_date DESC',
+    [...habits.map(h => h.id), since]
+  );
+
+  // Group logs by habit_id
+  const logMap = new Map<string, Set<string>>();
+  for (const log of allLogs) {
+    if (!logMap.has(log.habit_id)) logMap.set(log.habit_id, new Set());
+    logMap.get(log.habit_id)!.add(log.log_date);
+  }
 
   for (const h of habits) {
-    // Today's completion count
-    const todayLog = oneSql<{ cnt: number }>(db,
-      'SELECT COUNT(*) AS cnt FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ? AND completed = 1',
-      [h.id, today]
-    );
-    h.today_completed = todayLog?.cnt ?? 0;
+    const logs = logMap.get(h.id) || new Set();
+    h.today_completed = logs.has(today) ? 1 : 0;
 
-    // Streak: count consecutive days backward from today
+    // Streak calculation
     let streak = 0;
     for (let i = 0; i < 365; i++) {
       const d = new Date();
       d.setDate(d.getDate() - i);
       const ds = localDate(d);
-      const log = oneSql<{ completed: number }>(db,
-        'SELECT completed FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ?',
-        [h.id, ds]
-      );
-      if (log && log.completed) {
+      if (logs.has(ds)) {
         streak++;
       } else if (i === 0) {
-        // Today not yet completed — check yesterday
-        continue;
+        continue; // Today not yet completed
       } else {
         break;
       }
@@ -932,33 +947,39 @@ export async function deleteTickTickHabit(id: string): Promise<boolean> {
 }
 
 export async function toggleTickTickHabit(habitId: string, date: string): Promise<TickTickHabitLog | null> {
-  const db = await getDatabase();
-  const existing = oneSql<{ id: string; completed: number }>(db,
-    'SELECT id, completed FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ?',
-    [habitId, date]
-  );
+  if (togglingHabits.has(habitId)) return null; // Skip concurrent toggle
+  togglingHabits.add(habitId);
+  try {
+    const db = await getDatabase();
+    const existing = oneSql<{ id: string; completed: number }>(db,
+      'SELECT id, completed FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ?',
+      [habitId, date]
+    );
 
-  if (existing) {
-    if (existing.completed) {
-      // Uncheck
-      runSql(db, 'DELETE FROM ticktick_habit_logs WHERE id = ?', [existing.id]);
-      persistDatabase();
-      return null;
+    if (existing) {
+      if (existing.completed) {
+        // Uncheck
+        runSql(db, 'DELETE FROM ticktick_habit_logs WHERE id = ?', [existing.id]);
+        persistDatabase();
+        return null;
+      }
+      // Already unchecked? shouldn't happen, but keep
+      return { id: existing.id, habit_id: habitId, log_date: date, completed: 0, note: '', created_at: '' };
     }
-    // Already unchecked? shouldn't happen, but keep
-    return { id: existing.id, habit_id: habitId, log_date: date, completed: 0, note: '', created_at: '' };
-  }
 
-  // Check in
-  const logId = id('hlog');
-  const now = nowIso();
-  runSql(db,
-    'INSERT OR IGNORE INTO ticktick_habit_logs (id, habit_id, log_date, completed, note, created_at) VALUES (?, ?, ?, 1, ?, ?)',
-    [logId, habitId, date, '', now]
-  );
-  persistDatabase();
-  const row = oneSql<TickTickHabitLog>(db, 'SELECT * FROM ticktick_habit_logs WHERE id = ?', [logId]);
-  return row ?? null;
+    // Check in
+    const logId = id('hlog');
+    const now = nowIso();
+    runSql(db,
+      'INSERT OR IGNORE INTO ticktick_habit_logs (id, habit_id, log_date, completed, note, created_at) VALUES (?, ?, ?, 1, ?, ?)',
+      [logId, habitId, date, '', now]
+    );
+    persistDatabase();
+    const row = oneSql<TickTickHabitLog>(db, 'SELECT * FROM ticktick_habit_logs WHERE id = ?', [logId]);
+    return row ?? null;
+  } finally {
+    togglingHabits.delete(habitId);
+  }
 }
 
 export async function getTickTickHabitLogs(habitId: string, fromDate?: string, toDate?: string): Promise<TickTickHabitLog[]> {

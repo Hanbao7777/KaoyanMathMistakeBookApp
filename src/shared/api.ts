@@ -247,6 +247,7 @@ export interface AppApi {
   // Auto review task creation
   triggerReviewTaskGeneration: () => Promise<{ created: number }>;
   syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => Promise<void>;
+  undoReviewTaskSync: (taskId: string, taskTitle: string) => Promise<void>;
 
   // TickTick Habits
   listTickTickHabits: () => Promise<TickTickHabit[]>;

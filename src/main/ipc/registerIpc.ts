@@ -102,7 +102,7 @@ import {
   getTickTickSettings, saveTickTickSettings,
   listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
-import { syncTaskCompletedToReview, generateAutoReviewTasks } from '../services/bridgeService';
+import { syncTaskCompletedToReview, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
   DatabaseBackupKind,
@@ -381,6 +381,7 @@ export function registerIpc() {
 
   // TickTick Sync
   handle('ticktick:sync:reviewTask', (taskId: string, taskTitle: string, actualMinutes: number) => syncTaskCompletedToReview(taskId, taskTitle, actualMinutes));
+  handle('ticktick:sync:undoReviewTask', (taskId: string, taskTitle: string) => undoSyncTaskCompleted(taskId, taskTitle));
   handle('ticktick:sync:generateReviewTasks', () => generateAutoReviewTasks());
 
   // White noise state
