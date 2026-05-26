@@ -11,7 +11,7 @@ export function CalendarPage() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   useEffect(() => {
-    window.api.getTickTickCalendarMonth(year, month).then(setDays).catch(() => setDays([]));
+    window.api.getTickTickCalendarMonth(year, month).then(setDays).catch((e) => { console.error('CalendarPage', e); setDays([]); });
   }, [year, month]);
 
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;

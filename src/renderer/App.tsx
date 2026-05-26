@@ -21,6 +21,7 @@ import { StudyMaterialsPage } from './pages/StudyMaterialsPage';
 import { StudySupervisorPage } from './pages/StudySupervisorPage';
 import { defaultFocusTimerState, type FocusTimerPatch, type FocusTimerState } from './types/focusTimer';
 import { TickTickSidebar } from './pages/ticktick/TickTickSidebar';
+import { TickTickShell } from './pages/ticktick/TickTickShell';
 import { TodayPage } from './pages/ticktick/TodayPage';
 import { CalendarPage } from './pages/ticktick/CalendarPage';
 import { ListDetailPage } from './pages/ticktick/ListDetailPage';
@@ -199,42 +200,23 @@ export default function App() {
       <ModalProvider>
       {mode === 'ticktick' ? (
         <div className="ticktick-root">
-          <div className="ticktick-app-shell">
-            <TickTickSidebar
-              page={ttPage}
-              selectedListId={selectedListId}
-              onNavigate={(nextPage, listId) => {
-                setTtPage(nextPage);
-                if (listId) setSelectedListId(listId);
-                else setSelectedListId(null);
-              }}
-              onModeChange={() => setMode('mistake')}
-            />
-            <div className="ticktick-main">
-              {showTimer ? (
-                <div style={{ padding: '8px 24px', background: 'var(--tt-bg-hover)', display: 'flex', alignItems: 'center', gap: 12, borderBottom: '1px solid var(--tt-border-light)' }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--tt-accent)' }}>
-                    {focusTimer.status === 'running' ? '专注中' : '已暂停'}
-                  </span>
-                  <span style={{ fontSize: 12, color: 'var(--tt-text-secondary)' }}>{timerLabel}</span>
-                  <span style={{ marginLeft: 'auto', fontFamily: 'monospace', fontWeight: 700 }}>{formatSeconds(focusTimerControls.elapsedSeconds)}</span>
-                  {focusTimer.status === 'running' ? (
-                    <button onClick={focusTimerControls.pause} style={{ padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 12 }} type="button">暂停</button>
-                  ) : (
-                    <button onClick={focusTimerControls.start} style={{ padding: '4px 12px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 12 }} type="button">继续</button>
-                  )}
-                </div>
-              ) : null}
-              {ttPage === 'today' && <TodayPage />}
-              {ttPage === 'calendar' && <CalendarPage />}
-              {ttPage === 'list' && selectedListId && (
-                <ListDetailPage listId={selectedListId} onBack={() => { setTtPage('today'); setSelectedListId(null); }} />
-              )}
-              {ttPage === 'inbox' && <InboxPage />}
-              {ttPage === 'focus' && <TickTickFocusTimerPage />}
-              {ttPage === 'settings' && <TickTickSettingsPage />}
-            </div>
-          </div>
+          <TickTickShell
+            page={ttPage}
+            selectedListId={selectedListId}
+            onNavigate={(nextPage, listId) => { setTtPage(nextPage); setSelectedListId(listId || null); }}
+            onModeChange={() => setMode('mistake')}
+            focusTimer={focusTimer}
+            focusTimerControls={focusTimerControls}
+          >
+            {ttPage === 'today' && <TodayPage />}
+            {ttPage === 'calendar' && <CalendarPage />}
+            {ttPage === 'list' && selectedListId && (
+              <ListDetailPage listId={selectedListId} onBack={() => { setTtPage('today'); setSelectedListId(null); }} />
+            )}
+            {ttPage === 'inbox' && <InboxPage />}
+            {ttPage === 'focus' && <TickTickFocusTimerPage />}
+            {ttPage === 'settings' && <TickTickSettingsPage />}
+          </TickTickShell>
         </div>
       ) : (
         <Shell page={page} onNavigate={navigate} focusTimer={focusTimer} focusTimerControls={focusTimerControls} mode={mode} onModeChange={setMode}>

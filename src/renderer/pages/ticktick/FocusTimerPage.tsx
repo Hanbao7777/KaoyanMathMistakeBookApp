@@ -68,7 +68,7 @@ export function FocusTimerPage() {
           session_type: 'focus',
           completed: 1,
           white_noise: whiteNoise as any,
-        }).catch(() => {});
+        }).catch((e) => { console.error('FocusTimer:saveSession', e); });
       }
 
       setCompletedSessions(prev => prev + 1);

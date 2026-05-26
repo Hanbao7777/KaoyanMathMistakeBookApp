@@ -31,7 +31,7 @@ export function TodayPage() {
       // Load today's completed tasks
       const allToday = await window.api.listTickTickTasks({ dueDate: new Date().toISOString().slice(0, 10), includeCompleted: true });
       setCompleted(allToday.filter(t => t.is_completed && !t.parent_id));
-    } catch { /* ignore */ }
+    } catch (e) { console.error('TodayPage', e); }
     setLoading(false);
   }
 
@@ -52,7 +52,7 @@ export function TodayPage() {
         }
       }
       await load();
-    } catch { /* ignore */ }
+    } catch (e) { console.error('TodayPage', e); }
   }
 
   function toggleCollapse(group: GroupKey) {

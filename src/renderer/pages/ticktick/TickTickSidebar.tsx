@@ -33,7 +33,7 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
       // Inbox = tasks with no due date
       const allTasks = await window.api.listTickTickTasks({ includeNoDate: true });
       setInboxCount(allTasks.filter(t => !t.due_date).length);
-    } catch { /* ignore */ }
+    } catch (e) { console.error('TickTickSidebar', e); }
   }
 
   useEffect(() => { load(); }, []);

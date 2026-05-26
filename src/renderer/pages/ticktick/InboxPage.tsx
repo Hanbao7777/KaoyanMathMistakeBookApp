@@ -19,7 +19,7 @@ export function InboxPage() {
       setLists(l);
       // Only show tasks with no due date, no parent (top-level only)
       setTasks(all.filter(t => !t.due_date && !t.parent_id));
-    } catch { /* ignore */ }
+    } catch (e) { console.error('InboxPage', e); }
     setLoading(false);
   }
 
@@ -33,7 +33,7 @@ export function InboxPage() {
         await window.api.completeTickTickTask(task.id);
       }
       await load();
-    } catch { /* ignore */ }
+    } catch (e) { console.error('InboxPage', e); }
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
