@@ -80,18 +80,18 @@ export function HabitsPage() {
           <div key={habit.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 'var(--tt-radius-md)', marginBottom: 4, background: 'var(--tt-bg-hover)' }}>
             <div
               role="checkbox"
-              aria-checked={(habit.today_completed || 0) >= habit.target_count}
+              aria-checked={(habit.today_completed || 0) >= 1}
               tabIndex={0}
               onClick={() => toggleHabit(habit)}
               onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleHabit(habit); } }}
               style={{
-                width: 22, height: 22, borderRadius: '50%', border: `2px solid ${(habit.today_completed || 0) >= habit.target_count ? habit.color : 'var(--tt-border)'}`,
-                background: (habit.today_completed || 0) >= habit.target_count ? habit.color : 'transparent',
+                width: 22, height: 22, borderRadius: '50%', border: `2px solid ${(habit.today_completed || 0) >= 1 ? habit.color : 'var(--tt-border)'}`,
+                background: (habit.today_completed || 0) >= 1 ? habit.color : 'transparent',
                 cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                 color: '#fff', fontSize: 11, fontWeight: 700
               }}
             >
-              {(habit.today_completed || 0) >= habit.target_count ? '✓' : ''}
+              {(habit.today_completed || 0) >= 1 ? '✓' : ''}
             </div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13 }}>{habit.name}</div>

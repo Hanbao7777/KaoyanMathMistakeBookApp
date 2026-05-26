@@ -45,7 +45,7 @@ export function EisenhowerPage() {
               {qTasks.length > 0 ? qTasks.map(task => (
                 <TaskRow key={task.id} task={task} onClick={() => {}} onToggle={handleToggle} />
               )) : (
-                <div style={{ fontSize: 12, color: 'var(--tt-text-muted)', padding: 20, textAlign: 'center' }}>拖拽任务到这里</div>
+                <div style={{ fontSize: 12, color: 'var(--tt-text-muted)', padding: 20, textAlign: 'center' }}>暂无该优先级任务</div>
               )}
             </div>
           );
