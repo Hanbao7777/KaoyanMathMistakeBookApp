@@ -3,7 +3,7 @@ import type { FocusTimerControls, FocusTimerState } from '../../types/focusTimer
 import { formatSeconds } from '../../utils/formatTime';
 import { TickTickSidebar } from './TickTickSidebar';
 
-type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
+type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
 interface TickTickShellProps {
   page: TickTickPageKey;

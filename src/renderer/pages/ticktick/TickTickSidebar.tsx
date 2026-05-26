@@ -1,8 +1,8 @@
-import { Calendar, ClipboardList, Clock3, Hash, Inbox, Settings } from 'lucide-react';
+import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTag } from '../../../shared/types';
 
-type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
+type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
 interface TickTickSidebarProps {
   page: TickTickPageKey;
@@ -73,6 +73,17 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
           </button>
         </div>
 
+        {/* Views */}
+        <div className="tt-sidebar-section">
+          <div className="tt-sidebar-label">视图</div>
+          <button className={`tt-sidebar-item ${page === 'kanban' ? 'active' : ''}`} onClick={() => onNavigate('kanban')} type="button">
+            <Layout size={14} /> 看板
+          </button>
+          <button className={`tt-sidebar-item ${page === 'eisenhower' ? 'active' : ''}`} onClick={() => onNavigate('eisenhower')} type="button">
+            <Grid3X3 size={14} /> 艾森豪威尔
+          </button>
+        </div>
+
         {/* Lists */}
         <div className="tt-sidebar-section">
           <div className="tt-sidebar-label">清单</div>
@@ -103,6 +114,14 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
             ))}
           </div>
         ) : null}
+      </div>
+
+      {/* Efficiency */}
+      <div className="tt-sidebar-section">
+        <div className="tt-sidebar-label">效率</div>
+        <button className={`tt-sidebar-item ${page === 'habits' ? 'active' : ''}`} onClick={() => onNavigate('habits')} type="button">
+          <CheckCircle size={14} /> 习惯打卡
+        </button>
       </div>
 
       {/* Tools */}

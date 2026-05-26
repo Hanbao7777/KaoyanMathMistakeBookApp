@@ -4,6 +4,7 @@ import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
+import { AiDecompositionPanel, AiDailyPlanPanel, AiReviewPanel } from '../../components/TickTick/AiPanel';
 import { useToast } from '../../components/Toast';
 
 type GroupKey = 'overdue' | 'today' | 'upcoming' | 'completed';
@@ -165,6 +166,10 @@ export function TodayPage() {
               ))}
             </div>
           ) : null}
+          {/* AI Panels */}
+          <AiDecompositionPanel lists={lists} onTasksCreated={load} />
+          <AiDailyPlanPanel lists={lists} onTasksCreated={load} />
+          <AiReviewPanel />
         </div>
 
         {/* Detail Panel */}

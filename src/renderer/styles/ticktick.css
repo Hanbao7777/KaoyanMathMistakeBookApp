@@ -739,3 +739,8 @@
   font-size: 13px;
   outline: none;
 }
+
+/* ── Kanban ── */
+.tt-kanban-card:hover {
+  border-color: var(--tt-accent);
+}

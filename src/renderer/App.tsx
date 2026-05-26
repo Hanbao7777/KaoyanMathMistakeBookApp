@@ -28,6 +28,9 @@ import { ListDetailPage } from './pages/ticktick/ListDetailPage';
 import { FocusTimerPage as TickTickFocusTimerPage } from './pages/ticktick/FocusTimerPage';
 import { TickTickSettingsPage } from './pages/ticktick/TickTickSettingsPage';
 import { InboxPage } from './pages/ticktick/InboxPage';
+import { KanbanPage } from './pages/ticktick/KanbanPage';
+import { EisenhowerPage } from './pages/ticktick/EisenhowerPage';
+import { HabitsPage } from './pages/ticktick/HabitsPage';
 import { formatSeconds } from './utils/formatTime';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
@@ -60,7 +63,7 @@ function getElapsedSeconds(timer: FocusTimerState) {
   return Math.max(0, Math.floor(timer.accumulatedSeconds + extra));
 }
 
-type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings';
+type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
 export default function App() {
   const [page, setPage] = useState<PageKey>('dashboard');
@@ -213,6 +216,9 @@ export default function App() {
             {ttPage === 'inbox' && <InboxPage />}
             {ttPage === 'focus' && <TickTickFocusTimerPage />}
             {ttPage === 'settings' && <TickTickSettingsPage />}
+            {ttPage === 'kanban' && <KanbanPage />}
+            {ttPage === 'eisenhower' && <EisenhowerPage />}
+            {ttPage === 'habits' && <HabitsPage />}
           </TickTickShell>
         </div>
       ) : (
