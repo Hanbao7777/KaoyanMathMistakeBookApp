@@ -145,7 +145,7 @@ export async function deleteTickTickList(listId: string): Promise<boolean> {
   }
 }
 
-export async function reorderTickTickLists(ids: string[]): Promise<boolean> {
+export async function reorderTickTickLists(ids: string[]): Promise<void> {
   const db = await getDatabase();
   const stmt = db.prepare('UPDATE ticktick_lists SET sort_order = ?, updated_at = ? WHERE id = ?');
   const ts = nowIso();
@@ -159,7 +159,6 @@ export async function reorderTickTickLists(ids: string[]): Promise<boolean> {
     stmt.free();
   }
   persistDatabase();
-  return true;
 }
 
 // ── Tasks CRUD ──
@@ -353,7 +352,7 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
   return (await getTickTickTask(taskId))!;
 }
 
-export async function updateTickTickTask(taskId: string, partial: Partial<TickTickTaskInput & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number }>): Promise<TickTickTask | null> {
+export async function updateTickTickTask(taskId: string, partial: Partial<TickTickTaskInput & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }>): Promise<TickTickTask | null> {
   const db = await getDatabase();
   const current = await getTickTickTask(taskId);
   if (!current) return null;
@@ -412,6 +411,10 @@ export async function updateTickTickTask(taskId: string, partial: Partial<TickTi
   if (partial.source !== undefined) {
     sets.push('source = ?');
     values.push(partial.source);
+  }
+  if (partial.sort_order !== undefined) {
+    sets.push('sort_order = ?');
+    values.push(partial.sort_order);
   }
 
   // Handle is_completed specially
