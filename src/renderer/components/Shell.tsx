@@ -1,4 +1,4 @@
-import { BarChart3, BookMarked, BookOpen, BookOpenCheck, Clock3, FileQuestion, FileUp, Home, Library, ListTodo, PlusCircle, RotateCcw, Settings, ShieldCheck, Sparkles } from 'lucide-react';
+import { BarChart3, BookMarked, BookOpen, BookOpenCheck, CheckSquare, Clock3, FileQuestion, FileUp, Home, Library, ListTodo, PlusCircle, RotateCcw, Settings, ShieldCheck, Sparkles } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { FocusTimerControls, FocusTimerState } from '../types/focusTimer';
 
@@ -10,6 +10,8 @@ interface ShellProps {
   children: ReactNode;
   focusTimer?: FocusTimerState;
   focusTimerControls?: FocusTimerControls;
+  mode?: 'mistake' | 'ticktick';
+  onModeChange?: (mode: 'mistake' | 'ticktick') => void;
 }
 
 const navGroups = [
@@ -51,7 +53,7 @@ function formatSeconds(seconds: number) {
   return [h, m, s].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
-export function Shell({ page, onNavigate, children, focusTimer, focusTimerControls }: ShellProps) {
+export function Shell({ page, onNavigate, children, focusTimer, focusTimerControls, mode, onModeChange }: ShellProps) {
   const showTimer = focusTimer && focusTimerControls && (focusTimer.status !== 'idle' || focusTimerControls.elapsedSeconds > 0);
   const timerLabel = focusTimer?.taskTitle || focusTimer?.subjectName || '专注计时';
 
@@ -65,6 +67,24 @@ export function Shell({ page, onNavigate, children, focusTimer, focusTimerContro
             <span>Mistake Review System</span>
           </div>
         </div>
+        {mode && onModeChange ? (
+          <div className="mode-toggle">
+            <button
+              className={`mode-toggle-btn ${mode === 'mistake' ? 'active' : ''}`}
+              onClick={() => onModeChange('mistake')}
+              type="button"
+            >
+              错题本
+            </button>
+            <button
+              className={`mode-toggle-btn ${mode === 'ticktick' ? 'active' : ''}`}
+              onClick={() => onModeChange('ticktick')}
+              type="button"
+            >
+              任务
+            </button>
+          </div>
+        ) : null}
         <nav className="nav-list" aria-label="主导航">
           {navGroups.map((group) => (
             <div className="nav-group" key={group.title}>
