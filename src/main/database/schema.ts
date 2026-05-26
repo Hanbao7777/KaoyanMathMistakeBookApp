@@ -400,4 +400,31 @@ CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_task ON ticktick_bridge(ticktick_
 CREATE INDEX IF NOT EXISTS idx_ticktick_bridge_linked ON ticktick_bridge(linked_type, linked_id);
 CREATE INDEX IF NOT EXISTS idx_ticktick_focus_task ON ticktick_focus_sessions(task_id);
 CREATE INDEX IF NOT EXISTS idx_ticktick_ai_plans_date ON ticktick_ai_plans(plan_date);
+
+CREATE TABLE IF NOT EXISTS ticktick_habits (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  icon TEXT DEFAULT 'check',
+  color TEXT NOT NULL DEFAULT '#4a90d9',
+  goal_description TEXT DEFAULT '',
+  frequency TEXT DEFAULT 'daily' CHECK(frequency IN ('daily','weekly')),
+  target_count INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS ticktick_habit_logs (
+  id TEXT PRIMARY KEY,
+  habit_id TEXT NOT NULL,
+  log_date TEXT NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 1,
+  note TEXT DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (habit_id) REFERENCES ticktick_habits(id) ON DELETE CASCADE,
+  UNIQUE(habit_id, log_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_habit_logs_habit ON ticktick_habit_logs(habit_id);
+CREATE INDEX IF NOT EXISTS idx_habit_logs_date ON ticktick_habit_logs(log_date);
 `;

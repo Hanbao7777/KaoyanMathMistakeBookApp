@@ -83,7 +83,10 @@ import type {
   TickTickAiReviewResult,
   TickTickCalendarDay,
   TickTickSettings,
-  TickTickWhiteNoise
+  TickTickWhiteNoise,
+  TickTickHabit,
+  TickTickHabitInput,
+  TickTickHabitLog
 } from '../shared/types';
 
 type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
@@ -230,6 +233,14 @@ const api: AppApi = {
   // White Noise
   getTickTickWhiteNoiseState: () => invoke<{ enabled: boolean; noise: TickTickWhiteNoise }>('ticktick:whiteNoise:get'),
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => invoke<void>('ticktick:whiteNoise:set', state),
+
+  // TickTick Habits
+  listTickTickHabits: () => invoke<TickTickHabit[]>('ticktick:habits:list'),
+  createTickTickHabit: (input: TickTickHabitInput) => invoke<TickTickHabit>('ticktick:habits:create', input),
+  updateTickTickHabit: (id: string, input: TickTickHabitInput) => invoke<TickTickHabit | null>('ticktick:habits:update', id, input),
+  deleteTickTickHabit: (id: string) => invoke<boolean>('ticktick:habits:delete', id),
+  toggleTickTickHabit: (habitId: string, date: string) => invoke<TickTickHabitLog | null>('ticktick:habits:toggle', habitId, date),
+  getTickTickHabitLogs: (habitId: string, fromDate?: string, toDate?: string) => invoke<TickTickHabitLog[]>('ticktick:habits:logs', habitId, fromDate, toDate),
 
   // Sync
   triggerReviewTaskGeneration: () => invoke<{ created: number }>('ticktick:sync:generateReviewTasks'),

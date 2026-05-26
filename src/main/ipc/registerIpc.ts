@@ -100,6 +100,7 @@ import {
   getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
   getTickTickCalendarMonth,
   getTickTickSettings, saveTickTickSettings,
+  listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
 import { syncTaskCompletedToReview, generateAutoReviewTasks } from '../services/bridgeService';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
@@ -142,7 +143,9 @@ import type {
   TickTickAiReviewResult,
   TickTickCalendarDay,
   TickTickSettings,
-  TickTickWhiteNoise
+  TickTickWhiteNoise,
+  TickTickHabitInput,
+  TickTickHabitLog
 } from '../../shared/types';
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
@@ -367,6 +370,14 @@ export function registerIpc() {
   // TickTick Settings
   handle('ticktick:settings:get', () => getTickTickSettings());
   handle('ticktick:settings:save', (settings: TickTickSettings) => saveTickTickSettings(settings));
+
+  // TickTick Habits
+  handle('ticktick:habits:list', () => listTickTickHabits());
+  handle('ticktick:habits:create', (input: TickTickHabitInput) => createTickTickHabit(input));
+  handle('ticktick:habits:update', (id: string, input: TickTickHabitInput) => updateTickTickHabit(id, input));
+  handle('ticktick:habits:delete', (id: string) => deleteTickTickHabit(id));
+  handle('ticktick:habits:toggle', (habitId: string, date: string) => toggleTickTickHabit(habitId, date));
+  handle('ticktick:habits:logs', (habitId: string, fromDate?: string, toDate?: string) => getTickTickHabitLogs(habitId, fromDate, toDate));
 
   // TickTick Sync
   handle('ticktick:sync:reviewTask', (taskId: string, taskTitle: string, actualMinutes: number) => syncTaskCompletedToReview(taskId, taskTitle, actualMinutes));

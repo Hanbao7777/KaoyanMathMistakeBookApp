@@ -1039,3 +1039,36 @@ export interface TickTickSettings {
   whiteNoise: TickTickWhiteNoise;
   defaultListId: string | null;
 }
+
+export interface TickTickHabit {
+  id: string;
+  name: string;
+  icon: string;
+  color: string;
+  goal_description: string;
+  frequency: 'daily' | 'weekly';
+  target_count: number;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  streak?: number;
+  today_completed?: number;
+}
+
+export interface TickTickHabitInput {
+  name: string;
+  icon?: string;
+  color?: string;
+  goal_description?: string;
+  frequency?: 'daily' | 'weekly';
+  target_count?: number;
+}
+
+export interface TickTickHabitLog {
+  id: string;
+  habit_id: string;
+  log_date: string;
+  completed: number;
+  note: string;
+  created_at: string;
+}

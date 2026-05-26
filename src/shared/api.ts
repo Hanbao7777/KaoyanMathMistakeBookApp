@@ -83,7 +83,10 @@ import type {
   TickTickAiReviewResult,
   TickTickPomodoroSettings,
   TickTickSettings,
-  TickTickWhiteNoise
+  TickTickWhiteNoise,
+  TickTickHabit,
+  TickTickHabitInput,
+  TickTickHabitLog
 } from './types';
 
 export interface AppApi {
@@ -244,6 +247,14 @@ export interface AppApi {
   // Auto review task creation
   triggerReviewTaskGeneration: () => Promise<{ created: number }>;
   syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => Promise<void>;
+
+  // TickTick Habits
+  listTickTickHabits: () => Promise<TickTickHabit[]>;
+  createTickTickHabit: (input: TickTickHabitInput) => Promise<TickTickHabit>;
+  updateTickTickHabit: (id: string, input: TickTickHabitInput) => Promise<TickTickHabit | null>;
+  deleteTickTickHabit: (id: string) => Promise<boolean>;
+  toggleTickTickHabit: (habitId: string, date: string) => Promise<TickTickHabitLog | null>;
+  getTickTickHabitLogs: (habitId: string, fromDate?: string, toDate?: string) => Promise<TickTickHabitLog[]>;
 
   toFileUrl: (filePath: string) => string;
 }
