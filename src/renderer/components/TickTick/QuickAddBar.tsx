@@ -62,9 +62,9 @@ export function QuickAddBar({ defaultListId, lists, onTaskCreated }: QuickAddBar
           onKeyDown={handleKeyDown}
           placeholder="添加任务，支持自然语言：明天下午3点复习高数 #考研 @数学 !!高"
         />
-        <button className="icon-btn" type="button" title="日期"><Calendar size={14} /></button>
-        <button className="icon-btn" type="button" title="标签"><Hash size={14} /></button>
-        <button className="icon-btn" type="button" title="清单"><List size={14} /></button>
+        <button className="icon-btn" type="button" title="日期" onClick={() => inputRef.current?.focus()}><Calendar size={14} /></button>
+        <button className="icon-btn" type="button" title="标签" onClick={() => inputRef.current?.focus()}><Hash size={14} /></button>
+        <button className="icon-btn" type="button" title="清单" onClick={() => inputRef.current?.focus()}><List size={14} /></button>
       </div>
       <div className="tt-quick-add-hint">
         明天→日期 · #标签 · @清单 · !!高→优先级 · 每天→重复 · 预计30分钟→时长

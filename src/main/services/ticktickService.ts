@@ -131,14 +131,18 @@ export async function updateTickTickList(listId: string, input: TickTickListInpu
 
 export async function deleteTickTickList(listId: string): Promise<boolean> {
   const db = await getDatabase();
-  // Clean up bridge entries for all tasks in this list before cascade delete
-  const tasks = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE list_id = ?', [listId]);
-  for (const task of tasks) {
-    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [task.id]);
+  runSql(db, 'BEGIN');
+  try {
+    // FK CASCADE handles task deletion, but manual bridge cleanup as safety net for existing DBs
+    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE list_id = ?)', [listId]);
+    runSql(db, 'DELETE FROM ticktick_lists WHERE id = ?', [listId]);
+    runSql(db, 'COMMIT');
+    persistDatabase();
+    return true;
+  } catch (e) {
+    runSql(db, 'ROLLBACK');
+    throw e;
   }
-  runSql(db, 'DELETE FROM ticktick_lists WHERE id = ?', [listId]);
-  persistDatabase();
-  return true;
 }
 
 export async function reorderTickTickLists(ids: string[]): Promise<boolean> {
@@ -435,22 +439,29 @@ export async function updateTickTickTask(taskId: string, partial: Partial<TickTi
 
 export async function deleteTickTickTask(taskId: string): Promise<boolean> {
   const db = await getDatabase();
-  // Recursively collect all descendant task IDs
-  const allIds = [taskId];
-  for (let i = 0; i < allIds.length; i++) {
-    const children = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
-    for (const child of children) allIds.push(child.id);
+  runSql(db, 'BEGIN');
+  try {
+    // Recursively collect all descendant IDs
+    const allIds: string[] = [taskId];
+    for (let i = 0; i < allIds.length; i++) {
+      const children = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
+      for (const child of children) allIds.push(child.id);
+    }
+    // FK CASCADE handles bridge cleanup, but we also clean manually for existing DBs
+    for (const id of allIds) {
+      runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]);
+    }
+    // Delete all descendant tasks (order doesn't matter with FK CASCADE on subtasks)
+    for (const id of allIds) {
+      runSql(db, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]);
+    }
+    runSql(db, 'COMMIT');
+    persistDatabase();
+    return true;
+  } catch (e) {
+    runSql(db, 'ROLLBACK');
+    throw e;
   }
-  // Delete bridge entries for all descendant tasks
-  for (const id of allIds) {
-    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]);
-  }
-  // Delete all descendant tasks
-  for (const id of allIds) {
-    runSql(db, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]);
-  }
-  persistDatabase();
-  return true;
 }
 
 export async function completeTickTickTask(taskId: string): Promise<TickTickTask | null> {

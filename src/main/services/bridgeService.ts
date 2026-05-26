@@ -1,4 +1,4 @@
-import { getDatabase, persistDatabase } from './databaseService';
+import { getDatabase, persistDatabase, submitReviewResult } from './databaseService';
 import { getTickTickSettings, getBridgesForLinked } from './ticktickService';
 import type { TickTickBridgeLinkedType } from '../../shared/types';
 
@@ -11,14 +11,13 @@ function todayStr(): string {
 export async function syncTaskCompletedToReview(ticktickTaskId: string, taskTitle: string, actualMinutes: number): Promise<void> {
   const db = await getDatabase();
 
-  // Find bridge entries for this task with sync_review enabled
-  const result = db.exec('SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND sync_review = 1', [ticktickTaskId]);
-  if (!result.length || !result[0].values.length) return;
+  const bridgeResult = db.exec('SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND sync_review = 1', [ticktickTaskId]);
+  if (!bridgeResult.length || !bridgeResult[0].values.length) return;
 
   const now = new Date().toISOString();
   const reviewDate = todayStr();
 
-  for (const row of result[0].values) {
+  for (const row of bridgeResult[0].values) {
     const linkedType = row[2] as string;
     const linkedId = row[3] as string;
 
@@ -26,30 +25,24 @@ export async function syncTaskCompletedToReview(ticktickTaskId: string, taskTitl
       const questionId = parseInt(linkedId, 10);
       if (isNaN(questionId)) continue;
 
-      // Add review log
-      db.run(
-        `INSERT INTO review_logs (question_id, review_date, result, duration_minutes, reviewed_at, note)
-         VALUES (?, ?, 'correct', ?, ?, ?)`,
-        [questionId, reviewDate, actualMinutes, now, `TickTick 任务完成: ${taskTitle}`]
+      // Check if already synced today to avoid duplicates
+      const existing = db.exec(
+        "SELECT id FROM review_logs WHERE question_id = ? AND review_date = ? AND note LIKE ?",
+        [questionId, reviewDate, `%TickTick 任务完成: ${taskTitle}%`]
       );
+      if (existing.length && existing[0].values.length) continue;
 
-      // Update question review stats
-      const qResult = db.exec(
-        'SELECT review_count, correct_count, consecutive_correct FROM questions WHERE id = ?',
-        [questionId]
-      );
-      if (qResult.length && qResult[0].values.length) {
-        const qRow = qResult[0].values[0];
-        const newReviewCount = (qRow[0] as number) + 1;
-        const newCorrectCount = (qRow[1] as number) + 1;
-        const newConsecutive = (qRow[2] as number) + 1;
-        db.run(
-          'UPDATE questions SET review_count = ?, correct_count = ?, consecutive_correct = ?, last_reviewed_at = ?, updated_at = ? WHERE id = ?',
-          [newReviewCount, newCorrectCount, newConsecutive, now, now, questionId]
-        );
+      // Use submitReviewResult for proper SM2 scheduling
+      try {
+        await submitReviewResult({
+          questionId,
+          result: 'correct',
+          note: `TickTick 任务完成: ${taskTitle}`,
+        });
+      } catch (e) {
+        console.error('bridgeService: submitReviewResult failed', e);
       }
     } else if (linkedType === 'study_task') {
-      // Mark study task as completed
       db.run(
         "UPDATE study_tasks SET status = '已完成', actual_minutes = actual_minutes + ?, completed_at = ?, updated_at = ? WHERE id = ?",
         [actualMinutes, now, now, linkedId]

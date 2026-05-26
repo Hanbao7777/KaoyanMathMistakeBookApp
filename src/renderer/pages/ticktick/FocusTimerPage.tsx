@@ -45,13 +45,8 @@ export function FocusTimerPage() {
     if (breakTimeoutRef.current) { clearTimeout(breakTimeoutRef.current); breakTimeoutRef.current = null; }
   }
 
-  // useEffect watches secondsLeft: when it hits 0, handle session transition
-  useEffect(() => {
-    if (secondsLeft > 0) return;
-    if (statusRef.current === 'idle') return;
-
+  function handleSessionEnd() {
     clearTimer();
-
     const prevStatus = statusRef.current;
     const sess = currentSessionRef.current;
 
@@ -83,9 +78,10 @@ export function FocusTimerPage() {
 
       // Auto-start break after a tick
       breakTimeoutRef.current = setTimeout(() => {
+        if (statusRef.current !== 'break') return; // guard against skip
         const interval = setInterval(() => {
           setSecondsLeft(prev => {
-            if (prev <= 1) { clearInterval(interval); return 0; }
+            if (prev <= 1) { clearInterval(interval); handleSessionEnd(); return 0; }
             return prev - 1;
           });
         }, 1000);
@@ -100,18 +96,18 @@ export function FocusTimerPage() {
       setSecondsLeft(focusMinutes * 60);
       setTotalSeconds(focusMinutes * 60);
     }
-  }, [secondsLeft]);
+  }
 
   function startTimer() {
     clearTimer();
-    setStatus('running');
     if (secondsLeft <= 0) {
       setSecondsLeft(focusMinutes * 60);
       setTotalSeconds(focusMinutes * 60);
     }
+    setStatus('running');
     const interval = setInterval(() => {
       setSecondsLeft(prev => {
-        if (prev <= 1) { clearInterval(interval); return 0; }
+        if (prev <= 1) { clearInterval(interval); handleSessionEnd(); return 0; }
         return prev - 1;
       });
     }, 1000);
@@ -125,7 +121,7 @@ export function FocusTimerPage() {
 
   function skipBreak() {
     clearTimer();
-    const nextSession = currentSession + 1;
+    const nextSession = currentSessionRef.current + 1;
     setCurrentSession(nextSession);
     setStatus('idle');
     setSecondsLeft(focusMinutes * 60);

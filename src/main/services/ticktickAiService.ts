@@ -15,37 +15,46 @@ async function callDeepSeek(systemPrompt: string, userMessage: string, maxTokens
   const settings = await getDeepSeekSettings();
   if (!settings.apiKey) throw new Error('请先在设置中配置 DeepSeek API Key');
 
-  const response = await fetch(`${settings.baseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
-    body: JSON.stringify({
-      model: settings.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      max_tokens: maxTokens,
-      temperature: 0.7,
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`DeepSeek API 错误 ${response.status}: ${text}`);
+  try {
+    const response = await fetch(`${settings.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
+      body: JSON.stringify({
+        model: settings.model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage },
+        ],
+        max_tokens: maxTokens,
+        temperature: 0.7,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`DeepSeek API 错误 ${response.status}: ${text}`);
+    }
+
+    const data = await response.json() as any;
+    return data.choices?.[0]?.message?.content || '';
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  const data = await response.json() as any;
-  return data.choices?.[0]?.message?.content || '';
 }
 
 function extractJson(text: string): any {
   try { return JSON.parse(text); } catch {}
 
-  const fenceMatch = text.match(/```json\s*([\s\S]*?)\s*```/);
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
   if (fenceMatch) {
     try { return JSON.parse(fenceMatch[1]); } catch {}
   }
 
+  // Try balanced-brace extraction for objects
   let depth = 0;
   let start = -1;
   for (let i = 0; i < text.length; i++) {
@@ -59,6 +68,22 @@ function extractJson(text: string): any {
       }
     }
   }
+
+  // Try balanced-bracket extraction for arrays
+  depth = 0;
+  start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '[') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (text[i] === ']') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch { start = -1; }
+      }
+    }
+  }
+
   throw new Error('无法从 AI 响应中提取 JSON');
 }
 
@@ -119,6 +144,7 @@ export async function aiGenerateDailyPlan(): Promise<TickTickAiDailyPlanResult> 
      FROM questions q LEFT JOIN question_knowledge_points qkp ON q.id = qkp.question_id
      LEFT JOIN knowledge_points kp ON qkp.knowledge_node_id = kp.node_id
      WHERE q.next_review_at IS NOT NULL AND date(q.next_review_at) <= ?
+     GROUP BY q.id
      ORDER BY q.mastery_level ASC LIMIT 15`, [today]
   );
 
@@ -180,9 +206,17 @@ export async function aiGenerateReview(type: 'daily' | 'weekly'): Promise<TickTi
   const db = await getDatabase();
   const today = todayStr();
 
+  // For weekly, use last 7 days; for daily, use today only
+  const rangeStart = type === 'weekly' ? (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })() : today;
+  const rangeEnd = today;
+
   const taskResult = db.exec(
     `SELECT COUNT(*) as total, SUM(CASE WHEN is_completed = 1 THEN 1 ELSE 0 END) as done
-     FROM ticktick_tasks WHERE parent_id IS NULL AND due_date = ?`, [today]
+     FROM ticktick_tasks WHERE parent_id IS NULL AND due_date >= ? AND due_date <= ?`, [rangeStart, rangeEnd]
   );
   const total = taskResult.length ? taskResult[0].values[0][0] as number : 0;
   const done = taskResult.length ? taskResult[0].values[0][1] as number : 0;
@@ -190,13 +224,13 @@ export async function aiGenerateReview(type: 'daily' | 'weekly'): Promise<TickTi
 
   const focusResult = db.exec(
     `SELECT COALESCE(SUM(duration_minutes), 0) FROM ticktick_focus_sessions
-     WHERE date(start_time) = ? AND session_type = 'focus'`, [today]
+     WHERE date(start_time) >= ? AND date(start_time) <= ? AND session_type = 'focus'`, [rangeStart, rangeEnd]
   );
   const focusMinutes = focusResult.length ? focusResult[0].values[0][0] as number : 0;
 
   const reviewResult2 = db.exec(
     `SELECT COUNT(*) as total, SUM(CASE WHEN result = 'correct' THEN 1 ELSE 0 END) as correct
-     FROM review_logs WHERE review_date = ?`, [today]
+     FROM review_logs WHERE review_date >= ? AND review_date <= ?`, [rangeStart, rangeEnd]
   );
   const reviewTotal = reviewResult2.length ? reviewResult2[0].values[0][0] as number : 0;
   const reviewCorrect = reviewResult2.length ? reviewResult2[0].values[0][1] as number : 0;

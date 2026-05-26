@@ -17,10 +17,14 @@ export function TaskRow({ task, onClick, onToggle }: TaskRowProps) {
     >
       <div
         className={`checkbox-circle ${task.is_completed ? 'checked' : ''}`}
+        role="checkbox"
+        aria-checked={task.is_completed ? true : false}
+        tabIndex={0}
         onClick={(e) => {
           e.stopPropagation();
           onToggle(task);
         }}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); onToggle(task); } }}
       />
       <div className="task-body">
         <div className="task-title">{task.title}</div>

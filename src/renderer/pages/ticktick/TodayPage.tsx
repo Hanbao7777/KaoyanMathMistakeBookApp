@@ -29,7 +29,9 @@ export function TodayPage() {
       setUpcoming(todayData.upcoming);
 
       // Load today's completed tasks
-      const allToday = await window.api.listTickTickTasks({ dueDate: new Date().toISOString().slice(0, 10), includeCompleted: true });
+      const todayLocal = new Date();
+      const todayStr = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, '0')}-${String(todayLocal.getDate()).padStart(2, '0')}`;
+      const allToday = await window.api.listTickTickTasks({ dueDate: todayStr, includeCompleted: true });
       setCompleted(allToday.filter(t => t.is_completed && !t.parent_id));
     } catch (e) { console.error('TodayPage', e); }
     setLoading(false);
@@ -38,6 +40,10 @@ export function TodayPage() {
   useEffect(() => { load(); }, []);
 
   async function handleToggle(task: TickTickTask) {
+    // Optimistic update
+    const newCompleted = task.is_completed ? 0 : 1;
+    setToday(prev => prev.map(t => t.id === task.id ? { ...t, is_completed: newCompleted } : t));
+
     try {
       if (task.is_completed) {
         await window.api.uncompleteTickTickTask(task.id);
@@ -51,8 +57,11 @@ export function TodayPage() {
           } catch (e) { console.error('Sync review failed:', e); }
         }
       }
-      await load();
-    } catch (e) { console.error('TodayPage', e); }
+      await load(); // Reconcile with server state
+    } catch (e) {
+      console.error('TodayPage:toggle', e);
+      await load(); // Revert on failure
+    }
   }
 
   function toggleCollapse(group: GroupKey) {

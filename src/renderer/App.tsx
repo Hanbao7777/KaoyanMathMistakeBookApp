@@ -210,9 +210,11 @@ export default function App() {
           >
             {ttPage === 'today' && <TodayPage />}
             {ttPage === 'calendar' && <CalendarPage />}
-            {ttPage === 'list' && selectedListId && (
+            {ttPage === 'list' && (selectedListId ? (
               <ListDetailPage listId={selectedListId} onBack={() => { setTtPage('today'); setSelectedListId(null); }} />
-            )}
+            ) : (
+              <div className="ticktick-main-content"><div className="tt-empty">请从侧边栏选择一个清单</div></div>
+            ))}
             {ttPage === 'inbox' && <InboxPage />}
             {ttPage === 'focus' && <TickTickFocusTimerPage />}
             {ttPage === 'settings' && <TickTickSettingsPage />}
