@@ -93,31 +93,47 @@ function materialRisk(material: StudyMaterial, today = localDate()): StudyMateri
   if (start && target && total > 0) {
     const totalDays = Math.max(1, daysBetween(material.start_date!, material.target_date!));
     const elapsedDays = Math.max(0, Math.min(totalDays, daysBetween(material.start_date!, today)));
-    expectedAmount = Math.min(total, Math.round((total * elapsedDays) / totalDays));
-    lagAmount = Math.max(0, Math.round((expectedAmount - current) * 10) / 10);
-    const lagRatio = lagAmount / total;
-    if (lagRatio >= 0.2) riskLevel = 'danger';
-    else if (lagRatio >= 0.1) riskLevel = 'warning';
-    else if (lagAmount > 0) riskLevel = 'normal';
-
-    const daysLeft = Math.max(1, daysBetween(today, material.target_date!));
-    const dailyNeed = remainingAmount / daysLeft;
-    if (dailyNeed >= 1) {
-      suggestedDailyAmount = Math.ceil(dailyNeed);
-      suggestedPaceText = `建议每日 ${suggestedDailyAmount} ${unit}`;
-    } else if (dailyNeed > 0) {
-      const everyDays = Math.max(1, Math.round(1 / dailyNeed));
-      const weeklyNeed = Math.max(1, Math.round(dailyNeed * 7));
-      suggestedPaceText = everyDays <= 7 ? `约每 ${everyDays} 天完成 1 ${unit}` : `每周约 ${weeklyNeed} ${unit}`;
+    // Don't flag materials that haven't been started yet (within 3 days grace)
+    if (current === 0 && elapsedDays <= 3) {
+      riskLevel = 'normal';
+      lagAmount = 0;
+      suggestedPaceText = '尚未开始，建议尽快启动';
     } else {
-      suggestedPaceText = '已完成目标进度';
-    }
+      expectedAmount = Math.min(total, Math.round((total * elapsedDays) / totalDays));
+      lagAmount = Math.max(0, Math.round((expectedAmount - current) * 10) / 10);
 
-    if (lagAmount > 0) {
-      const catchUpMax = Math.max(1, Math.min(Math.ceil(lagAmount), suggestedDailyAmount ?? 2));
-      catchUpText = catchUpMax > 1
-        ? `本周额外补 1-${catchUpMax} ${unit}，之后按${suggestedPaceText}推进`
-        : `本周额外补 1 ${unit}，之后按${suggestedPaceText}推进`;
+      // Round lagAmount for discrete units (not pages)
+      if (unit !== '页' && lagAmount > 0) {
+        lagAmount = Math.ceil(lagAmount);
+      }
+
+      const lagRatio = lagAmount / total;
+      if (lagRatio >= 0.3) riskLevel = 'critical';
+      else if (lagRatio >= 0.2) riskLevel = 'danger';
+      else if (lagRatio >= 0.1) riskLevel = 'warning';
+      else if (lagAmount > 0) riskLevel = 'normal';
+
+      const daysLeft = Math.max(1, daysBetween(today, material.target_date!));
+      const dailyNeed = remainingAmount / daysLeft;
+      if (dailyNeed >= 1) {
+        suggestedDailyAmount = Math.ceil(dailyNeed);
+        suggestedPaceText = `建议每日 ${suggestedDailyAmount} ${unit}`;
+      } else if (dailyNeed > 0) {
+        const weeklyNeed = Math.max(1, Math.round(dailyNeed * 7));
+        suggestedPaceText = `每周约 ${weeklyNeed} ${unit}`;
+      } else {
+        suggestedPaceText = '已完成目标进度';
+      }
+
+      if (lagAmount > 0) {
+        const catchUpPerDay = Math.ceil(lagAmount / Math.min(7, daysLeft));
+        const catchUpDays = Math.ceil(lagAmount / Math.max(1, catchUpPerDay));
+        if (catchUpDays <= 7) {
+          catchUpText = `每天多学 ${catchUpPerDay} ${unit}，${catchUpDays} 天后赶上`;
+        } else {
+          catchUpText = `每天多学 ${catchUpPerDay} ${unit}，需 ${catchUpDays} 天赶上目标`;
+        }
+      }
     }
   }
 
