@@ -65,11 +65,6 @@ function getElapsedSeconds(timer: FocusTimerState) {
 type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
 export default function App() {
-  // Widget mode — loaded via #/widget hash in a separate window
-  if (window.location.hash === '#/widget') {
-    return <DesktopWidget />;
-  }
-
   const [page, setPage] = useState<PageKey>('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -204,6 +199,11 @@ export default function App() {
 
   const showTimer = focusTimer.status !== 'idle' || focusTimerControls.elapsedSeconds > 0;
   const timerLabel = focusTimer.taskTitle || focusTimer.subjectName || '专注计时';
+
+  // Widget mode — separate window, render only the widget
+  if (window.location.hash === '#/widget') {
+    return <DesktopWidget />;
+  }
 
   return (
     <ToastProvider>
