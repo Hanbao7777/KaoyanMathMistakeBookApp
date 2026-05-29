@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
+import { CheckCircle2, Edit3, MoveRight, Trash2, XCircle } from 'lucide-react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
+import { ContextMenu } from '../../components/TickTick/ContextMenu';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
 
 export function KanbanPage() {
@@ -8,6 +10,7 @@ export function KanbanPage() {
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [loading, setLoading] = useState(true);
   const [dragOverListId, setDragOverListId] = useState<string | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: TickTickTask } | null>(null);
 
   async function load() {
     const [l, t] = await Promise.all([
@@ -33,6 +36,17 @@ export function KanbanPage() {
       // Rollback
       setTasks(prevTasks);
     }
+  }
+
+  async function handleToggle(task: TickTickTask) {
+    if (task.is_completed) await window.api.uncompleteTickTickTask(task.id);
+    else await window.api.completeTickTickTask(task.id);
+    await load();
+  }
+
+  async function handleDelete(taskId: string) {
+    await window.api.deleteTickTickTask(taskId);
+    await load();
   }
 
   function handleDragStart(e: React.DragEvent, taskId: string) {
@@ -90,32 +104,36 @@ export function KanbanPage() {
                 <strong style={{ fontSize: 13 }}>{list.name}</strong>
                 <span style={{ fontSize: 11, color: 'var(--tt-text-muted)', marginLeft: 'auto' }}>{listTasks.length}</span>
               </div>
-              {listTasks.map(task => (
-                <div
-                  key={task.id}
-                  draggable
-                  onDragStart={e => handleDragStart(e, task.id)}
-                  onDragEnd={handleDragEnd}
-                  style={{ background: 'var(--tt-bg)', borderRadius: 'var(--tt-radius-sm)', padding: '10px 12px', marginBottom: 6, cursor: 'grab', border: '1px solid var(--tt-border-light)', fontSize: 13, userSelect: 'none' }}
-                  className="tt-kanban-card"
-                >
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
-                    <span style={{ flex: 1 }}>{task.title}</span>
-                    <button
-                      onClick={(e) => handleCardClick(e, task)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-muted)', padding: '0 0 0 8px', fontSize: 14, flexShrink: 0, lineHeight: 1 }}
-                      type="button"
-                      title="编辑任务"
-                    >⋯</button>
-                  </div>
-                  {task.tags_list && task.tags_list.length > 0 ? (
-                    <div style={{ fontSize: 10, color: 'var(--tt-accent)', marginTop: 4 }}>
-                      {task.tags_list.slice(0, 3).map(t => `#${t}`).join(' ')}
+              {listTasks.map(task => {
+                const otherLists = lists.filter(l => l.id !== task.list_id);
+                return (
+                  <div
+                    key={task.id}
+                    draggable
+                    onDragStart={e => handleDragStart(e, task.id)}
+                    onDragEnd={handleDragEnd}
+                    onContextMenu={(e) => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, task }); }}
+                    style={{ background: 'var(--tt-bg)', borderRadius: 'var(--tt-radius-sm)', padding: '10px 12px', marginBottom: 6, cursor: 'grab', border: '1px solid var(--tt-border-light)', fontSize: 13, userSelect: 'none' }}
+                    className="tt-kanban-card"
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+                      <span style={{ flex: 1 }}>{task.title}</span>
+                      <button
+                        onClick={(e) => handleCardClick(e, task)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--tt-text-muted)', padding: '0 0 0 8px', fontSize: 14, flexShrink: 0, lineHeight: 1 }}
+                        type="button"
+                        title="编辑任务"
+                      >...</button>
                     </div>
-                  ) : null}
-                  {task.due_date ? <div style={{ fontSize: 10, color: 'var(--tt-text-muted)', marginTop: 2 }}>{task.due_date}</div> : null}
-                </div>
-              ))}
+                    {task.tags_list && task.tags_list.length > 0 ? (
+                      <div style={{ fontSize: 10, color: 'var(--tt-accent)', marginTop: 4 }}>
+                        {task.tags_list.slice(0, 3).map(t => `#${t}`).join(' ')}
+                      </div>
+                    ) : null}
+                    {task.due_date ? <div style={{ fontSize: 10, color: 'var(--tt-text-muted)', marginTop: 2 }}>{task.due_date}</div> : null}
+                  </div>
+                );
+              })}
               {listTasks.length === 0 ? (
                 <div style={{ fontSize: 11, color: 'var(--tt-text-muted)', textAlign: 'center', padding: 12 }}>拖拽任务到此处</div>
               ) : null}
@@ -125,6 +143,23 @@ export function KanbanPage() {
       </div>
       {selectedTask ? (
         <TaskDetailPanel task={selectedTask} lists={lists} onClose={() => setSelectedTask(null)} onUpdated={() => { setSelectedTask(null); load(); }} />
+      ) : null}
+      {contextMenu ? (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          actions={[
+            { label: contextMenu.task.is_completed ? '取消完成' : '完成任务', icon: contextMenu.task.is_completed ? <XCircle size={14} /> : <CheckCircle2 size={14} />, onClick: () => handleToggle(contextMenu.task) },
+            { label: '编辑', icon: <Edit3 size={14} />, onClick: () => { setSelectedTask(contextMenu.task); } },
+            { label: '移动清单', icon: <MoveRight size={14} />, children: lists.filter(l => l.id !== contextMenu.task.list_id).map(l => ({
+                label: l.name,
+                icon: <span className="dot" style={{ width: 8, height: 8, borderRadius: '50%', background: l.color, flexShrink: 0 }} />,
+                onClick: () => moveTask(contextMenu.task.id, l.id),
+              })) },
+            { label: '删除', icon: <Trash2 size={14} />, danger: true, onClick: () => handleDelete(contextMenu.task.id) },
+          ]}
+        />
       ) : null}
     </div>
   );

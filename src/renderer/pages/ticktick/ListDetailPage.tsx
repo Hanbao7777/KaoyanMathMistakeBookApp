@@ -41,6 +41,16 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
     await load();
   }
 
+  async function handleDelete(task: TickTickTask) {
+    await window.api.deleteTickTickTask(task.id);
+    await load();
+  }
+
+  async function handleMove(task: TickTickTask, toListId: string) {
+    await window.api.updateTickTickTask(task.id, { list_id: toListId } as any);
+    await load();
+  }
+
   const activeTasks = useMemo(() => tasks.filter(t => !t.is_completed), [tasks]);
   const completedTasks = useMemo(() => tasks.filter(t => t.is_completed), [tasks]);
 
@@ -65,7 +75,7 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
           <QuickAddBar defaultListId={listId} lists={allLists} onTaskCreated={load} />
 
           {activeTasks.map(task => (
-            <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} />
+            <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} onEdit={setSelectedTask} onDelete={handleDelete} onMove={handleMove} lists={allLists} />
           ))}
           {completedTasks.length > 0 ? (
             <div style={{ marginTop: 16 }}>
@@ -73,7 +83,7 @@ export function ListDetailPage({ listId, onBack }: ListDetailPageProps) {
                 已完成 · {completedTasks.length}
               </div>
               {completedTasks.map(task => (
-                <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} />
+                <TaskRow key={task.id} task={task} onClick={setSelectedTask} onToggle={handleToggle} onEdit={setSelectedTask} onDelete={handleDelete} onMove={handleMove} lists={allLists} />
               ))}
             </div>
           ) : null}
