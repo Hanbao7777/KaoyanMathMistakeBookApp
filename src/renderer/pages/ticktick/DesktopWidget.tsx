@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TickTickTask } from '../../../shared/types';
 
-const TIMER_KEY = 'kaoyan-ticktick-timer-state';
 const DARK_KEY = 'kaoyan-dark-mode';
 
 export function DesktopWidget() {
@@ -28,14 +27,13 @@ export function DesktopWidget() {
     return () => clearInterval(t);
   }, []);
 
-  // ── Timer sync ──
+  // ── Timer sync (read from main process shared state) ──
   useEffect(() => {
-    const check = () => {
+    const check = async () => {
       try {
-        const saved = localStorage.getItem(TIMER_KEY);
-        if (!saved) return;
-        const state = JSON.parse(saved);
-        setStatus(state.status || 'idle');
+        const state = await window.api.getSharedTimerState?.();
+        if (!state) return;
+        setStatus((state.status as any) || 'idle');
         if (state.status === 'running' && state.sessionStartTime) {
           const elapsed = Math.floor((Date.now() - state.sessionStartTime) / 1000);
           setTotalSeconds(state.totalSeconds || 25 * 60);

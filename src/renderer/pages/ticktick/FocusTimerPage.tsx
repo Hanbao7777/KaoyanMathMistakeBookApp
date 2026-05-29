@@ -96,6 +96,19 @@ export function FocusTimerPage() {
     };
   }, [status, secondsLeft, totalSeconds, completedSessions, currentSession, whiteNoise, boundTaskId]);
 
+  // Sync to shared state for desktop widget
+  useEffect(() => {
+    window.api.setSharedTimerState?.({
+      status,
+      secondsLeft,
+      totalSeconds,
+      completedSessions,
+      currentSession,
+      sessionStartTime: sessionStartRef.current,
+      boundTaskId,
+    }).catch(() => {});
+  }, [status, secondsLeft, totalSeconds, completedSessions, currentSession, boundTaskId]);
+
   function clearTimer() {
     if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
     if (breakTimeoutRef.current) { clearTimeout(breakTimeoutRef.current); breakTimeoutRef.current = null; }

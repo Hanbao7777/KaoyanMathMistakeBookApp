@@ -244,6 +244,10 @@ export interface AppApi {
   getTickTickWhiteNoiseState: () => Promise<{ enabled: boolean; noise: TickTickWhiteNoise }>;
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => Promise<void>;
 
+  // Shared timer state
+  getSharedTimerState: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  setSharedTimerState: (state: any) => Promise<void>;
+
   // Widget
   openWidget: () => void;
   closeWidget: () => void;

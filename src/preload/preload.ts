@@ -234,6 +234,10 @@ const api: AppApi = {
   getTickTickWhiteNoiseState: () => invoke<{ enabled: boolean; noise: TickTickWhiteNoise }>('ticktick:whiteNoise:get'),
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => invoke<void>('ticktick:whiteNoise:set', state),
 
+  // Shared timer state
+  getSharedTimerState: () => invoke('timer:getState'),
+  setSharedTimerState: (state: any) => invoke<void>('timer:setState', state),
+
   // Widget
   openWidget: () => { ipcRenderer.send('widget:open'); },
   closeWidget: () => { ipcRenderer.send('widget:close'); },

@@ -159,6 +159,25 @@ function handle<TArgs extends unknown[], TResult>(channel: string, listener: (..
   });
 }
 
+// ── Shared Timer State ──
+let sharedTimerState: {
+  status: string;
+  secondsLeft: number;
+  totalSeconds: number;
+  completedSessions: number;
+  currentSession: number;
+  sessionStartTime: number | null;
+  boundTaskId: string | null;
+} = {
+  status: 'idle',
+  secondsLeft: 25 * 60,
+  totalSeconds: 25 * 60,
+  completedSessions: 0,
+  currentSession: 1,
+  sessionStartTime: null,
+  boundTaskId: null,
+};
+
 // ── Widget Window ──
 
 let widgetWindow: BrowserWindow | null = null;
@@ -443,6 +462,12 @@ export function registerIpc() {
     db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);
     (await import('../services/databaseService')).persistDatabase();
+  });
+
+  // Shared timer state IPC
+  handle('timer:getState', () => sharedTimerState);
+  handle('timer:setState', (state: any) => {
+    sharedTimerState = { ...sharedTimerState, ...state };
   });
 
   // Widget
