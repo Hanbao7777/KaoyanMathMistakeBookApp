@@ -746,10 +746,6 @@
 }
 
 /* ── Desktop Widget ── */
-.ticktick-widget {
-  overflow: hidden;
-  border-radius: 16px;
-}
 .ticktick-widget::-webkit-scrollbar { width: 4px; }
-.ticktick-widget::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.ticktick-widget::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 .ticktick-widget::-webkit-scrollbar-track { background: transparent; }
