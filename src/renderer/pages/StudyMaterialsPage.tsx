@@ -5,7 +5,7 @@ import { EmptyState } from '../components/EmptyState';
 import { useModal } from '../components/Modal';
 import { useToast } from '../components/Toast';
 
-const materialTypes = ['教材', '题册', '真题', '背诵', '笔记', '课程', '讲义', '其他'];
+const materialTypes = ['教材', '题册', '真题', '背诵', '笔记', '课程', '讲义', '习题集', '教辅', '其他'];
 const units = ['页', '章', '题', '讲', '篇', '单元', '年份', '自定义'];
 
 const emptyForm: StudyMaterialInput = {
@@ -43,7 +43,6 @@ export function StudyMaterialsPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [subjectFilter, setSubjectFilter] = useState('all');
   const [riskFilter, setRiskFilter] = useState('all');
-  const [message, setMessage] = useState('');
 
   async function load() {
     const [nextSubjects, nextMaterials] = await Promise.all([
@@ -66,6 +65,14 @@ export function StudyMaterialsPage() {
       toast('请填写资料名称', 'warning');
       return;
     }
+    if (form.total_amount <= 0) {
+      toast('总量必须大于 0', 'warning');
+      return;
+    }
+    if (form.current_amount > form.total_amount) {
+      toast('当前进度不能超过总量', 'warning');
+      return;
+    }
     if (form.progress_unit === '自定义' && !form.custom_unit_name?.trim()) {
       toast('自定义进度单位不能为空', 'warning');
       return;
@@ -74,7 +81,7 @@ export function StudyMaterialsPage() {
     else await window.api.createStudyMaterial(form);
     setForm({ ...emptyForm, subject_id: subjects[0]?.id || 'math' });
     setEditingId(null);
-    setMessage(editingId ? '资料已更新' : '资料已添加');
+    toast(editingId ? '资料已更新' : '资料已添加', 'success');
     await load();
   }
 
@@ -97,16 +104,9 @@ export function StudyMaterialsPage() {
   }
 
   async function remove(material: StudyMaterial) {
-    const confirmed = await modal.confirm({ title: '操作确认', message: `确定删除资料「${material.name}」吗？关联任务不会崩溃，资料会被软删除。`, confirmLabel: '删除', danger: true });
+    const confirmed = await modal.confirm({ title: '操作确认', message: `确定删除「${material.name}」吗？关联的学习任务将保留，资料可恢复。`, confirmLabel: '删除', danger: true });
     if (!confirmed) return;
     await window.api.deleteStudyMaterial(material.id);
-    await load();
-  }
-
-  async function updateProgress(material: StudyMaterial, value: string) {
-    const amount = Number(value);
-    if (Number.isNaN(amount)) return;
-    await window.api.updateStudyMaterialProgress(material.id, amount);
     await load();
   }
 
@@ -170,10 +170,11 @@ export function StudyMaterialsPage() {
         </label>
         <label>风险筛选
           <select value={riskFilter} onChange={(event) => setRiskFilter(event.target.value)}>
-            <option value="all">全部</option>
-            <option value="risky">只看落后</option>
-            <option value="warning">橙色警告</option>
+            <option value="all">全部风险等级</option>
+            <option value="critical">严重风险</option>
             <option value="danger">红色预警</option>
+            <option value="warning">橙色警告</option>
+            <option value="normal">正常</option>
           </select>
         </label>
       </section>
@@ -187,16 +188,21 @@ export function StudyMaterialsPage() {
                   <h2>{material.name}</h2>
                   <p>{material.subject_name} · {material.material_type} · 优先级：{material.priority}</p>
                 </div>
-                <em>{riskText(material.riskLevel)}</em>
+                <em className={`status-pill tone-${material.riskLevel === 'normal' ? 'success' : (material.riskLevel === 'danger' ? 'danger' : (material.riskLevel === 'critical' ? 'danger' : 'warning'))}`}>{riskText(material.riskLevel)}</em>
               </div>
               <div className="progress-line">
                 <span><strong>{material.current_amount}</strong> / {material.total_amount} {unitOf(material)}</span>
                 <span>{material.completionRate || 0}%</span>
               </div>
-              <div className="progress-track"><i style={{ width: `${material.completionRate || 0}%` }} /></div>
-              <div className="study-mini-grid">
+              <div className="progress-track"><i style={{ width: `${material.completionRate || 0}%`, background: material.riskLevel === 'danger' || material.riskLevel === 'critical' ? 'var(--color-danger)' : material.riskLevel === 'warning' ? 'var(--color-warning)' : 'var(--color-primary)' }} /></div>
+              {material.suggestedPaceText ? (
+                <div style={{ marginTop: 6, fontSize: 13, color: 'var(--color-primary)', fontWeight: 600 }}>
+                  {material.suggestedPaceText}
+                  {material.catchUpText ? <span style={{ color: 'var(--color-warning)', marginLeft: 8, fontSize: 12 }}>{material.catchUpText}</span> : null}
+                </div>
+              ) : null}
+              <div className="study-mini-grid" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
                 <span>剩余<strong>{material.remainingAmount || 0} {unitOf(material)}</strong></span>
-                <span>建议节奏<strong>{material.suggestedPaceText || '--'}</strong></span>
                 <span>目标日期<strong>{material.target_date || '未设置'}</strong></span>
                 <span>当前状态<strong>{material.status}</strong></span>
               </div>
@@ -206,7 +212,12 @@ export function StudyMaterialsPage() {
                 </div>
               ) : null}
               <div className="material-actions">
-                <label>快速更新进度<input type="number" min={0} defaultValue={material.current_amount} onBlur={(event) => updateProgress(material, event.target.value)} /></label>
+                <label>快速更新进度</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                  <button onClick={() => { const v = Math.max(0, (material.current_amount || 0) - 1); window.api.updateStudyMaterialProgress(material.id, v).then(() => { toast('进度已更新为 ' + v, 'success'); load(); }); }} className="secondary-button compact-button" type="button" style={{ padding: '4px 10px', fontSize: 14, lineHeight: 1 }}>−</button>
+                  <input type="number" defaultValue={material.current_amount} onBlur={e => { const v = Math.max(0, Math.min(material.total_amount, Number(e.target.value) || 0)); window.api.updateStudyMaterialProgress(material.id, v).then(() => { toast('进度已更新为 ' + v, 'success'); load(); }); }} style={{ width: 80, textAlign: 'center' }} min={0} max={material.total_amount} />
+                  <button onClick={() => { const v = Math.min(material.total_amount, (material.current_amount || 0) + 1); window.api.updateStudyMaterialProgress(material.id, v).then(() => { toast('进度已更新为 ' + v, 'success'); load(); }); }} className="secondary-button compact-button" type="button" style={{ padding: '4px 10px', fontSize: 14, lineHeight: 1 }}>+</button>
+                </div>
                 <button className="secondary-button compact-button" type="button" onClick={() => edit(material)}><Edit3 size={14} />编辑</button>
                 <button className="secondary-button danger compact-button" type="button" onClick={() => remove(material)}><Trash2 size={14} />删除</button>
               </div>
@@ -214,8 +225,6 @@ export function StudyMaterialsPage() {
           ))}
         </section>
       ) : <EmptyState title="暂无资料" description="先添加一份资料，例如 660题、红宝书或专业课讲义。" />}
-
-      {message ? <div className="success-box">{message}</div> : null}
     </div>
   );
 }
