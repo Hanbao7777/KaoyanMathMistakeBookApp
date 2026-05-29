@@ -164,7 +164,7 @@ export function DailyPlanPage() {
   }
 
   const unfinished = tasks.filter((task) => !['已完成', '已跳过'].includes(task.status));
-  const completed = tasks.filter((task) => ['已完成', '已跳过'].includes(task.status));
+  const completed = tasks.filter((task) => ['已完成', '已跳过'].includes(task.status) && (task.task_date === localDate() || (task.completed_at?.startsWith(localDate()) ?? false)));
 
   return (
     <div className="page study-page daily-plan-page">

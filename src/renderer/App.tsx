@@ -9,7 +9,7 @@ import { AiImportPage } from './pages/AiImportPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { DetailPage } from './pages/DetailPage';
 import { DailyPlanPage } from './pages/DailyPlanPage';
-import { FocusTimerPage } from './pages/FocusTimerPage';
+
 import { ImportPage } from './pages/ImportPage';
 import { KnowledgeMapPage } from './pages/KnowledgeMapPage';
 import { LibraryPage } from './pages/LibraryPage';
@@ -103,6 +103,14 @@ export default function App() {
 
   useEffect(() => {
     window.api.triggerReviewTaskGeneration().catch((e) => { console.error('triggerReviewTaskGeneration', e); });
+
+  useEffect(() => {
+    try {
+      if (localStorage.getItem('kaoyan-dark-mode') === 'true') {
+        document.documentElement.classList.add('dark');
+      }
+    } catch {}
+  }, []);
   }, []);
 
   const elapsedSeconds = useMemo(() => {
@@ -227,7 +235,7 @@ export default function App() {
         {page === 'studySupervisor' ? <StudySupervisorPage onNavigate={navigate} /> : null}
         {page === 'dailyPlan' ? <DailyPlanPage /> : null}
         {page === 'studyMaterials' ? <StudyMaterialsPage /> : null}
-        {page === 'focusTimer' ? <FocusTimerPage timer={focusTimer} controls={focusTimerControls} /> : null}
+        {page === 'focusTimer' ? <TickTickFocusTimerPage /> : null}
         {page === 'add' ? <AddEditPage editingId={editingId} onSaved={openQuestion} onCancel={() => navigate('library')} /> : null}
         {page === 'library' ? <LibraryPage onOpenQuestion={openQuestion} onEditQuestion={editQuestion} initialFilters={libraryFilters} /> : null}
         {page === 'detail' ? <DetailPage questionId={selectedQuestionId} reviewMode={reviewMode} onBack={() => navigate(reviewMode ? 'review' : 'library')} onEdit={editQuestion} onOpenKnowledgePoint={openKnowledgePoint} /> : null}

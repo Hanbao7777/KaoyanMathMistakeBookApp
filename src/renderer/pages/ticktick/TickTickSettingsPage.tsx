@@ -2,6 +2,16 @@ import { useEffect, useState } from 'react';
 import type { TickTickSettings } from '../../../shared/types';
 import { useToast } from '../../components/Toast';
 
+const DARK_KEY = 'kaoyan-dark-mode';
+
+function getDarkMode(): boolean {
+  try { return localStorage.getItem(DARK_KEY) === 'true'; } catch { return false; }
+}
+function setDarkMode(on: boolean) {
+  try { localStorage.setItem(DARK_KEY, String(on)); } catch {}
+  document.documentElement.classList.toggle('dark', on);
+}
+
 const defaultSettings: TickTickSettings = {
   pomodoro: { focusMinutes: 25, shortBreakMinutes: 5, longBreakMinutes: 15, sessionsBeforeLongBreak: 4 },
   autoCreateReviewTasks: true,
@@ -14,6 +24,7 @@ export function TickTickSettingsPage() {
   const [settings, setSettings] = useState<TickTickSettings>(defaultSettings);
   const [lists, setLists] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
+  const [dark, setDark] = useState(getDarkMode);
 
   useEffect(() => {
     Promise.all([
@@ -91,6 +102,14 @@ export function TickTickSettingsPage() {
               <option value="white">白噪音</option>
               <option value="forest">森林鸟鸣</option>
             </select>
+          </div>
+        </div>
+
+        <div className="tt-settings-section">
+          <h3>外观</h3>
+          <div className="tt-setting-row">
+            <label>深色模式</label>
+            <input type="checkbox" checked={dark} onChange={e => { setDark(e.target.checked); setDarkMode(e.target.checked); }} />
           </div>
         </div>
 
