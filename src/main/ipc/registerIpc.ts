@@ -102,7 +102,7 @@ import {
   getTickTickSettings, saveTickTickSettings,
   listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
-import { syncTaskCompletedToReview, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
+import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
   DatabaseBackupKind,
@@ -383,6 +383,8 @@ export function registerIpc() {
   handle('ticktick:sync:reviewTask', (taskId: string, taskTitle: string, actualMinutes: number) => syncTaskCompletedToReview(taskId, taskTitle, actualMinutes));
   handle('ticktick:sync:undoReviewTask', (taskId: string, taskTitle: string) => undoSyncTaskCompleted(taskId, taskTitle));
   handle('ticktick:sync:generateReviewTasks', () => generateAutoReviewTasks());
+  handle('ticktick:sync:reviewUpdated', (linkedType: TickTickBridgeLinkedType, linkedId: string) => syncReviewToTickTickTask(linkedType, linkedId));
+  handle('ticktick:sync:masteryChanged', (knowledgeNodeId: string, newMasteryScore: number) => syncMasteryToTaskPriority(knowledgeNodeId, newMasteryScore));
 
   // White noise state
   handle('ticktick:whiteNoise:get', async () => {

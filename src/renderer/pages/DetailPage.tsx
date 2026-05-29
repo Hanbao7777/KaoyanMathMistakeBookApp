@@ -95,6 +95,12 @@ export function DetailPage({ questionId, reviewMode = false, onBack, onEdit, onO
     if (!question) return;
     await window.api.markMastery(question.id, mastery);
     await load();
+    try {
+      const score = ({ '未掌握': 1, '较弱': 2, '一般': 3, '较好': 4, '已掌握': 5 } as Record<string, number>)[mastery] || 3;
+      for (const kp of question.knowledge_points || []) {
+        await window.api.syncMasteryToTickTick(kp.node_id, score);
+      }
+    } catch {}
   }
 
   async function submitReview(event: FormEvent) {
@@ -115,6 +121,9 @@ export function DetailPage({ questionId, reviewMode = false, onBack, onEdit, onO
       note: reviewNote
     });
     await load();
+    try {
+      await window.api.syncReviewToTickTick('question', String(question.id));
+    } catch {}
   }
 
   const metaTags = [question.subject || '高等数学', question.category, question.question_type, question.error_reason].filter(Boolean);

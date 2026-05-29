@@ -248,6 +248,8 @@ export interface AppApi {
   triggerReviewTaskGeneration: () => Promise<{ created: number }>;
   syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => Promise<void>;
   undoReviewTaskSync: (taskId: string, taskTitle: string) => Promise<void>;
+  syncReviewToTickTick: (linkedType: TickTickBridgeLinkedType, linkedId: string) => Promise<void>;
+  syncMasteryToTickTick: (knowledgeNodeId: string, newMasteryScore: number) => Promise<void>;
 
   // TickTick Habits
   listTickTickHabits: () => Promise<TickTickHabit[]>;

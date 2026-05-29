@@ -308,6 +308,10 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
         if (refreshed) setActiveKnowledge(refreshed);
       }
 
+      try {
+        await window.api.syncReviewToTickTick('question', String(current.id));
+      } catch {}
+
       if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
       undoTimerRef.current = setTimeout(() => setUndoData(null), 5000);
     } catch (error) {

@@ -246,6 +246,8 @@ const api: AppApi = {
   triggerReviewTaskGeneration: () => invoke<{ created: number }>('ticktick:sync:generateReviewTasks'),
   syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => invoke<void>('ticktick:sync:reviewTask', taskId, taskTitle, actualMinutes),
   undoReviewTaskSync: (taskId: string, taskTitle: string) => invoke<void>('ticktick:sync:undoReviewTask', taskId, taskTitle),
+  syncReviewToTickTick: (linkedType: TickTickBridgeLinkedType, linkedId: string) => invoke<void>('ticktick:sync:reviewUpdated', linkedType, linkedId),
+  syncMasteryToTickTick: (knowledgeNodeId: string, newMasteryScore: number) => invoke<void>('ticktick:sync:masteryChanged', knowledgeNodeId, newMasteryScore),
 
   saveWindowState: (state: WindowState) => ipcRenderer.send('window:saveState', state),
   loadWindowState: () => invoke<WindowState | null>('window:loadState'),
