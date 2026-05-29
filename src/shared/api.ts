@@ -244,6 +244,14 @@ export interface AppApi {
   getTickTickWhiteNoiseState: () => Promise<{ enabled: boolean; noise: TickTickWhiteNoise }>;
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => Promise<void>;
 
+  // Widget
+  openWidget: () => void;
+  closeWidget: () => void;
+  toggleWidgetPin: (pinned: boolean) => void;
+  setWidgetOpacity: (opacity: number) => void;
+  setWidgetSize: (width: number, height: number) => void;
+  isWidgetOpen: () => Promise<boolean>;
+
   // Auto review task creation
   triggerReviewTaskGeneration: () => Promise<{ created: number }>;
   syncTickTickTaskCompletedToReview: (taskId: string, taskTitle: string, actualMinutes: number) => Promise<void>;

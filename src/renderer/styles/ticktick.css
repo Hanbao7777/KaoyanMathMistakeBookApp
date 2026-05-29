@@ -744,3 +744,13 @@
 .tt-kanban-card:hover {
   border-color: var(--tt-accent);
 }
+
+/* ── Desktop Widget ── */
+.ticktick-widget {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--tt-border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+}
+.ticktick-widget::-webkit-scrollbar { width: 4px; }
+.ticktick-widget::-webkit-scrollbar-thumb { background: var(--tt-border); border-radius: 2px; }

@@ -31,6 +31,7 @@ import { InboxPage } from './pages/ticktick/InboxPage';
 import { KanbanPage } from './pages/ticktick/KanbanPage';
 import { EisenhowerPage } from './pages/ticktick/EisenhowerPage';
 import { HabitsPage } from './pages/ticktick/HabitsPage';
+import { DesktopWidget } from './pages/ticktick/DesktopWidget';
 import { formatSeconds } from './utils/formatTime';
 import 'katex/dist/katex.min.css';
 import './styles/global.css';
@@ -66,6 +67,11 @@ function getElapsedSeconds(timer: FocusTimerState) {
 type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
 export default function App() {
+  // Widget mode — loaded via #/widget hash in a separate window
+  if (window.location.hash === '#/widget') {
+    return <DesktopWidget />;
+  }
+
   const [page, setPage] = useState<PageKey>('dashboard');
   const [selectedQuestionId, setSelectedQuestionId] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);

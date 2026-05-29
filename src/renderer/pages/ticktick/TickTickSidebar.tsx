@@ -1,4 +1,4 @@
-import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Plus, Settings } from 'lucide-react';
+import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Monitor, Plus, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTag } from '../../../shared/types';
 
@@ -171,6 +171,9 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
         <div className="tt-sidebar-label">工具</div>
         <button className={`tt-sidebar-item ${page === 'focus' ? 'active' : ''}`} onClick={() => onNavigate('focus')} type="button">
           <Clock3 size={14} /> 专注计时
+        </button>
+        <button className="tt-sidebar-item" onClick={() => window.api.openWidget()} type="button">
+          <Monitor size={14} /> 桌面悬浮窗
         </button>
         <button className={`tt-sidebar-item ${page === 'settings' ? 'active' : ''}`} onClick={() => onNavigate('settings')} type="button">
           <Settings size={14} /> 设置

@@ -234,6 +234,14 @@ const api: AppApi = {
   getTickTickWhiteNoiseState: () => invoke<{ enabled: boolean; noise: TickTickWhiteNoise }>('ticktick:whiteNoise:get'),
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => invoke<void>('ticktick:whiteNoise:set', state),
 
+  // Widget
+  openWidget: () => { ipcRenderer.send('widget:open'); },
+  closeWidget: () => { ipcRenderer.send('widget:close'); },
+  toggleWidgetPin: (pinned: boolean) => { ipcRenderer.send('widget:togglePin', pinned); },
+  setWidgetOpacity: (opacity: number) => { ipcRenderer.send('widget:setOpacity', opacity); },
+  setWidgetSize: (width: number, height: number) => { ipcRenderer.send('widget:setSize', width, height); },
+  isWidgetOpen: () => invoke<boolean>('widget:isOpen'),
+
   // TickTick Habits
   listTickTickHabits: () => invoke<TickTickHabit[]>('ticktick:habits:list'),
   createTickTickHabit: (input: TickTickHabitInput) => invoke<TickTickHabit>('ticktick:habits:create', input),

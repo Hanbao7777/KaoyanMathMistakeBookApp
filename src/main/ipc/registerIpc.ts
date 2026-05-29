@@ -1,4 +1,5 @@
-import { ipcMain } from 'electron';
+import path from 'node:path';
+import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import {
   addReviewLog,
   clearAllData,
@@ -156,6 +157,48 @@ function handle<TArgs extends unknown[], TResult>(channel: string, listener: (..
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   });
+}
+
+// ── Widget Window ──
+
+let widgetWindow: BrowserWindow | null = null;
+const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
+
+function createWidgetWindow() {
+  if (widgetWindow && !widgetWindow.isDestroyed()) {
+    widgetWindow.focus();
+    return;
+  }
+
+  widgetWindow = new BrowserWindow({
+    width: 280,
+    height: 500,
+    x: undefined as unknown as number,
+    y: 100,
+    frame: false,
+    resizable: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    transparent: true,
+    backgroundColor: '#00000000',
+    webPreferences: {
+      preload: path.join(__dirname, '../../preload/preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width: screenWidth } = primaryDisplay.workAreaSize;
+  widgetWindow.setPosition(screenWidth - 290, 100);
+
+  if (isDev) {
+    widgetWindow.loadURL('http://127.0.0.1:5173/#/widget');
+  } else {
+    widgetWindow.loadFile(path.join(__dirname, '../../../renderer/index.html'), { hash: '/widget' });
+  }
+
+  widgetWindow.on('closed', () => { widgetWindow = null; });
 }
 
 export function registerIpc() {
@@ -401,4 +444,20 @@ export function registerIpc() {
     db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);
     (await import('../services/databaseService')).persistDatabase();
   });
+
+  // Widget
+  ipcMain.on('widget:open', () => createWidgetWindow());
+  ipcMain.on('widget:close', () => {
+    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.close();
+  });
+  ipcMain.on('widget:togglePin', (_event, pinned: boolean) => {
+    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setAlwaysOnTop(!!pinned);
+  });
+  ipcMain.on('widget:setOpacity', (_event, opacity: number) => {
+    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setOpacity(opacity);
+  });
+  ipcMain.on('widget:setSize', (_event, width: number, height: number) => {
+    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setSize(width, height);
+  });
+  handle('widget:isOpen', () => widgetWindow !== null && !widgetWindow.isDestroyed());
 }
