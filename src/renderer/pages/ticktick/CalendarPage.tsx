@@ -16,6 +16,8 @@ export function CalendarPage() {
   const [weekLoading, setWeekLoading] = useState(false);
   const [dayTasks, setDayTasks] = useState<TickTickTask[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [dayOffset, setDayOffset] = useState(0);
 
   useEffect(() => {
     setLoading(true);
@@ -34,16 +36,28 @@ export function CalendarPage() {
     return monday;
   }, []);
 
+  const displayWeekMonday = useMemo(() => {
+    const monday = new Date(currentWeekMonday);
+    monday.setDate(monday.getDate() + weekOffset * 7);
+    return monday;
+  }, [currentWeekMonday, weekOffset]);
+
+  const displayDay = useMemo(() => {
+    const d = new Date(today);
+    d.setDate(d.getDate() + dayOffset);
+    return d;
+  }, [dayOffset]);
+
   // Week date strings (Monday to Sunday)
   const weekDateStrs = useMemo(() => {
     const dates: string[] = [];
     for (let i = 0; i < 7; i++) {
-      const d = new Date(currentWeekMonday);
-      d.setDate(currentWeekMonday.getDate() + i);
+      const d = new Date(displayWeekMonday);
+      d.setDate(displayWeekMonday.getDate() + i);
       dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
     }
     return dates;
-  }, [currentWeekMonday]);
+  }, [displayWeekMonday]);
 
   const loadWeekTasks = useCallback(async () => {
     setWeekLoading(true);
@@ -64,10 +78,15 @@ export function CalendarPage() {
     }
   }, [weekDateStrs]);
 
+  const displayDayStr = useMemo(() =>
+    `${displayDay.getFullYear()}-${String(displayDay.getMonth() + 1).padStart(2, '0')}-${String(displayDay.getDate()).padStart(2, '0')}`,
+    [displayDay]
+  );
+
   const loadDayTasks = useCallback(async () => {
     setDayLoading(true);
     try {
-      const tasks = await window.api.listTickTickTasks({ dueDate: todayStr, includeCompleted: false });
+      const tasks = await window.api.listTickTickTasks({ dueDate: displayDayStr, includeCompleted: false });
       setDayTasks(tasks.filter(t => !t.parent_id));
     } catch (e) {
       console.error('CalendarPage day load', e);
@@ -75,7 +94,7 @@ export function CalendarPage() {
     } finally {
       setDayLoading(false);
     }
-  }, [todayStr]);
+  }, [displayDayStr]);
 
   // Load week/day tasks when view changes
   useEffect(() => {
@@ -161,6 +180,15 @@ export function CalendarPage() {
       ) : null}
 
       {view === 'week' ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <button onClick={() => setWeekOffset(w => w - 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronLeft size={14} /></button>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              {(() => { const m = new Date(currentWeekMonday); m.setDate(m.getDate() + weekOffset * 7); return `${m.getFullYear()}年${m.getMonth()+1}月${m.getDate()}日`; })()} 周
+            </span>
+            <button onClick={() => setWeekOffset(w => w + 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronRight size={14} /></button>
+            {weekOffset !== 0 ? <button onClick={() => setWeekOffset(0)} type="button" style={{ fontSize: 11, color: 'var(--tt-accent)', background: 'none', border: '1px solid var(--tt-accent)', borderRadius: 4, padding: '2px 6px', cursor: 'pointer' }}>本周</button> : null}
+          </div>
         <div style={{ display: 'flex', gap: 4, flex: 1, overflow: 'auto', opacity: weekLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {weekDateStrs.map((dateStr, i) => {
             const isToday = dateStr === todayStr;
@@ -183,14 +211,24 @@ export function CalendarPage() {
             );
           })}
         </div>
+        </>
       ) : null}
 
       {view === 'day' ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <button onClick={() => setDayOffset(d => d - 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronLeft size={14} /></button>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              {(() => { const d = new Date(today); d.setDate(d.getDate() + dayOffset); return `${d.getFullYear()}年${d.getMonth()+1}月${d.getDate()}日 周${['日','一','二','三','四','五','六'][d.getDay()]}`; })()}
+            </span>
+            <button onClick={() => setDayOffset(d => d + 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronRight size={14} /></button>
+            {dayOffset !== 0 ? <button onClick={() => setDayOffset(0)} type="button" style={{ fontSize: 11, color: 'var(--tt-accent)', background: 'none', border: '1px solid var(--tt-accent)', borderRadius: 4, padding: '2px 6px', cursor: 'pointer' }}>今天</button> : null}
+          </div>
         <div style={{ flex: 1, overflow: 'auto', opacity: dayLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
-            {today.getFullYear()}年{today.getMonth() + 1}月{today.getDate()}日
+            {displayDay.getFullYear()}年{displayDay.getMonth() + 1}月{displayDay.getDate()}日
             <span style={{ fontSize: 12, color: 'var(--tt-text-secondary)', marginLeft: 8, fontWeight: 400 }}>
-              周{['日','一','二','三','四','五','六'][today.getDay()]}
+              周{['日','一','二','三','四','五','六'][displayDay.getDay()]}
             </span>
           </div>
           {dayTasks.length > 0 ? dayTasks.map(task => (
@@ -203,6 +241,7 @@ export function CalendarPage() {
             <div className="tt-empty">今天没有安排任务</div>
           )}
         </div>
+        </>
       ) : null}
 
       {showDayDetail && selectedDate ? (

@@ -68,8 +68,8 @@ export async function syncReviewToTickTickTask(linkedType: TickTickBridgeLinkedT
     if (!taskResult.length || !taskResult[0].values.length) continue;
 
     db.run(
-      'UPDATE ticktick_tasks SET updated_at = ? WHERE id = ? AND is_completed = 0',
-      [now, bridge.ticktick_task_id]
+      'UPDATE ticktick_tasks SET is_completed = 1, completed_at = ?, updated_at = ? WHERE id = ? AND is_completed = 0',
+      [now, now, bridge.ticktick_task_id]
     );
   }
 

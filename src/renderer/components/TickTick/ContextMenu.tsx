@@ -99,8 +99,8 @@ export function ContextMenu({ x, y, actions, onClose }: ContextMenuProps) {
           onMouseLeave={() => setSubmenuIndex(null)}
           style={{
             position: 'fixed',
-            left: adjustedX + 170,
-            top: adjustedY + submenuIndex! * 36 - 4,
+            left: adjustedX + 170 > window.innerWidth - 170 ? adjustedX - 170 : adjustedX + 170,
+            top: Math.min(Math.max(0, adjustedY + submenuIndex! * 36 - 4), window.innerHeight - subCount * 38 - 8),
             zIndex: 10000,
             background: 'var(--tt-bg)',
             border: '1px solid var(--tt-border)',
