@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { TickTickCalendarDay, TickTickTask } from '../../../shared/types';
 
 export function CalendarPage() {
@@ -12,6 +12,10 @@ export function CalendarPage() {
   const [selectedTasks, setSelectedTasks] = useState<TickTickTask[]>([]);
   const [showDayDetail, setShowDayDetail] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [weekTasks, setWeekTasks] = useState<Record<string, TickTickTask[]>>({});
+  const [weekLoading, setWeekLoading] = useState(false);
+  const [dayTasks, setDayTasks] = useState<TickTickTask[]>([]);
+  const [dayLoading, setDayLoading] = useState(false);
 
   useEffect(() => {
     setLoading(true);
@@ -19,6 +23,65 @@ export function CalendarPage() {
   }, [year, month]);
 
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  // Compute Monday of the current week
+  const currentWeekMonday = useMemo(() => {
+    const dayOfWeek = today.getDay();
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+    return monday;
+  }, []);
+
+  // Week date strings (Monday to Sunday)
+  const weekDateStrs = useMemo(() => {
+    const dates: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(currentWeekMonday);
+      d.setDate(currentWeekMonday.getDate() + i);
+      dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+    }
+    return dates;
+  }, [currentWeekMonday]);
+
+  const loadWeekTasks = useCallback(async () => {
+    setWeekLoading(true);
+    try {
+      const results = await Promise.all(
+        weekDateStrs.map(date => window.api.listTickTickTasks({ dueDate: date, includeCompleted: false }))
+      );
+      const map: Record<string, TickTickTask[]> = {};
+      weekDateStrs.forEach((date, i) => {
+        map[date] = results[i] || [];
+      });
+      setWeekTasks(map);
+    } catch (e) {
+      console.error('CalendarPage week load', e);
+      setWeekTasks({});
+    } finally {
+      setWeekLoading(false);
+    }
+  }, [weekDateStrs]);
+
+  const loadDayTasks = useCallback(async () => {
+    setDayLoading(true);
+    try {
+      const tasks = await window.api.listTickTickTasks({ dueDate: todayStr, includeCompleted: false });
+      setDayTasks(tasks.filter(t => !t.parent_id));
+    } catch (e) {
+      console.error('CalendarPage day load', e);
+      setDayTasks([]);
+    } finally {
+      setDayLoading(false);
+    }
+  }, [todayStr]);
+
+  // Load week/day tasks when view changes
+  useEffect(() => {
+    if (view === 'week') loadWeekTasks();
+    if (view === 'day') loadDayTasks();
+  }, [view, loadWeekTasks, loadDayTasks]);
 
   // Compute grid padding for first day of month
   const firstDayOfWeek = useMemo(() => {
@@ -73,8 +136,8 @@ export function CalendarPage() {
         </div>
         <div className="tt-calendar-view-toggle">
           <button className={view === 'month' ? 'active' : ''} onClick={() => setView('month')} type="button">月</button>
-          <button className={view === 'week' ? 'active' : ''} onClick={() => setView('week')} type="button" disabled>周</button>
-          <button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')} type="button" disabled>日</button>
+          <button className={view === 'week' ? 'active' : ''} onClick={() => setView('week')} type="button">周</button>
+          <button className={view === 'day' ? 'active' : ''} onClick={() => setView('day')} type="button">日</button>
         </div>
       </div>
 
@@ -95,9 +158,52 @@ export function CalendarPage() {
             );
           })}
         </div>
-      ) : (
-        <div className="tt-empty">{view === 'week' ? '周' : '日'}视图将在后续版本中提供</div>
-      )}
+      ) : null}
+
+      {view === 'week' ? (
+        <div style={{ display: 'flex', gap: 4, flex: 1, overflow: 'auto', opacity: weekLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
+          {weekDateStrs.map((dateStr, i) => {
+            const isToday = dateStr === todayStr;
+            const tasks = (weekTasks[dateStr] || []).filter(t => !t.parent_id && !t.is_completed);
+            const dayDate = parseInt(dateStr.split('-')[2], 10);
+            return (
+              <div key={i} style={{ flex: '1 1 0', minWidth: 100, background: isToday ? 'var(--tt-bg-active)' : 'var(--tt-bg-sidebar)', borderRadius: 'var(--tt-radius-md)', padding: 10, border: isToday ? '1px solid var(--tt-accent)' : '1px solid transparent' }}>
+                <div style={{ textAlign: 'center', marginBottom: 8, fontWeight: isToday ? 700 : 400, fontSize: 12 }}>
+                  <div style={{ color: 'var(--tt-text-muted)', fontSize: 10 }}>{['一','二','三','四','五','六','日'][i]}</div>
+                  <div style={{ fontSize: 16, color: isToday ? 'var(--tt-accent)' : 'var(--tt-text)' }}>{dayDate}</div>
+                </div>
+                {tasks.slice(0, 10).map(task => (
+                  <div key={task.id} style={{ fontSize: 11, padding: '3px 6px', background: 'var(--tt-bg)', borderRadius: 3, marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', cursor: 'pointer' }} title={task.title} onClick={() => handleDayClick(dateStr)}>
+                    {task.priority === '高' ? <span style={{ color: 'var(--tt-danger)', fontWeight: 600 }}>!! </span> : null}
+                    {task.title}
+                  </div>
+                ))}
+                {tasks.length > 10 ? <div style={{ fontSize: 10, color: 'var(--tt-text-muted)', textAlign: 'center' }}>+{tasks.length - 10} 更多</div> : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {view === 'day' ? (
+        <div style={{ flex: 1, overflow: 'auto', opacity: dayLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
+            {today.getFullYear()}年{today.getMonth() + 1}月{today.getDate()}日
+            <span style={{ fontSize: 12, color: 'var(--tt-text-secondary)', marginLeft: 8, fontWeight: 400 }}>
+              周{['日','一','二','三','四','五','六'][today.getDay()]}
+            </span>
+          </div>
+          {dayTasks.length > 0 ? dayTasks.map(task => (
+            <div key={task.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0', borderBottom: '1px solid var(--tt-border-light)' }}>
+              <span style={{ fontSize: 12, color: 'var(--tt-text-muted)', minWidth: 50 }}>{task.due_time || '全天'}</span>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: task.priority === '高' ? 'var(--tt-danger)' : task.priority === '中' ? 'var(--tt-warning)' : 'var(--tt-border)' }} />
+              <span style={{ fontSize: 13, textDecoration: task.is_completed ? 'line-through' : 'none' }}>{task.title}</span>
+            </div>
+          )) : (
+            <div className="tt-empty">今天没有安排任务</div>
+          )}
+        </div>
+      ) : null}
 
       {showDayDetail && selectedDate ? (
         <div style={{ marginTop: 16, padding: 16, background: 'var(--tt-bg-sidebar)', borderRadius: 'var(--tt-radius-md)' }}>
