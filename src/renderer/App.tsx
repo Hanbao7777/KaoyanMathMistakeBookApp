@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { QuestionFilters } from '../shared/types';
 import { Shell, type PageKey } from './components/Shell';
 import { GlobalSearch } from './components/GlobalSearch';
@@ -30,8 +30,8 @@ import { InboxPage } from './pages/ticktick/InboxPage';
 import { KanbanPage } from './pages/ticktick/KanbanPage';
 import { EisenhowerPage } from './pages/ticktick/EisenhowerPage';
 import { HabitsPage } from './pages/ticktick/HabitsPage';
-import { DesktopWidget } from './pages/ticktick/DesktopWidget';
 import 'katex/dist/katex.min.css';
+const DesktopWidget = React.lazy(() => import('./pages/ticktick/DesktopWidget').then(m => ({ default: m.DesktopWidget })));
 import './styles/global.css';
 import './styles/modal.css';
 import './styles/toast.css';
@@ -202,7 +202,11 @@ export default function App() {
 
   // Widget mode — separate window, render only the widget
   if (window.location.hash === '#/widget') {
-    return <DesktopWidget />;
+    return (
+      <React.Suspense fallback={<div style={{ background: '#0d1117', height: '100vh' }} />}>
+        <DesktopWidget />
+      </React.Suspense>
+    );
   }
 
   return (
