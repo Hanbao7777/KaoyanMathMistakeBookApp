@@ -157,11 +157,9 @@ app.whenReady().then(async () => {
       const migrateResult = await migrateCategoryValues();
       console.log(`[Migration] Processed ${migrateResult.migrated} category mappings`);
 
-      if (count === 0) {
-        console.log('[Rematch] Re-matching questions to new exam points...');
-        const rematchResult = await rematchKnowledgePoints();
-        console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
-      }
+      console.log('[Rematch] Re-matching questions to exam points...');
+      const rematchResult = await rematchKnowledgePoints();
+      console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
     } catch (error) {
       console.warn('[StartupSeed]', error);
     }
