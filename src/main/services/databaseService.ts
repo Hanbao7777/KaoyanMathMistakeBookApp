@@ -403,6 +403,43 @@ export async function initializeDatabase() {
   await getDb();
 }
 
+/**
+ * Migrate old category values to match the new exam point summary structure.
+ * Called once on startup after seed import, before knowledge point re-matching.
+ */
+export async function migrateCategoryValues(): Promise<{ migrated: number }> {
+  const database = await getDb();
+
+  const CATEGORY_MAP: Record<string, string> = {
+    '函数、极限与连续': '函数、极限、连续',
+    '多元函数微分学': '多元函数微积分学',
+    '重积分': '多元函数微积分学',
+    '曲线曲面积分': '多元函数微积分学',
+    '微分方程': '常微分方程',
+    '线性代数': '其他'
+  };
+
+  let migrated = 0;
+  database.run('BEGIN TRANSACTION');
+  try {
+    for (const [oldValue, newValue] of Object.entries(CATEGORY_MAP)) {
+      run(
+        database,
+        "UPDATE questions SET category = ?, updated_at = ? WHERE category = ? AND (deleted_at IS NULL OR deleted_at = '')",
+        [newValue, nowIso(), oldValue]
+      );
+      migrated += 1;
+    }
+    database.run('COMMIT');
+    persist();
+  } catch (error) {
+    database.run('ROLLBACK');
+    throw error;
+  }
+
+  return { migrated };
+}
+
 export async function createQuestion(input: QuestionInput) {
   const database = await getDb();
   const createdAt = nowIso();
