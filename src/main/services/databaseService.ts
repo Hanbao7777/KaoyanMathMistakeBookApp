@@ -58,7 +58,7 @@ export function normalizeSubject(value: unknown, fallback: MathSubject = DEFAULT
 
 export function inferSubjectFromCategory(category: unknown): MathSubject {
   const text = category === null || category === undefined ? '' : String(category).trim();
-  if (text === '线性代数') return '线性代数';
+  if (text === '线性代数' || text === '行列式与矩阵' || text === '线性方程组与向量' || text === '特征值与二次型') return '线性代数';
   if (text === '概率论') return '概率论';
   return DEFAULT_SUBJECT;
 }
