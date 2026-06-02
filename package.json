@@ -28,6 +28,10 @@
       {
         "from": "scripts",
         "to": "scripts"
+      },
+      {
+        "from": "resources/knowledge_map_seed.zip",
+        "to": "knowledge_map_seed.zip"
       }
     ],
     "asarUnpack": [
