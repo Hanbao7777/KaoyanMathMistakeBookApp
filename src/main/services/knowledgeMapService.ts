@@ -698,19 +698,39 @@ export async function bindTextbookPdf(nodeId: string): Promise<BindTextbookPdfRe
 type QuestionMatchRow = Question & { tag_text: string };
 
 function scoreQuestionPoint(question: QuestionMatchRow, point: KnowledgePoint) {
-  const pointTags = new Set(parseList(point.tags));
+  const pointTags = parseList(point.tags);
+  const pointTagsSet = new Set(pointTags);
   const commonTypes = new Set(parseList(point.common_question_types));
   const commonReasons = new Set(parseList(point.common_error_reasons));
-  const questionTags = new Set(splitText(question.tag_text || ''));
+  const questionTags = splitText(question.tag_text || '');
+  const questionTagsSet = new Set(questionTags);
   let score = 0;
 
+  // Exact question_type match
   if (question.question_type === point.title) score += 8;
   if (commonTypes.has(question.question_type)) score += 7;
+
+  // Exact tag match
   for (const tag of questionTags) {
-    if (pointTags.has(tag)) score += 3;
+    if (pointTagsSet.has(tag)) score += 3;
   }
+
+  // Substring tag match (question tag contains or is contained by point tag)
+  for (const qTag of questionTags) {
+    for (const pTag of pointTags) {
+      if (qTag.length >= 2 && pTag.length >= 2 && (qTag.includes(pTag) || pTag.includes(qTag))) {
+        score += 2;
+      }
+    }
+  }
+
+  // Error reason match
   if (commonReasons.has(question.error_reason)) score += 3;
+
+  // Title/content contains point title
   if (point.title && (question.title.includes(point.title) || question.content.includes(point.title))) score += 4;
+
+  // Category match
   if (question.category && question.category === point.category) score += 1;
 
   return score;
