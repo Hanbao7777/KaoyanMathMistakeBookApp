@@ -403,7 +403,7 @@ export async function importKnowledgeMapZip(): Promise<KnowledgeMapImportResult 
 export async function seedImportKnowledgeMap(): Promise<KnowledgeMapImportResult> {
   const { app } = require('electron') as typeof import('electron');
   const resourcesDir = app.isPackaged
-    ? path.join(process.resourcesPath)
+    ? path.join(process.resourcesPath, 'app.asar')
     : path.join(__dirname, '../../resources');
   const zipPath = path.join(resourcesDir, 'knowledge_map_seed.zip');
 
@@ -415,7 +415,9 @@ export async function seedImportKnowledgeMap(): Promise<KnowledgeMapImportResult
   fs.mkdirSync(tempDir, { recursive: true });
 
   try {
-    const zip = new AdmZip(zipPath);
+    // Read as buffer first to support asar-packed files
+    const zipBuffer = fs.readFileSync(zipPath);
+    const zip = new AdmZip(zipBuffer);
     ensureSafeZip(zip, tempDir);
     zip.extractAllTo(tempDir, true);
 
