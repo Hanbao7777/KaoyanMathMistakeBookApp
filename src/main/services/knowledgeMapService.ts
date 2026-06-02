@@ -395,6 +395,96 @@ export async function importKnowledgeMapZip(): Promise<KnowledgeMapImportResult 
   }
 }
 
+/**
+ * Import the bundled knowledge_map_seed.zip from app resources.
+ * Used on first launch when knowledge_points table is empty.
+ * Reuses the same upsert logic as importKnowledgeMapZip().
+ */
+export async function seedImportKnowledgeMap(): Promise<KnowledgeMapImportResult> {
+  const { app } = require('electron') as typeof import('electron');
+  const resourcesDir = app.isPackaged
+    ? path.join(process.resourcesPath)
+    : path.join(__dirname, '../../resources');
+  const zipPath = path.join(resourcesDir, 'knowledge_map_seed.zip');
+
+  if (!fs.existsSync(zipPath)) {
+    throw new Error(`内置考点数据包不存在：${zipPath}`);
+  }
+
+  const tempDir = path.join(getPaths().temp, `seed-import-${Date.now()}`);
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  try {
+    const zip = new AdmZip(zipPath);
+    ensureSafeZip(zip, tempDir);
+    zip.extractAllTo(tempDir, true);
+
+    const textbookJson = path.join(tempDir, 'textbooks.json');
+    const pointsJson = path.join(tempDir, 'knowledge_points.json');
+    if (!fs.existsSync(textbookJson)) throw new Error('种子数据包缺少 textbooks.json');
+    if (!fs.existsSync(pointsJson)) throw new Error('种子数据包缺少 knowledge_points.json');
+
+    const textbookRaw = readJsonFile<Record<string, unknown>>(textbookJson, 'textbooks.json');
+    const pointRows = readJsonFile<unknown>(pointsJson, 'knowledge_points.json');
+    if (!Array.isArray(pointRows)) throw new Error('knowledge_points.json 必须是数组');
+
+    const textbookSubject = normalizeSubject(textbookRaw.subject);
+    const database = await getDatabase();
+    const batchId = await createImportBatch({
+      type: 'knowledge_map',
+      name: asText(textbookRaw.title) || '考点汇总种子数据',
+      sourceFileName: 'knowledge_map_seed.zip',
+      source: asText(textbookRaw.title),
+      metadata: { ...textbookRaw, seed: true }
+    });
+    const result: KnowledgeMapImportResult = {
+      textbookTitle: asText(textbookRaw.title) || '考研数学考点汇总',
+      subject: textbookSubject,
+      importedCount: 0,
+      updatedCount: 0,
+      failedCount: 0,
+      failures: [],
+      copiedPdfPath: null
+    };
+
+    database.run('BEGIN TRANSACTION');
+    try {
+      const copied = { fileName: asText(textbookRaw.file_name), filePath: asText(textbookRaw.file_path), copiedPath: null };
+      const textbookId = upsertTextbook(database, textbookRaw, copied);
+      recordImportBatchItem(database, batchId, 'textbooks', textbookId);
+
+      for (const row of pointRows) {
+        try {
+          const status = upsertKnowledgePoint(database, textbookId, (row ?? {}) as Record<string, unknown>, asText(textbookRaw.subject), batchId);
+          if (status.status === 'imported') {
+            result.importedCount += 1;
+            recordImportBatchItem(database, batchId, 'knowledge_points', status.nodeId);
+          } else result.updatedCount += 1;
+        } catch (error) {
+          result.failedCount += 1;
+          const current = (row ?? {}) as Record<string, unknown>;
+          result.failures.push({
+            node_id: asText(current.node_id),
+            title: asText(current.title),
+            reason: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      finalizeImportBatch(database, batchId, result.failedCount && !result.importedCount && !result.updatedCount ? 'failed' : 'active');
+      database.run('COMMIT');
+      persistDatabase();
+    } catch (error) {
+      database.run('ROLLBACK');
+      throw error;
+    }
+
+    return result;
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 function buildQuestionCounts(database: Awaited<ReturnType<typeof getDatabase>>) {
   const directRows = allSql<{ node_id: string; count: number }>(
     database,
