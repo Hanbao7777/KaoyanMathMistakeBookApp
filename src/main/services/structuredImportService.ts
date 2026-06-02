@@ -192,7 +192,7 @@ export function createImportTemplate() {
     correct_solution: '转化为 e^{n\\ln u_n}，再利用 arctan x 在 x=1 附近的线性近似。',
     answer: 'e^{-2/\\pi}',
     subject: '高等数学',
-    category: '函数、极限与连续',
+    category: '函数、极限、连续',
     question_type: '指数型极限',
     error_reason: '极限转化过程不够规范',
     difficulty: '中等',
