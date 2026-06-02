@@ -8,6 +8,8 @@ import { persistDatabase, resetDatabaseConnection } from './services/databaseSer
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
+import { seedImportKnowledgeMap, rematchKnowledgePoints } from './services/knowledgeMapService';
+import { getDatabase, migrateCategoryValues } from './services/databaseService';
 import { ensureDailyAutoBackup } from './services/backupService';
 
 const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
@@ -138,6 +140,32 @@ app.whenReady().then(async () => {
   try {
     initializePaths();
     await initializeDatabase();
+
+    // Seed exam points on first launch, then migrate categories and re-match questions
+    try {
+      const database = await getDatabase();
+      const countResult = database.exec('SELECT COUNT(*) as c FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = ""');
+      const count = countResult.length && countResult[0].values.length ? Number(countResult[0].values[0][0]) : 0;
+
+      if (count === 0) {
+        console.log('[Seed] knowledge_points table empty, importing bundled exam points...');
+        const seedResult = await seedImportKnowledgeMap();
+        console.log(`[Seed] Imported ${seedResult.importedCount} exam points, ${seedResult.failedCount} failed`);
+      }
+
+      console.log('[Migration] Migrating old category values...');
+      const migrateResult = await migrateCategoryValues();
+      console.log(`[Migration] Processed ${migrateResult.migrated} category mappings`);
+
+      if (count === 0) {
+        console.log('[Rematch] Re-matching questions to new exam points...');
+        const rematchResult = await rematchKnowledgePoints();
+        console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
+      }
+    } catch (error) {
+      console.warn('[StartupSeed]', error);
+    }
+
     try {
       ensureDailyAutoBackup();
     } catch (error) {
