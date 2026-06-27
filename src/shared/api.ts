@@ -254,6 +254,8 @@ export interface AppApi {
   toggleWidgetPin: (pinned: boolean) => void;
   setWidgetOpacity: (opacity: number) => void;
   setWidgetSize: (width: number, height: number) => void;
+  setWidgetBounds: (bounds: { x: number; y: number; width: number; height: number }) => void;
+  openMainWindow: () => void;
   isWidgetOpen: () => Promise<boolean>;
 
   // Auto review task creation

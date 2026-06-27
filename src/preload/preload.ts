@@ -244,6 +244,8 @@ const api: AppApi = {
   toggleWidgetPin: (pinned: boolean) => { ipcRenderer.send('widget:togglePin', pinned); },
   setWidgetOpacity: (opacity: number) => { ipcRenderer.send('widget:setOpacity', opacity); },
   setWidgetSize: (width: number, height: number) => { ipcRenderer.send('widget:setSize', width, height); },
+  setWidgetBounds: (bounds: { x: number; y: number; width: number; height: number }) => { ipcRenderer.send('widget:setBounds', bounds); },
+  openMainWindow: () => { ipcRenderer.send('widget:openMain'); },
   isWidgetOpen: () => invoke<boolean>('widget:isOpen'),
 
   // TickTick Habits

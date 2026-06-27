@@ -1,277 +1,546 @@
-import { useEffect, useState } from 'react';
-import type { TickTickTask } from '../../../shared/types';
+import { Check, ExternalLink, MoreHorizontal, Pause, Pin, Play, Plus, RotateCcw, X } from 'lucide-react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { TickTickList, TickTickTask } from '../../../shared/types';
 
-const DARK_KEY = 'kaoyan-dark-mode';
+const widgetSettingsKey = 'kaoyan-widget-settings-v2';
+const widgetTimerKey = 'kaoyan-widget-timer-state-v2';
+const widgetMinWidth = 280;
+const widgetMinHeight = 360;
+const widgetMaxWidth = 420;
+const widgetMaxHeight = 680;
+
+type WidgetTheme = 'system' | 'light' | 'dark';
+type TimerStatus = 'idle' | 'running' | 'paused' | 'break';
+type ResizeDirection = 'left' | 'right' | 'top' | 'bottom' | 'top-left' | 'top-right' | 'bottom-left' | 'corner';
+
+interface WidgetSettings {
+  theme: WidgetTheme;
+  opacity: number;
+  pinned: boolean;
+  restoreBounds: boolean;
+}
+
+interface WidgetTimerState {
+  status: TimerStatus;
+  secondsLeft: number;
+  totalSeconds: number;
+  sessionStartTime: number | null;
+  completedSessions: number;
+}
+
+const defaultSettings: WidgetSettings = {
+  theme: 'system',
+  opacity: 0.82,
+  pinned: true,
+  restoreBounds: true,
+};
+
+const defaultTimer: WidgetTimerState = {
+  status: 'idle',
+  secondsLeft: 25 * 60,
+  totalSeconds: 25 * 60,
+  sessionStartTime: null,
+  completedSessions: 0,
+};
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getEffectiveTheme(theme: WidgetTheme) {
+  if (theme === 'system') {
+    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  }
+  return theme;
+}
+
+function formatSeconds(seconds: number) {
+  const safe = Math.max(0, Math.floor(seconds));
+  const min = Math.floor(safe / 60);
+  const sec = safe % 60;
+  return `${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getResizeCursor(direction: ResizeDirection) {
+  if (direction === 'top-left' || direction === 'corner') return 'nwse-resize';
+  if (direction === 'top-right' || direction === 'bottom-left') return 'nesw-resize';
+  if (direction === 'left' || direction === 'right') return 'ew-resize';
+  return 'ns-resize';
+}
+
+function priorityRank(task: TickTickTask) {
+  if (task.priority === '高') return 0;
+  if (task.priority === '中') return 1;
+  if (task.priority === '低') return 2;
+  return 3;
+}
 
 export function DesktopWidget() {
+  const [settings, setSettings] = useState<WidgetSettings>(() => readJson(widgetSettingsKey, defaultSettings));
+  const [timer, setTimer] = useState<WidgetTimerState>(() => readJson(widgetTimerKey, defaultTimer));
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
-  const [secondsLeft, setSecondsLeft] = useState(25 * 60);
-  const [totalSeconds, setTotalSeconds] = useState(25 * 60);
-  const [status, setStatus] = useState<'idle' | 'running' | 'paused' | 'break'>('idle');
-  const [pinned, setPinned] = useState(true);
-  const [showSettings, setShowSettings] = useState(false);
-  const [dark, setDark] = useState(() => localStorage.getItem(DARK_KEY) === 'true');
+  const [lists, setLists] = useState<TickTickList[]>([]);
   const [examDate, setExamDate] = useState<string | null>(null);
   const [daysUntilExam, setDaysUntilExam] = useState<number | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [quickTitle, setQuickTitle] = useState('');
+  const [nowTick, setNowTick] = useState(0);
+  const intervalRef = useRef<number | null>(null);
+  const resizeFrameRef = useRef<number | null>(null);
 
-  // Exam countdown
+  const effectiveTheme = getEffectiveTheme(settings.theme);
+  const isDark = effectiveTheme === 'dark';
+
+  const secondsLeft = useMemo(() => {
+    void nowTick;
+    if (timer.status !== 'running' || !timer.sessionStartTime) return timer.secondsLeft;
+    const elapsed = Math.floor((Date.now() - timer.sessionStartTime) / 1000);
+    return Math.max(0, timer.totalSeconds - elapsed);
+  }, [timer, nowTick]);
+
+  const progress = timer.totalSeconds > 0 ? Math.max(0, secondsLeft) / timer.totalSeconds : 0;
+  const circumference = 2 * Math.PI * 52;
+  const dashOffset = circumference * (1 - progress);
+  const activeTasks = tasks
+    .filter((task) => !task.is_completed && !task.parent_id)
+    .sort((a, b) => priorityRank(a) - priorityRank(b) || (a.due_time || '').localeCompare(b.due_time || ''))
+    .slice(0, 8);
+  const completedCount = tasks.filter((task) => task.is_completed && !task.parent_id).length;
+
   useEffect(() => {
-    async function loadExam() {
-      try {
-        const settings = await window.api.getStudySettings?.();
-        if (settings?.exam_date) {
-          setExamDate(settings.exam_date);
-          const exam = new Date(settings.exam_date);
-          const today = new Date();
-          const diff = Math.ceil((exam.getTime() - today.getTime()) / 86400000);
-          setDaysUntilExam(diff > 0 ? diff : 0);
-        }
-      } catch {}
-    }
-    loadExam();
+    document.documentElement.classList.add('desktop-widget-document');
+    document.body.classList.add('desktop-widget-body');
+    return () => {
+      document.documentElement.classList.remove('desktop-widget-document');
+      document.body.classList.remove('desktop-widget-body');
+      document.body.style.cursor = '';
+    };
   }, []);
 
-  // Tasks
-  async function loadTasks() {
+  async function loadData() {
     try {
-      const data = await window.api.getTodayTickTickTasks();
-      setTasks([...data.overdue, ...data.today].filter(t => !t.is_completed && !t.parent_id));
-    } catch {}
+      const [todayTasks, tickTickLists, studySettings] = await Promise.all([
+        window.api.getTodayTickTickTasks(),
+        window.api.listTickTickLists(),
+        window.api.getStudySettings(),
+      ]);
+      setTasks([...todayTasks.overdue, ...todayTasks.today]);
+      setLists(tickTickLists);
+      if (studySettings.exam_date) {
+        setExamDate(studySettings.exam_date);
+        const target = new Date(`${studySettings.exam_date}T00:00:00`).getTime();
+        const startOfToday = new Date(`${today()}T00:00:00`).getTime();
+        setDaysUntilExam(Math.max(0, Math.ceil((target - startOfToday) / 86400000)));
+      }
+    } catch (error) {
+      console.error('DesktopWidget:loadData', error);
+    }
   }
 
   useEffect(() => {
-    loadTasks();
-    const t = setInterval(loadTasks, 30000);
-    return () => clearInterval(t);
+    loadData();
+    const refresh = window.setInterval(loadData, 30000);
+    return () => window.clearInterval(refresh);
   }, []);
 
-  // Timer sync via main process IPC
   useEffect(() => {
-    const check = async () => {
-      try {
-        const state = await window.api.getSharedTimerState?.();
-        if (!state) return;
-        setStatus((state.status as 'idle' | 'running' | 'paused' | 'break') || 'idle');
-        if (state.status === 'running' && state.sessionStartTime) {
-          const elapsed = Math.floor((Date.now() - state.sessionStartTime) / 1000);
-          setTotalSeconds(state.totalSeconds || 25 * 60);
-          setSecondsLeft(Math.max(0, (state.totalSeconds || 25 * 60) - elapsed));
-        } else {
-          setSecondsLeft(state.secondsLeft || 25 * 60);
-          setTotalSeconds(state.totalSeconds || 25 * 60);
-        }
-      } catch {}
+    window.localStorage.setItem(widgetSettingsKey, JSON.stringify(settings));
+    window.api.toggleWidgetPin(settings.pinned);
+  }, [settings]);
+
+  useEffect(() => {
+    window.localStorage.setItem(widgetTimerKey, JSON.stringify({ ...timer, secondsLeft }));
+    window.api.setSharedTimerState({
+      status: timer.status,
+      secondsLeft,
+      totalSeconds: timer.totalSeconds,
+      completedSessions: timer.completedSessions,
+      currentSession: timer.completedSessions + 1,
+      sessionStartTime: timer.sessionStartTime,
+      boundTaskId: null,
+    }).catch(() => {});
+  }, [timer, secondsLeft]);
+
+  useEffect(() => {
+    if (timer.status !== 'running') return undefined;
+    intervalRef.current = window.setInterval(() => setNowTick((value) => value + 1), 250);
+    return () => {
+      if (intervalRef.current) window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
     };
-    check();
-    const t = setInterval(check, 1000);
-    return () => clearInterval(t);
-  }, []);
+  }, [timer.status]);
 
-  // Render
-  const progress = totalSeconds > 0 ? Math.max(0, secondsLeft) / totalSeconds : 0;
-  const circumference = 2 * Math.PI * 46;
-  const dashOffset = circumference * (1 - progress);
-  const minutes = Math.floor(Math.max(0, secondsLeft) / 60);
-  const secs = Math.max(0, secondsLeft) % 60;
-  const ringColor = status === 'break' ? '#30d158' : status === 'paused' ? '#555' : '#ff6b35';
+  useEffect(() => {
+    if (timer.status !== 'running' || secondsLeft > 0) return;
+    setTimer((current) => ({
+      ...current,
+      status: 'idle',
+      secondsLeft: current.totalSeconds,
+      sessionStartTime: null,
+      completedSessions: current.completedSessions + 1,
+    }));
+  }, [timer.status, secondsLeft]);
 
-  const bgColor = dark
-    ? 'rgba(22,22,24,0.82)'
-    : 'rgba(250,250,252,0.75)';
-  const textColor = dark ? '#f5f5f7' : '#1d1d1f';
-  const mutedColor = dark ? '#86868b' : '#86868b';
-  const separatorColor = dark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)';
+  function updateSettings(patch: Partial<WidgetSettings>) {
+    setSettings((current) => ({ ...current, ...patch }));
+  }
+
+  function startTimer() {
+    setTimer((current) => ({
+      ...current,
+      status: 'running',
+      totalSeconds: current.totalSeconds || 25 * 60,
+      secondsLeft: secondsLeft > 0 ? secondsLeft : current.totalSeconds || 25 * 60,
+      sessionStartTime: Date.now() - Math.max(0, (current.totalSeconds - secondsLeft) * 1000),
+    }));
+  }
+
+  function pauseTimer() {
+    setTimer((current) => ({
+      ...current,
+      status: 'paused',
+      secondsLeft,
+      sessionStartTime: null,
+    }));
+  }
+
+  function resetTimer() {
+    setTimer((current) => ({
+      ...current,
+      status: 'idle',
+      secondsLeft: 25 * 60,
+      totalSeconds: 25 * 60,
+      sessionStartTime: null,
+    }));
+  }
+
+  async function completeTask(task: TickTickTask) {
+    try {
+      await window.api.completeTickTickTask(task.id);
+      await loadData();
+    } catch (error) {
+      console.error('DesktopWidget:completeTask', error);
+    }
+  }
+
+  async function addTask() {
+    const title = quickTitle.trim();
+    const list = lists[0];
+    if (!title || !list) return;
+    try {
+      await window.api.createTickTickTask({
+        list_id: list.id,
+        title,
+        due_date: today(),
+        priority: 'none',
+      });
+      setQuickTitle('');
+      setQuickAddOpen(false);
+      await loadData();
+    } catch (error) {
+      console.error('DesktopWidget:addTask', error);
+    }
+  }
+
+  function handleResizePointerDown(event: ReactPointerEvent<HTMLElement>, direction: ResizeDirection) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startPointerX = event.screenX;
+    const startPointerY = event.screenY;
+    const startBounds = {
+      x: Math.round(window.screenX),
+      y: Math.round(window.screenY),
+      width: window.innerWidth,
+      height: window.innerHeight,
+    };
+    document.body.classList.add('widget-resizing');
+    document.body.style.cursor = getResizeCursor(direction);
+
+    const getNextBounds = (pointerEvent: PointerEvent) => {
+      const deltaX = pointerEvent.screenX - startPointerX;
+      const deltaY = pointerEvent.screenY - startPointerY;
+      const resizeLeft = direction.includes('left');
+      const resizeRight = direction.includes('right') || direction === 'corner';
+      const resizeTop = direction.includes('top');
+      const resizeBottom = direction.includes('bottom') || direction === 'corner';
+      const nextWidth = Math.round(clamp(
+        startBounds.width + (resizeRight ? deltaX : 0) - (resizeLeft ? deltaX : 0),
+        widgetMinWidth,
+        widgetMaxWidth
+      ));
+      const nextHeight = Math.round(clamp(
+        startBounds.height + (resizeBottom ? deltaY : 0) - (resizeTop ? deltaY : 0),
+        widgetMinHeight,
+        widgetMaxHeight
+      ));
+
+      return {
+        x: resizeLeft ? startBounds.x + (startBounds.width - nextWidth) : startBounds.x,
+        y: resizeTop ? startBounds.y + (startBounds.height - nextHeight) : startBounds.y,
+        width: nextWidth,
+        height: nextHeight,
+      };
+    };
+
+    const applyResize = (pointerEvent: PointerEvent) => {
+      window.api.setWidgetBounds(getNextBounds(pointerEvent));
+    };
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (resizeFrameRef.current !== null) window.cancelAnimationFrame(resizeFrameRef.current);
+      resizeFrameRef.current = window.requestAnimationFrame(() => applyResize(moveEvent));
+    };
+
+    const onPointerUp = (upEvent: PointerEvent) => {
+      if (resizeFrameRef.current !== null) {
+        window.cancelAnimationFrame(resizeFrameRef.current);
+        resizeFrameRef.current = null;
+      }
+      applyResize(upEvent);
+      document.body.classList.remove('widget-resizing');
+      document.body.style.cursor = '';
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
+    };
+
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', onPointerUp, { once: true });
+    window.addEventListener('pointercancel', onPointerUp, { once: true });
+  }
 
   return (
-    <div style={{
-      height: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      overflow: 'hidden',
-      background: bgColor,
-      backdropFilter: 'blur(28px) saturate(160%)',
-      WebkitBackdropFilter: 'blur(28px) saturate(160%)',
-      color: textColor,
-      userSelect: 'none',
-      borderRadius: 16,
-      border: `1px solid ${dark ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.5)'}`,
-      boxShadow: dark
-        ? '0 0 0 0.5px rgba(255,255,255,0.08), 0 20px 60px rgba(0,0,0,0.6)'
-        : '0 0 0 0.5px rgba(0,0,0,0.04), 0 20px 60px rgba(0,0,0,0.12)',
-    }}>
-      {/* Exam countdown bar */}
-      {daysUntilExam !== null ? (
-        <div style={{
-          textAlign: 'center',
-          padding: '6px 14px',
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: '1px',
-          color: mutedColor,
-          fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif",
-          borderBottom: `1px solid ${separatorColor}`,
-          background: dark ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)',
-        }}>
-          距考研还有 <span style={{ color: textColor, fontWeight: 600, fontSize: 12 }}>{daysUntilExam}</span> 天
-          {examDate ? <span style={{ marginLeft: 6, opacity: 0.5 }}>{examDate}</span> : null}
+    <div
+      className={`desktop-widget ${isDark ? 'theme-dark' : 'theme-light'} status-${timer.status}`}
+      style={{ '--widget-opacity': settings.opacity } as CSSProperties}
+    >
+      <header className="widget-titlebar widget-drag-region">
+        <div className="widget-countdown">
+          <span>距考研</span>
+          <strong>{daysUntilExam ?? '--'}</strong>
+          <span>天</span>
+          {examDate ? <small>{examDate}</small> : null}
         </div>
-      ) : null}
+        <div className="widget-window-actions">
+          <button
+            className={`widget-icon-button ${settings.pinned ? 'active' : ''}`}
+            onClick={() => updateSettings({ pinned: !settings.pinned })}
+            title={settings.pinned ? '取消置顶' : '始终置顶'}
+            type="button"
+          >
+            <Pin size={14} />
+          </button>
+          <button
+            className={`widget-icon-button ${showSettings ? 'active' : ''}`}
+            onClick={() => setShowSettings((value) => !value)}
+            title="设置"
+            type="button"
+          >
+            <MoreHorizontal size={16} />
+          </button>
+        </div>
+      </header>
 
-      {/* Control bar */}
-      <div style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        padding: '8px 14px',
-        WebkitAppRegion: 'drag',
-      } as any}>
-        <button onClick={() => {
-          const next = !pinned;
-          setPinned(next);
-          window.api.toggleWidgetPin?.(next);
-        }} style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          fontSize: 12, padding: '4px 6px', borderRadius: 4,
-          color: pinned ? ringColor : mutedColor,
-          opacity: pinned ? 1 : 0.5,
-          WebkitAppRegion: 'no-drag',
-          transition: 'all 0.2s',
-          fontFamily: 'inherit',
-        } as any} type="button" title={pinned ? '已置顶' : '未置顶'}>
-          {'◆'}
-        </button>
-        <span style={{ fontSize: 10, opacity: 0.35, fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif" }}>
-          {new Date().toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', weekday: 'short' })}
-        </span>
-        <button onClick={() => setShowSettings(!showSettings)} style={{
-          background: 'none', border: 'none', cursor: 'pointer',
-          fontSize: 14, padding: '4px 6px', borderRadius: 4,
-          color: mutedColor, opacity: 0.5,
-          WebkitAppRegion: 'no-drag',
-          fontFamily: 'inherit',
-        } as any} type="button">
-          {'···'}
-        </button>
-      </div>
-
-      {/* Settings */}
       {showSettings ? (
-        <div style={{
-          margin: '0 14px 4px',
-          padding: '8px 12px',
-          borderRadius: 10,
-          background: dark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.03)',
-          fontSize: 11,
-          fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif",
-          display: 'flex', gap: 16, alignItems: 'center',
-        }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-            <input type="checkbox" checked={dark} onChange={e => { setDark(e.target.checked); localStorage.setItem(DARK_KEY, String(e.target.checked)); }} style={{ accentColor: ringColor }} />
-            暗色
+        <section className="widget-settings-popover">
+          <div className="widget-setting-group">
+            <span>外观</span>
+            <div className="widget-segmented">
+              {(['system', 'light', 'dark'] as WidgetTheme[]).map((theme) => (
+                <button
+                  className={settings.theme === theme ? 'active' : ''}
+                  key={theme}
+                  onClick={() => updateSettings({ theme })}
+                  type="button"
+                >
+                  {theme === 'system' ? '系统' : theme === 'light' ? '浅色' : '深色'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="widget-setting-row">
+            <span>透明度</span>
+            <input
+              max={0.96}
+              min={0.72}
+              onChange={(event) => updateSettings({ opacity: Number(event.target.value) })}
+              step={0.02}
+              type="range"
+              value={settings.opacity}
+            />
           </label>
-          <button onClick={() => { loadTasks(); setShowSettings(false); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: mutedColor, fontSize: 11, fontFamily: 'inherit', padding: 0 }} type="button">刷新</button>
-        </div>
+          <label className="widget-setting-check">
+            <input
+              checked={settings.pinned}
+              onChange={(event) => updateSettings({ pinned: event.target.checked })}
+              type="checkbox"
+            />
+            始终置顶
+          </label>
+        </section>
       ) : null}
 
-      {/* Timer ring */}
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '10px 0 2px' }}>
-        <div style={{ position: 'relative', width: 140, height: 140 }}>
-          <svg viewBox="0 0 100 100" width="140" height="140" style={{ transform: 'rotate(-90deg)' }}>
-            <circle cx="50" cy="50" r="46" fill="none" stroke={separatorColor} strokeWidth="2.5" />
-            <circle
-              cx="50" cy="50" r="46"
-              fill="none"
-              stroke={ringColor}
-              strokeWidth="2.5"
-              strokeDasharray={circumference}
-              strokeDashoffset={dashOffset}
-              strokeLinecap="round"
-              style={{
-                transition: 'stroke-dashoffset 0.4s ease',
-                filter: status === 'running' ? `drop-shadow(0 0 6px ${ringColor})` : 'none',
-              }}
-            />
-          </svg>
-          <div style={{
-            position: 'absolute', inset: 0,
-            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <span style={{
-              fontSize: 32,
-              fontWeight: 300,
-              letterSpacing: '2px',
-              fontFamily: "'SF Mono', 'Cascadia Code', 'JetBrains Mono', monospace",
-              color: textColor,
-            }}>
-              {String(minutes).padStart(2, '0')}<span style={{ opacity: 0.18, margin: '0 1px' }}>:</span>{String(secs).padStart(2, '0')}
-            </span>
-            <span style={{
-              fontSize: 9,
-              fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif",
-              color: status === 'running' ? ringColor : mutedColor,
-              marginTop: 2,
-              letterSpacing: '1px',
-              textTransform: 'uppercase',
-            }}>
-              {status === 'running' ? 'Focus' : status === 'break' ? 'Break' : status === 'paused' ? 'Paused' : 'Idle'}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Spacer */}
-      <div style={{ height: 8 }} />
-
-      {/* Tasks */}
-      <div className="ticktick-widget" style={{
-        flex: 1, overflow: 'auto',
-        fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif",
-        padding: '0 4px',
-      }}>
-        {tasks.length > 0 ? tasks.map(task => (
-          <div key={task.id} style={{
-            padding: '6px 16px',
-            fontSize: 12,
-            display: 'flex',
-            alignItems: 'baseline',
-            gap: 8,
-            opacity: 0.85,
-            lineHeight: 1.4,
-            borderBottom: `1px solid ${separatorColor}`,
-          }}>
-            <span style={{
-              color: task.priority === '高' ? '#ff453a' : task.priority === '中' ? ringColor : mutedColor,
-              fontSize: 10,
-              flexShrink: 0,
-              fontWeight: task.priority === '高' ? 600 : 400,
-            }}>
-              {task.priority === '高' ? '!!' : task.priority === '中' ? '!' : '·'}
-            </span>
-            <span style={{ flex: 1 }}>{task.title}</span>
-            {task.due_time ? (
-              <span style={{ fontSize: 10, opacity: 0.3, flexShrink: 0 }}>
-                {task.due_time}
+      <main className="widget-body">
+        <section className="widget-timer">
+          <div className="widget-ring">
+            <svg viewBox="0 0 120 120" aria-hidden="true">
+              <circle className="widget-ring-track" cx="60" cy="60" r="52" />
+              <circle
+                className="widget-ring-progress"
+                cx="60"
+                cy="60"
+                r="52"
+                strokeDasharray={circumference}
+                strokeDashoffset={dashOffset}
+              />
+            </svg>
+            <div className="widget-time">
+              <strong>{formatSeconds(secondsLeft)}</strong>
+              <span>
+                {timer.status === 'running' ? '专注中' : timer.status === 'paused' ? '已暂停' : timer.status === 'break' ? '休息中' : '准备开始'}
               </span>
-            ) : null}
+            </div>
           </div>
-        )) : (
-          <div style={{ textAlign: 'center', padding: 20, fontSize: 11, opacity: 0.25 }}>
-            暂无待办
+          <div className="widget-timer-meta">
+            <span>今日专注 {timer.completedSessions} 轮</span>
+            <span>{completedCount} 项已完成</span>
           </div>
-        )}
-      </div>
+          <div className="widget-timer-actions">
+            {timer.status === 'running' ? (
+              <button className="widget-primary-button" onClick={pauseTimer} type="button">
+                <Pause size={15} />
+                暂停
+              </button>
+            ) : (
+              <button className="widget-primary-button" onClick={startTimer} type="button">
+                <Play size={15} />
+                开始专注
+              </button>
+            )}
+            <button className="widget-ghost-button" onClick={resetTimer} type="button">
+              <RotateCcw size={14} />
+              重置
+            </button>
+          </div>
+        </section>
 
-      {/* Bottom */}
-      <div style={{
-        padding: '6px 14px 8px',
-        fontSize: 9,
-        textAlign: 'center',
-        opacity: 0.15,
-        fontFamily: "'SF Pro Display', -apple-system, 'Segoe UI', sans-serif",
-        borderTop: `1px solid ${separatorColor}`,
-      }}>
-        考研高数错题本
-      </div>
+        <section className="widget-tasks">
+          <div className="widget-section-head">
+            <span>今日任务</span>
+            <strong>{completedCount}/{tasks.filter((task) => !task.parent_id).length}</strong>
+          </div>
+          <div className="widget-task-list">
+            {activeTasks.length > 0 ? activeTasks.map((task) => (
+              <button className="widget-task-row" key={task.id} onClick={() => completeTask(task)} title="点击完成任务" type="button">
+                <span className={`widget-checkbox priority-${task.priority === '高' ? 'high' : task.priority === '中' ? 'medium' : task.priority === '低' ? 'low' : 'none'}`}>
+                  <Check size={11} />
+                </span>
+                <span className="widget-task-title">{task.title}</span>
+                {task.estimated_minutes ? <small>{task.estimated_minutes}m</small> : null}
+              </button>
+            )) : (
+              <div className="widget-empty">今天没有未完成任务</div>
+            )}
+          </div>
+        </section>
+      </main>
+
+      <footer className="widget-footer">
+        {quickAddOpen ? (
+          <form className="widget-quick-add" onSubmit={(event) => { event.preventDefault(); addTask(); }}>
+            <input
+              autoFocus
+              onChange={(event) => setQuickTitle(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape') {
+                  setQuickAddOpen(false);
+                  setQuickTitle('');
+                }
+              }}
+              placeholder={lists.length ? '添加今日任务' : '请先在主应用创建清单'}
+              value={quickTitle}
+            />
+            <button disabled={!quickTitle.trim() || !lists.length} title="添加" type="submit"><Plus size={14} /></button>
+            <button onClick={() => { setQuickAddOpen(false); setQuickTitle(''); }} title="取消" type="button"><X size={14} /></button>
+          </form>
+        ) : (
+          <>
+            <button className="widget-footer-button" onClick={() => setQuickAddOpen(true)} type="button">
+              <Plus size={14} />
+              添加任务
+            </button>
+            <button className="widget-footer-button" onClick={() => window.api.openMainWindow()} type="button">
+              <ExternalLink size={14} />
+              打开主应用
+            </button>
+          </>
+        )}
+      </footer>
+
+      <button
+        aria-label="从左侧调整悬浮窗宽度"
+        className="widget-resize-zone widget-resize-left"
+        onPointerDown={(event) => handleResizePointerDown(event, 'left')}
+        type="button"
+      />
+      <button
+        aria-label="从右侧调整悬浮窗宽度"
+        className="widget-resize-zone widget-resize-right"
+        onPointerDown={(event) => handleResizePointerDown(event, 'right')}
+        type="button"
+      />
+      <button
+        aria-label="从顶部调整悬浮窗高度"
+        className="widget-resize-zone widget-resize-top"
+        onPointerDown={(event) => handleResizePointerDown(event, 'top')}
+        type="button"
+      />
+      <button
+        aria-label="从底部调整悬浮窗高度"
+        className="widget-resize-zone widget-resize-bottom"
+        onPointerDown={(event) => handleResizePointerDown(event, 'bottom')}
+        type="button"
+      />
+      <button
+        aria-label="从左上角调整悬浮窗大小"
+        className="widget-resize-corner widget-resize-top-left"
+        onPointerDown={(event) => handleResizePointerDown(event, 'top-left')}
+        type="button"
+      />
+      <button
+        aria-label="从右上角调整悬浮窗大小"
+        className="widget-resize-corner widget-resize-top-right"
+        onPointerDown={(event) => handleResizePointerDown(event, 'top-right')}
+        type="button"
+      />
+      <button
+        aria-label="从左下角调整悬浮窗大小"
+        className="widget-resize-corner widget-resize-bottom-left"
+        onPointerDown={(event) => handleResizePointerDown(event, 'bottom-left')}
+        type="button"
+      />
+      <button
+        aria-label="从右下角调整悬浮窗大小"
+        className="widget-resize-corner widget-resize-bottom-right"
+        onPointerDown={(event) => handleResizePointerDown(event, 'corner')}
+        type="button"
+      />
     </div>
   );
 }

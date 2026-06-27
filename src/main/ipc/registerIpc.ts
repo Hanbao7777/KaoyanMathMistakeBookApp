@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import {
   addReviewLog,
@@ -182,6 +183,31 @@ let sharedTimerState: {
 
 let widgetWindow: BrowserWindow | null = null;
 const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
+const widgetStatePath = () => path.join(app.getPath('userData'), 'widget-state.json');
+
+function loadWidgetState(): { x?: number; y?: number; width: number; height: number; pinned: boolean } {
+  try {
+    const raw = fs.readFileSync(widgetStatePath(), 'utf8');
+    return { width: 320, height: 500, pinned: true, ...JSON.parse(raw) };
+  } catch {
+    return { width: 320, height: 500, pinned: true };
+  }
+}
+
+function saveWidgetState() {
+  if (!widgetWindow || widgetWindow.isDestroyed()) return;
+  const bounds = widgetWindow.getBounds();
+  const state = {
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    pinned: widgetWindow.isAlwaysOnTop(),
+  };
+  try {
+    fs.writeFileSync(widgetStatePath(), JSON.stringify(state), 'utf8');
+  } catch { /* ignore */ }
+}
 
 function createWidgetWindow() {
   if (widgetWindow && !widgetWindow.isDestroyed()) {
@@ -189,14 +215,26 @@ function createWidgetWindow() {
     return;
   }
 
+  const saved = loadWidgetState();
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = primaryDisplay.workAreaSize;
+  const width = Math.min(420, Math.max(280, saved.width || 320));
+  const height = Math.min(680, Math.max(360, saved.height || 500));
+
   widgetWindow = new BrowserWindow({
-    width: 280,
-    height: 500,
-    x: undefined as unknown as number,
-    y: 100,
+    width,
+    height,
+    x: typeof saved.x === 'number' ? saved.x : screenWidth - width - 16,
+    y: typeof saved.y === 'number' ? saved.y : Math.max(16, Math.floor(screenHeight * 0.12)),
+    minWidth: 280,
+    minHeight: 360,
+    maxWidth: 420,
+    maxHeight: 680,
+    title: 'Kaoyan Desktop Widget',
     frame: false,
     resizable: true,
-    alwaysOnTop: true,
+    hasShadow: false,
+    alwaysOnTop: saved.pinned,
     skipTaskbar: true,
     transparent: true,
     backgroundColor: '#00000000',
@@ -207,9 +245,13 @@ function createWidgetWindow() {
     },
   });
 
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width: screenWidth } = primaryDisplay.workAreaSize;
-  widgetWindow.setPosition(screenWidth - 290, 100);
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const scheduleSave = () => {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveWidgetState, 300);
+  };
+  widgetWindow.on('move', scheduleSave);
+  widgetWindow.on('resize', scheduleSave);
 
   if (isDev) {
     widgetWindow.loadURL('http://127.0.0.1:5173/#/widget');
@@ -217,7 +259,17 @@ function createWidgetWindow() {
     widgetWindow.loadFile(path.join(__dirname, '../../../renderer/index.html'), { hash: '/widget' });
   }
 
+  widgetWindow.on('close', saveWidgetState);
   widgetWindow.on('closed', () => { widgetWindow = null; });
+}
+
+function focusMainWindow() {
+  const mainWindow = BrowserWindow.getAllWindows().find((win) => win !== widgetWindow && !win.isDestroyed() && win.getTitle() !== 'Kaoyan Desktop Widget');
+  if (!mainWindow) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return true;
 }
 
 export function registerIpc() {
@@ -476,13 +528,36 @@ export function registerIpc() {
     if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.close();
   });
   ipcMain.on('widget:togglePin', (_event, pinned: boolean) => {
-    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setAlwaysOnTop(!!pinned);
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      widgetWindow.setAlwaysOnTop(!!pinned);
+      saveWidgetState();
+    }
   });
   ipcMain.on('widget:setOpacity', (_event, opacity: number) => {
     if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setOpacity(opacity);
   });
   ipcMain.on('widget:setSize', (_event, width: number, height: number) => {
-    if (widgetWindow && !widgetWindow.isDestroyed()) widgetWindow.setSize(width, height);
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      const nextWidth = Math.min(420, Math.max(280, Math.round(width)));
+      const nextHeight = Math.min(680, Math.max(360, Math.round(height)));
+      widgetWindow.setSize(nextWidth, nextHeight);
+      saveWidgetState();
+    }
   });
+  ipcMain.on('widget:setBounds', (_event, bounds: { x: number; y: number; width: number; height: number }) => {
+    if (widgetWindow && !widgetWindow.isDestroyed()) {
+      const current = widgetWindow.getBounds();
+      const nextWidth = Math.min(420, Math.max(280, Math.round(bounds.width)));
+      const nextHeight = Math.min(680, Math.max(360, Math.round(bounds.height)));
+      widgetWindow.setBounds({
+        x: Number.isFinite(bounds.x) ? Math.round(bounds.x) : current.x,
+        y: Number.isFinite(bounds.y) ? Math.round(bounds.y) : current.y,
+        width: nextWidth,
+        height: nextHeight,
+      });
+      saveWidgetState();
+    }
+  });
+  ipcMain.on('widget:openMain', () => focusMainWindow());
   handle('widget:isOpen', () => widgetWindow !== null && !widgetWindow.isDestroyed());
 }

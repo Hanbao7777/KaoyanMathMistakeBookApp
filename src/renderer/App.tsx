@@ -102,6 +102,7 @@ export default function App() {
 
   useEffect(() => {
     window.api.triggerReviewTaskGeneration().catch((e) => { console.error('triggerReviewTaskGeneration', e); });
+  }, []);
 
   useEffect(() => {
     try {
@@ -109,7 +110,6 @@ export default function App() {
         document.documentElement.classList.add('dark');
       }
     } catch {}
-  }, []);
   }, []);
 
   const elapsedSeconds = useMemo(() => {
