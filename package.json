@@ -10,6 +10,9 @@
     "dev:main": "tsc -p tsconfig.main.json --watch",
     "dev:electron": "wait-on tcp:5173 file:dist/main/main/main.js file:dist/main/preload/preload.js && electron .",
     "build": "tsc -p tsconfig.main.json && vite build --configLoader native",
+    "test": "npm run build:main && node --test tests/**/*.test.cjs",
+    "test:main": "npm run build:main && node --test tests/main/**/*.test.cjs",
+    "build:main": "tsc -p tsconfig.main.json",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
     "pack:win": "npm run build && electron-builder --win portable --x64"
   },
