@@ -6,6 +6,19 @@
 
 ## 架构
 
+### 与 StudySystem 的定位区分
+
+现有 StudySystem 和新增 TickTick 各有分工，不重叠：
+
+| 维度 | StudySystem | TickTick |
+|------|-------------|----------|
+| 定位 | 考研全局规划 | 具体执行层 |
+| 职责 | 科目管理、资料进度、每日任务排程、学习时长统计、督学 Dashboard | 清单/任务管理、番茄钟专注、习惯打卡、AI 任务拆解、日/周复盘 |
+| 粒度 | 按科目+资料维度 | 按清单+单个任务维度 |
+| 典型操作 | "高数今天要看完第3章" | "下午3点刷5道极限题 !!高 #考研" |
+
+两者通过桥接表联通：TickTick 专注产生的学习时长同步到 StudySystem 的 `study_sessions`，计入 Dashboard 统计。
+
 ### 迷你应用架构
 
 TickTick 作为独立子系统运行，拥有自己的 Shell 组件、子路由、Service 层、数据库表。通过模式 Toggle 和桥接层与错题本联通。
@@ -108,12 +121,12 @@ CREATE TABLE ticktick_focus_sessions (
   created_at TEXT DEFAULT (datetime('now'))
 );
 
--- 桥接表（TickTick ↔ 错题本）
+-- 桥接表（TickTick ↔ 错题本 / StudySystem）
 CREATE TABLE ticktick_bridge (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticktick_task_id TEXT NOT NULL,
   linked_type TEXT NOT NULL CHECK(linked_type IN ('question','knowledge_point','subject','study_task')),
-  linked_id TEXT NOT NULL,
+  linked_id TEXT NOT NULL,  -- question.id / knowledge_points.node_id / subject名 / study_tasks.id
   sync_review INTEGER DEFAULT 1,
   sync_mastery INTEGER DEFAULT 0,
   created_at TEXT DEFAULT (datetime('now'))
@@ -263,12 +276,14 @@ CREATE TABLE ticktick_habit_logs (...);
 
 ### 绑定逻辑
 
-| 绑定目标 | 结算时写入 |
-|----------|-----------|
-| TickTick 任务 | ticktick_focus_sessions + task.actual_minutes + task.pomodoro_sessions |
-| 错题复习 (Question) | study_sessions + review_logs（通过 bridge） |
-| 错题本 StudyTask | study_sessions + bridge → 更新 TickTick 关联任务进度 |
-| 无绑定（自由计时） | 仅 study_sessions |
+所有专注会话统一写入 `ticktick_focus_sessions` 表。需要同步到 StudySystem 时，通过 BridgeService 额外写入 `study_sessions` 表。
+
+| 绑定目标 | 写入 ticktick_focus_sessions | 同步到 study_sessions |
+|----------|:---:|:---:|
+| TickTick 任务 | ✅ + task.actual_minutes + task.pomodoro_sessions | ❌ |
+| 错题复习 (Question) | ✅ + review_logs（通过 bridge） | ✅ 计入 Dashboard |
+| 错题本 StudyTask | ✅ + bridge → 更新 TickTick 关联任务进度 | ✅ 计入 Dashboard |
+| 无绑定（自由计时） | ✅ | ✅ 计入 Dashboard |
 
 ## AI 功能
 
@@ -280,27 +295,27 @@ CREATE TABLE ticktick_habit_logs (...);
 - 输出：结构化子任务列表，每个带标题/预计天数/标签/关联知识点
 - 确认：用户勾选需要的子任务，一键批量创建
 
-### 2. AI 每日计划
+### ~~2. AI 每日计划~~（已砍，暂不实现）
 
-- 输入上下文：日历空闲时段 + 过期任务 + 到期复习列表 + 掌握度薄弱点排名 + 考试日期 + 每日目标 + 前一天完成率
-- 输出：时间分块建议任务列表，带优先级和关联错题
-- 确认：用户审核后一键添加到 Today
+> 原因：测试时发现 AI 会生成大量不合理任务，体验差。后续迭代时重新设计输入约束和输出格式。
 
-### 3. AI 复盘（每日 + 每周）
+### 2. AI 复盘（每日 + 每周）
 
-- 每日：分析今日完成率、专注时长、错题复习结果分布 → 自然语言总结 + 明天建议
-- 每周：7天完成趋势、专注总时长、掌握度变化、连续打卡 → 下周学习方向
+- **每日复盘**：分析今日完成率、专注时长、错题复习结果分布 → 自然语言总结 + 明天建议
+- **每周复盘**：7天完成趋势、专注总时长、掌握度变化、连续打卡 → 下周学习方向
+- 输入数据来源：ticktick_focus_sessions + review_logs + ticktick_tasks 完成情况
 
 ## 双向同步
 
 通过 `ticktick_bridge` 桥接表实现，所有跨模式写入通过 BridgeService 统一处理。
 
-### 四条同步路径
+### 五条同步路径
 
 1. **TickTick → 错题本**：TickTick 任务完成 → 写入 review_logs + 更新 question.next_review_at（sync_review=1 时）
 2. **错题本 → TickTick**：错题复习到期 → 自动生成 TickTick Today 任务（source=auto_review）
-3. **掌握度 → 计划**：掌握度上升 → 关联任务优先级下调；掌握度下降 → 优先级上调（sync_mastery=1 时）
-4. **学习时长 → 统计**：TickTick 专注产生的 study_sessions 计入 Dashboard 的今日学习时长
+3. **掌握度 → 任务**：掌握度上升 → 关联任务优先级下调；掌握度下降 → 优先级上调（sync_mastery=1 时）
+4. **专注时长 → StudySystem**：TickTick 绑定 StudyTask/Question/无绑定的专注会话 → 同步写入 study_sessions，计入 Dashboard 今日学习时长
+5. **StudyTask → TickTick**：StudyTask 状态变更（完成/延期）→ 更新桥接的 TickTick 任务进度
 
 ### 触发事件
 
@@ -310,7 +325,28 @@ CREATE TABLE ticktick_habit_logs (...);
 | review.updated | 错题本完成复习 + bridge | 更新 TickTick 关联任务进度 |
 | mastery.changed | 掌握度变化 + sync_mastery=1 | 调整关联任务优先级 |
 | daily.rollover | 每天启动时检查 | 自动创建到期复习任务 |
-| focus.saved | 任何模式专注计时结束 | 写入 study_sessions，更新两边统计 |
+| focus.saved | 专注计时结束 | 写入 ticktick_focus_sessions；若绑定 StudyTask/Question/无绑定则同步写 study_sessions |
+| study_task.changed | StudyTask 完成/延期 | 更新桥接的 TickTick 任务状态 |
+
+## TickTick 设置存储
+
+TickTick 全局设置存储在 `app_settings` 表，key = `ticktick`，value 为 JSON：
+
+```json
+{
+  "pomodoro": {
+    "focusMinutes": 25,
+    "shortBreakMinutes": 5,
+    "longBreakMinutes": 15,
+    "sessionsBeforeLongBreak": 4
+  },
+  "autoCreateReviewTasks": true,
+  "whiteNoise": "none",
+  "defaultListId": null
+}
+```
+
+类型定义见 `TickTickSettings`（src/shared/types.ts）。
 
 ## Phase 划分
 
@@ -320,9 +356,10 @@ CREATE TABLE ticktick_habit_logs (...);
 - 数据库：ticktick_lists, ticktick_tasks, ticktick_tags, ticktick_focus_sessions, ticktick_bridge, ticktick_ai_plans
 - 页面：TodayPage, CalendarPage, ListDetailPage, TickTickSettingsPage
 - NLP 日期解析规则引擎
-- 新版专注计时器（替换旧版）
-- 桥接表 + BridgeService + 四条同步路径
-- AI 三大功能（拆解/日计划/复盘）
+- 新版专注计时器（替换旧版，统一写入 ticktick_focus_sessions，按需同步 study_sessions）
+- 桥接表 + BridgeService + 五条同步路径
+- AI 两大功能：智能任务拆解 + AI 复盘（每日/每周）
+- TickTick 设置存储（app_settings 表 key=ticktick）
 
 ### Phase 2（后续）
 

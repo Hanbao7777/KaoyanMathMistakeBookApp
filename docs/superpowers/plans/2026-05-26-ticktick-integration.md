@@ -6,6 +6,18 @@
 
 **Architecture:** Mini-app approach — TickTick has its own Shell, Sidebar, pages, services, and DB tables. A mode toggle in the top Shell switches between "错题本" and "TickTick" modes. A bridge table and BridgeService handle bidirectional sync. AI features reuse the existing DeepSeek service. CSS variables power a dual light/dark theme.
 
+**与 StudySystem 的定位区分：**
+- StudySystem = 考研全局规划（科目、资料、进度、每日任务排程、学习时长统计、督学 Dashboard）
+- TickTick = 具体执行层（清单/任务管理、番茄钟专注、习惯打卡、AI 任务拆解、日/周复盘）
+- 两者通过桥接表联通：TickTick 专注产生的学习时长同步到 StudySystem 的 study_sessions，计入 Dashboard 统计
+
+**五条同步路径：**
+1. TickTick → 错题本：TickTick 任务完成 → 写入 review_logs + 更新 question.next_review_at（sync_review=1 时）
+2. 错题本 → TickTick：错题复习到期 → 自动生成 TickTick Today 任务（source=auto_review）
+3. 掌握度 → 任务：掌握度上升 → 关联任务优先级下调；掌握度下降 → 优先级上调（sync_mastery=1 时）
+4. 专注时长 → StudySystem：TickTick 绑定 StudyTask/Question/无绑定的专注会话 → 同步写入 study_sessions，计入 Dashboard 今日学习时长
+5. StudyTask → TickTick：StudyTask 状态变更（完成/延期）→ 更新桥接的 TickTick 任务进度
+
 **Tech Stack:** Same as existing — Electron + React 18 + TypeScript (strict) + sql.js + KaTeX + Recharts + Lucide React + plain CSS
 
 ---
@@ -79,7 +91,7 @@ CREATE TABLE IF NOT EXISTS ticktick_bridge (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ticktick_task_id TEXT NOT NULL,
   linked_type TEXT NOT NULL CHECK(linked_type IN ('question','knowledge_point','subject','study_task')),
-  linked_id TEXT NOT NULL,
+  linked_id TEXT NOT NULL,  -- question.id / knowledge_points.node_id / subject名 / study_tasks.id
   sync_review INTEGER NOT NULL DEFAULT 1,
   sync_mastery INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1359,7 +1371,7 @@ import { getDatabase } from './databaseService';
 import { getTickTickSettings } from './ticktickService';
 import type {
   TickTickAiDecompositionInput, TickTickAiDecompositionResult,
-  TickTickAiDailyPlanResult, TickTickAiReviewResult,
+  TickTickAiReviewResult,
 } from '../../shared/types';
 
 function todayStr(): string {
@@ -1474,81 +1486,6 @@ ${input.context?.weakKnowledgePoints?.length ? `\n用户指定的薄弱点：${i
   };
 }
 
-// ── Daily Plan Generation ──
-
-export async function aiGenerateDailyPlan(): Promise<TickTickAiDailyPlanResult> {
-  const db = await getDatabase();
-  const today = todayStr();
-  const settings = await getTickTickSettings();
-
-  // Due review questions
-  const reviewRows = db.exec(
-    `SELECT q.id, q.title, q.subject, q.mastery_level, kp.title as kp_title
-     FROM questions q LEFT JOIN question_knowledge_points qkp ON q.id = qkp.question_id
-     LEFT JOIN knowledge_points kp ON qkp.knowledge_node_id = kp.node_id
-     WHERE q.next_review_at IS NOT NULL AND date(q.next_review_at) <= ?
-     ORDER BY q.mastery_level ASC LIMIT 15`, [today]
-  );
-  let reviewContext = '';
-  if (reviewRows.length && reviewRows[0].values.length) {
-    reviewContext = reviewRows[0].values.map((r: any[]) =>
-      `- ${r[1]} (掌握度:${r[3]}, 知识点:${r[4] || '未知'})`).join('\n');
-  }
-
-  // Overdue tasks
-  const overdueRows = db.exec(
-    "SELECT title FROM ticktick_tasks WHERE due_date < ? AND is_completed = 0 AND parent_id IS NULL LIMIT 10", [today]
-  );
-  let overdueContext = '';
-  if (overdueRows.length && overdueRows[0].values.length) {
-    overdueContext = overdueRows[0].values.map((r: any[]) => `- ${r[0]}`).join('\n');
-  }
-
-  // Daily target
-  const studyRows = db.exec("SELECT daily_target_minutes FROM study_settings LIMIT 1");
-  const dailyTarget = studyRows.length && studyRows[0].values.length ? studyRows[0].values[0][0] : 120;
-
-  const systemPrompt = `你是一个考研学习日程规划助手。根据用户的学习数据，生成今日建议任务列表。
-
-输出格式（严格 JSON）：
-{
-  "suggested_tasks": [
-    {
-      "title": "任务描述",
-      "time_block": "上午/下午/晚上",
-      "priority": "高/中/低",
-      "estimated_minutes": 45,
-      "reason": "为什么推荐这个任务"
-    }
-  ],
-  "summary": "今日总体建议（50字内）"
-}`;
-
-  const userMessage = `今日日期：${today}
-每日学习目标：${dailyTarget} 分钟
-番茄钟设置：专注${settings.pomodoro.focusMinutes}分钟/休息${settings.pomodoro.shortBreakMinutes}分钟
-
-到期复习错题：
-${reviewContext || '无到期复习'}
-
-过期未完成任务：
-${overdueContext || '无过期任务'}
-
-请生成今日学习计划建议。优先安排薄弱知识点的复习，合理分配时间块。`;
-
-  const raw = await callDeepSeek(systemPrompt, userMessage, 2048);
-  const json = extractJson(raw);
-
-  return {
-    suggested_tasks: (json.suggested_tasks || []).map((t: any) => ({
-      ...t,
-      linked_type: null,
-      linked_id: null,
-    })),
-    summary: json.summary || '今日建议已生成',
-  };
-}
-
 // ── AI Review ──
 
 export async function aiGenerateReview(type: 'daily' | 'weekly'): Promise<TickTickAiReviewResult> {
@@ -1614,7 +1551,7 @@ ${type === 'weekly' ? '\n请根据本周整体趋势给出下周学习建议。'
 
 ```bash
 git add src/main/services/ticktickAiService.ts
-git commit -m "feat: add TickTick AI service (decomposition, daily plan, review)"
+git commit -m "feat: add TickTick AI service (decomposition, review)"
 ```
 
 ---
@@ -1640,7 +1577,7 @@ import {
   getTickTickSettings, saveTickTickSettings,
 } from '../services/ticktickService';
 import { syncTaskCompletedToReview, generateAutoReviewTasks } from '../services/bridgeService';
-import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
+import { aiDecomposeTask, aiGenerateReview } from '../services/ticktickAiService';
 ```
 
 - [ ] **Step 2: Add TickTick handler registrations**
@@ -1684,7 +1621,6 @@ Inside the `registerIpc()` function body, before the closing `}`, add:
 
   // TickTick AI
   handle('ticktick:ai:decompose', (input: any) => aiDecomposeTask(input));
-  handle('ticktick:ai:dailyPlan', () => aiGenerateDailyPlan());
   handle('ticktick:ai:review', (type: 'daily' | 'weekly') => aiGenerateReview(type));
 
   // TickTick Settings
@@ -1772,7 +1708,6 @@ After existing `AppApi` method implementations in `preload.ts`, add all TickTick
 
   // TickTick AI
   aiDecomposeTask: (input) => invoke('ticktick:ai:decompose', input),
-  aiGenerateDailyPlan: () => invoke('ticktick:ai:dailyPlan'),
   aiGenerateReview: (type) => invoke('ticktick:ai:review', type),
 
   // TickTick Settings
@@ -1793,6 +1728,31 @@ After existing `AppApi` method implementations in `preload.ts`, add all TickTick
 git add src/preload/preload.ts
 git commit -m "feat: add TickTick IPC methods to preload bridge"
 ```
+
+---
+
+### Task 9.5: TickTick 设置存储
+
+**说明：** TickTick 全局设置存储在 `app_settings` 表，key = `ticktick`，value 为 JSON。
+
+**存储结构：**
+```json
+{
+  "pomodoro": {
+    "focusMinutes": 25,
+    "shortBreakMinutes": 5,
+    "longBreakMinutes": 15,
+    "sessionsBeforeLongBreak": 4
+  },
+  "autoCreateReviewTasks": true,
+  "whiteNoise": "none",
+  "defaultListId": null
+}
+```
+
+**类型定义：** `TickTickSettings`（src/shared/types.ts）
+
+**实现位置：** `ticktickService.ts` 中的 `getTickTickSettings()` 和 `saveTickTickSettings()` 函数
 
 ---
 
