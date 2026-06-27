@@ -37,3 +37,12 @@ D:\KaoyanMathMistakeBook/
 Thumbs.db
 .idea/
 .vscode/
+
+# Agent/runtime state
+.ccb/.claude-claude-session
+.ccb/.codex-codex-session
+.ccb/.opencode-opencode-session
+.ccb/runtime/
+.ccb/runtime-root-ref.json
+.ccb/ccb_memory.md
+.superpowers/
