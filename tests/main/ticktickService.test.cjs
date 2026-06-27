@@ -1,48 +1,17 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 const test = require('node:test');
+const {
+  cleanupTestRoot,
+  databaseService,
+  requireMain,
+  resetTestDatabase
+} = require('./helpers/mainTestEnv.cjs');
 
-const projectRoot = path.resolve(__dirname, '../..');
-const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-ticktick-test-'));
+const ticktickService = requireMain('services/ticktickService.js');
 
-const electronStub = {
-  app: {
-    getPath(name) {
-      return path.join(testRoot, name);
-    }
-  },
-  dialog: {
-    showMessageBox() {
-      return Promise.resolve();
-    }
-  }
-};
+test.after(cleanupTestRoot);
 
-const electronPath = require.resolve('electron', { paths: [projectRoot] });
-require.cache[electronPath] = {
-  id: electronPath,
-  filename: electronPath,
-  loaded: true,
-  exports: electronStub
-};
-
-process.chdir(projectRoot);
-
-const databaseService = require(path.join(projectRoot, 'dist/main/main/services/databaseService.js'));
-const ticktickService = require(path.join(projectRoot, 'dist/main/main/services/ticktickService.js'));
-
-test.after(() => {
-  databaseService.resetDatabaseConnection();
-  fs.rmSync(testRoot, { recursive: true, force: true });
-});
-
-test.beforeEach(async () => {
-  databaseService.resetDatabaseConnection();
-  fs.rmSync(path.join(testRoot, 'documents'), { recursive: true, force: true });
-  await databaseService.initializeDatabase();
-});
+test.beforeEach(resetTestDatabase);
 
 async function createList(name = '默认清单') {
   return ticktickService.createTickTickList({ name });

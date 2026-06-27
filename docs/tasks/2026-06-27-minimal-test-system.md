@@ -1,0 +1,181 @@
+# 最小测试体系 — 实施任务
+
+## Background
+
+项目当前无正式测试框架。`package.json` 已新增 `npm test` 和 `npm run test:main` 入口，使用 Node.js 内置 `node:test` + `node:assert/strict`，通过 `require.cache` stub Electron 的 `app`/`dialog` API，在构建后的 `dist/main/` 上直接运行 CommonJS 测试。第一批 TickTick service 边界测试（`9cea968`）已落地并验证通过。
+
+## Goal
+
+在现有 `node:test` 基础设施上，继续补全第二批、第三批测试，优先覆盖数据安全链路（schema、备份恢复、导入解析），最终形成可随 CI 运行的最小回归套件。
+
+## Non-Goals
+
+- 不引入 Vitest/Jest/Mocha 等新测试框架（当前 `node:test` 足够，切换成本 > 收益）。
+- 不做 renderer 组件 UI 测试（需 jsdom + React Testing Library，属 P2）。
+- 不做性能基准测试（当前数据量未达到瓶颈）。
+- 不做 Electron 窗口/IPC 端到端自动化（需 Spectron/Playwright，成本过高）。
+
+## Scope
+
+### 在 scope 内
+- main process service 层集成测试（基于 sql.js 内存/文件数据库）。
+- 纯函数单元测试（日期计算、NLP 解析、复习算法）。
+- IPC 契约静态扫描（自定义脚本，不启动 Electron）。
+- 小型 fixture（畸形 zip、最小 Excel、最小 JSON）用于导入解析测试。
+
+### 在 scope 外
+- renderer 页面组件渲染测试。
+- 打包后 exe 的 GUI 自动化测试。
+- 跨平台兼容性测试（当前以 Windows 为主）。
+
+## Constraints
+
+- 测试文件使用 `.test.cjs`，与现有 `ticktickService.test.cjs` 保持一致。
+- 每个测试文件必须 `build:main` 后可在 `node:test` 中运行。
+- 必须使用 `beforeEach` 重置数据库连接，`after` 清理临时目录。
+- 临时目录使用 `fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-...'))`。
+- Electron stub 模式沿用现有 `require.cache` 注入方案。
+- 不改业务源码；若发现测试需要源码改动才能测，则记录为 bug 另派修复任务。
+
+## Proposed Approach
+
+1. **Batch 1（已完成）**：TickTick service 边界验证 — 空/无效 `list_id` 拒绝、空标题拒绝、正常创建/更新字段校验。
+2. **Batch 2（已完成）**：Schema 初始化 + 备份恢复 smoke。
+3. **Batch 3（随后）**：导入解析鲁棒性 + 复习算法纯函数。
+4. **Batch 4（可选）**：IPC 契约扫描 + 其他 service 层（question bank、bridge sync、study supervisor）。
+
+## Task Breakdown
+
+### ✅ Batch 1 — TickTick Service 边界（已完成，`9cea968`）
+
+文件：`tests/main/ticktickService.test.cjs`
+
+| # | 用例 | 状态 |
+|---|------|------|
+| 1.1 | `createTickTickTask` 拒绝空 `list_id`（抛错：请先创建或选择一个清单） | ✅ 通过 |
+| 1.2 | `createTickTickTask` 拒绝不存在的 `list_id`（抛错：清单不存在） | ✅ 通过 |
+| 1.3 | `updateTickTickTask` 拒绝空/仅空白字符 `title`（抛错：任务标题不能为空） | ✅ 通过 |
+| 1.4 | `updateTickTickTask` 拒绝不存在的 `list_id`（抛错：清单不存在） | ✅ 通过 |
+| 1.5 | `createTickTickTask` 正常创建，字段完整（title 去空格、note、due_date、priority、tags 解析为数组） | ✅ 通过 |
+| 1.6 | `updateTickTickTask` 正常更新全部可写字段，title 去空格、list_id 可切换、tags 替换 | ✅ 通过 |
+
+验收：`npm run test:main` 6/6 通过。
+
+---
+
+### ✅ Batch 2 — Schema 初始化 + 备份恢复 smoke（已完成）
+
+#### Task 2.1: Schema 初始化测试
+
+文件：`tests/main/schema.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 2.1 | 空数据库执行 `initializeDatabase()` 后关键表存在 | ✅ 已覆盖：questions、review_logs、knowledge_points、ticktick_lists、ticktick_tasks、ticktick_bridge |
+| 2.2 | TickTick 关键列存在 | ✅ 已覆盖：list_id、title、priority、tags、created_at、updated_at |
+| 2.3 | TickTick 关键索引存在 | ✅ 已覆盖：idx_ticktick_tasks_list、idx_ticktick_bridge_task |
+
+验收：`npm test` 中 3/3 通过。
+
+#### Task 2.2: 备份恢复 smoke 测试
+
+文件：`tests/main/backupService.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 2.4 | 有数据的数据库生成备份，备份文件有效且可重新 open | ✅ 已覆盖：文件存在、大小 > 0、sql.js 可读、任务数据可查询 |
+| 2.5 | 恢复前自动生成 `before_restore` 保护备份 | ✅ 已覆盖：`beforeRestoreBackup` 文件存在 |
+| 2.6 | 恢复后数据库数据与备份一致 | ✅ 已覆盖：恢复后只保留备份时任务 |
+
+验收：`npm test` 中 2/2 通过。
+
+辅助设施：`tests/main/helpers/mainTestEnv.cjs` 已抽取 main service 测试环境，统一 stub Electron、强制 `pathService.setDataRoot(testRoot/data-root)`、重置数据库连接并清理临时目录。
+
+---
+
+### ⏳ Batch 3 — 导入解析 + 复习算法（随后）
+
+#### Task 3.1: 复习算法纯函数测试
+
+文件建议：`tests/main/review-algorithm.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 3.1 | 首次复习 correct → next_review_at 在 2 天后 | 基于当前间隔算法计算 |
+| 3.2 | 首次复习 wrong → next_review_at 在 1 天内，mastery_level 降级 | |
+| 3.3 | 首次复习 no_idea → next_review_at 当天或次日，mastery_level 降级 | |
+| 3.4 | 连续 3 次 correct → next_review_at 递增拉大 | |
+| 3.5 | 降级后再升级，间隔重新计算 | |
+
+依赖：需定位复习间隔算法所在函数（可能在 `databaseService.ts` 或独立函数），提取为可测试单元。
+
+#### Task 3.2: 结构化导入解析测试
+
+文件建议：`tests/main/import.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 3.6 | 畸形 `wrong_questions_import.zip`（缺图片目录）→ 不崩溃，返回无效行 | 使用 tests/fixtures 下的畸形 fixture |
+| 3.7 | 畸形 Excel（缺少必填列 title/content）→ 对应行标记 invalid | |
+| 3.8 | 正常 `knowledge_map_import.zip` → 成功导入，知识点树可查询 | |
+| 3.9 | 图片路径解析正确（相对路径 → 绝对路径） | |
+
+依赖：需在 `tests/fixtures/` 下放置小型 zip fixture（可用脚本动态生成，避免提交二进制）。
+
+---
+
+### ⏳ Batch 4 — IPC 契约 + 其他 Service（可选）
+
+#### Task 4.1: IPC 契约静态扫描
+
+文件建议：`tests/ipc/ipc-contract-check.cjs`
+
+| # | 检查项 | 说明 |
+|---|--------|------|
+| 4.1 | `AppApi` 中每个方法在 `preload.ts` 中有对应实现 | 正则扫描 `api.ts` 方法名 vs `preload.ts` |
+| 4.2 | `preload.ts` 中每个 `invoke`/`send` 在 `registerIpc.ts` 中有对应 handler | 正则扫描 channel 名 |
+| 4.3 | 输出：缺失的方法/ channel 列表 | 不匹配时 process.exit(1) |
+
+注意：此测试不启动 Electron，纯静态扫描，可在 `npm test` 中运行。
+
+#### Task 4.2: Question Bank Service
+
+文件建议：`tests/main/questionBank.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 4.4 | 题库导入后外部题目数据完整 | |
+| 4.5 | 作答记录关联正确（external_question_attempts） | |
+| 4.6 | 重复导入同一批次去重/跳过 | |
+
+#### Task 4.3: Bridge Sync Service
+
+文件建议：`tests/main/bridge.test.cjs`
+
+| # | 用例 | 说明 |
+|---|------|------|
+| 4.7 | 完成 TickTick 任务 + sync_review=1 → review_logs 新增记录 | |
+| 4.8 | 专注时长写入 ticktick_focus_sessions → study_sessions 同步 | |
+
+---
+
+## Acceptance Criteria
+
+- [x] Batch 2 全部用例 `npm test` 通过。
+- [ ] Batch 3 全部用例 `npm test` 通过。
+- [ ] 新增测试不破坏 `npm run typecheck` 和 `npm run build`。
+- [ ] `npm run test:main` 运行时间 < 10 秒（单线程 sql.js 足够快）。
+- [ ] 每个测试文件独立，不依赖其他测试文件的执行顺序或残留状态。
+
+## Risks
+
+1. **sql.js WASM 路径**：`databaseService.ts` 中 `locateFile` 可能需要根据测试环境调整 WASM 路径。
+2. **Electron 依赖泄漏**：新增的 service 文件可能直接 `import { app } from 'electron'`，测试中需补充 stub。
+3. **时间敏感测试**：`review-algorithm.test.cjs` 中涉及 `new Date()` 的计算，需固定测试日期（`process.env.TZ` 或 mock Date）。
+4. **Fixture 管理**：zip 文件不应提交仓库，建议在 `tests/fixtures/` 下放生成脚本，在 `before` 中动态创建。
+
+## Verification
+
+- 运行 `npm run test:main` 确认 Batch 1 仍通过。
+- 每完成一个 Batch 的子任务，本地运行对应测试文件确认通过后再标记完成。
+- 最终由 Codex 审核全部用例是否覆盖数据安全核心链路。
