@@ -1,5 +1,5 @@
 import { Trash2, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { useModal } from '../Modal';
 import { useToast } from '../Toast';
@@ -23,6 +23,16 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
   const [tags, setTags] = useState((task.tags_list || []).join(', '));
   const [saving, setSaving] = useState(false);
 
+  useEffect(() => {
+    setTitle(task.title ?? '');
+    setDueDate(task.due_date ?? '');
+    setDueTime(task.due_time ?? '');
+    setPriority(task.priority);
+    setListId(task.list_id);
+    setNote(task.note ?? '');
+    setTags((task.tags_list || []).join(', '));
+  }, [task]);
+
   async function handleDelete() {
     const confirmed = await modal.confirm({
       title: '删除任务',
@@ -42,11 +52,20 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
   }
 
   async function handleSave() {
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      toast('任务标题不能为空', 'warning');
+      return;
+    }
+    if (!listId) {
+      toast('请先选择一个清单', 'warning');
+      return;
+    }
     setSaving(true);
     try {
       const tagList = tags.split(',').map(t => t.trim()).filter(Boolean);
       await window.api.updateTickTickTask(task.id, {
-        title,
+        title: nextTitle,
         due_date: dueDate || null,
         due_time: dueTime || null,
         priority: priority as any,
@@ -101,7 +120,7 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
         <div className="tt-detail-field">
           <label>清单</label>
           <select value={listId} onChange={e => setListId(e.target.value)}>
-            {lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {lists.length ? lists.map(l => <option key={l.id} value={l.id}>{l.name}</option>) : <option value="">请先创建清单</option>}
           </select>
         </div>
 
@@ -124,7 +143,7 @@ export function TaskDetailPanel({ task, lists, onClose, onUpdated }: TaskDetailP
         <button
           style={{ padding: '10px', borderRadius: 'var(--tt-radius-md)', border: 'none', background: 'var(--tt-accent)', color: '#fff', fontWeight: 600, cursor: 'pointer', marginTop: 8, opacity: saving ? 0.6 : 1 }}
           type="submit"
-          disabled={saving}
+          disabled={saving || !title.trim() || !listId}
         >
           {saving ? '保存中...' : '保存修改'}
         </button>

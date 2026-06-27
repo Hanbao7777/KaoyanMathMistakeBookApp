@@ -316,26 +316,13 @@ export async function getTickTickTask(taskId: string): Promise<TickTickTask | nu
 export async function createTickTickTask(input: TickTickTaskInput): Promise<TickTickTask> {
   const db = await getDatabase();
 
-  // Validate list_id: if empty or nonexistent, auto-create a default list
-  let listId = input.list_id;
-  if (!listId) {
-    const firstList = oneSql<{ id: string }>(db, 'SELECT id FROM ticktick_lists ORDER BY sort_order ASC LIMIT 1');
-    if (!firstList) {
-      // Auto-create a default "收集箱" list
-      const now = nowIso();
-      listId = 'list_default';
-      runSql(db,
-        "INSERT OR IGNORE INTO ticktick_lists (id, name, color, icon, sort_order, created_at, updated_at) VALUES (?, '收集箱', '#4a90d9', 'inbox', 0, ?, ?)",
-        [listId, now, now]
-      );
-    } else {
-      listId = firstList.id;
-    }
-  } else {
-    // Verify the list exists
-    const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
-    if (!listExists) throw new Error(`清单 ${listId} 不存在`);
-  }
+  const listId = input.list_id?.trim();
+  if (!listId) throw new Error('请先创建或选择一个清单');
+  const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
+  if (!listExists) throw new Error('清单不存在，请刷新后重试');
+
+  const title = input.title.trim();
+  if (!title) throw new Error('任务标题不能为空');
 
   const taskId = id('task');
   const timestamp = nowIso();
@@ -360,7 +347,7 @@ export async function createTickTickTask(input: TickTickTaskInput): Promise<Tick
     [
       taskId,
       listId,
-      input.title.trim(),
+      title,
       input.note || '',
       input.due_date ?? null,
       input.due_time ?? null,
@@ -395,12 +382,18 @@ export async function updateTickTickTask(taskId: string, partial: Partial<TickTi
   const values: unknown[] = [];
 
   if (partial.list_id !== undefined) {
+    const listId = partial.list_id?.trim();
+    if (!listId) throw new Error('请先创建或选择一个清单');
+    const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
+    if (!listExists) throw new Error('清单不存在，请刷新后重试');
     sets.push('list_id = ?');
-    values.push(partial.list_id);
+    values.push(listId);
   }
   if (partial.title !== undefined) {
+    const title = partial.title.trim();
+    if (!title) throw new Error('任务标题不能为空');
     sets.push('title = ?');
-    values.push(partial.title.trim());
+    values.push(title);
   }
   if (partial.note !== undefined) {
     sets.push('note = ?');

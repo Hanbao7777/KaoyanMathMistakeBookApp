@@ -26,8 +26,13 @@ export function AiDecompositionPanel({ lists, onTasksCreated }: { lists: TickTic
 
   async function handleCreate() {
     if (!result) return;
-    const listId = lists.length > 0 ? lists[0].id : '';
+    const listId = lists[0]?.id;
+    if (!listId) {
+      toast('请先创建一个清单，再创建 AI 任务', 'warning');
+      return;
+    }
     let created = 0;
+    let failed = 0;
     for (const i of selected) {
       const subtask = result.subtasks[i];
       try {
@@ -38,20 +43,29 @@ export function AiDecompositionPanel({ lists, onTasksCreated }: { lists: TickTic
           d.setDate(d.getDate() + subtask.deadline_days);
           due_date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
+        const estimatedMinutes = Number.isFinite(subtask.estimated_minutes)
+          ? subtask.estimated_minutes
+          : Number.isFinite(subtask.estimated_days)
+            ? subtask.estimated_days * 60
+            : 30;
         await window.api.createTickTickTask({
           list_id: listId,
           title: subtask.title,
-          estimated_minutes: subtask.estimated_minutes || (subtask.estimated_days * 60),
+          estimated_minutes: estimatedMinutes,
           priority: subtask.priority || 'none',
           due_date: due_date,
           tags: subtask.tags,
           source: 'ai_plan',
         });
         created++;
-      } catch { /* skip failures */ }
+      } catch (e: any) {
+        failed++;
+        if (mountedRef.current) toast(e.message || `创建任务「${subtask.title}」失败`, 'error');
+      }
     }
     if (!mountedRef.current) return;
-    toast(`已创建 ${created} 个任务`, 'success');
+    if (created > 0) toast(failed ? `已创建 ${created} 个任务，${failed} 个失败` : `已创建 ${created} 个任务`, failed ? 'warning' : 'success');
+    else toast('未创建任何任务，请检查清单和任务内容', 'error');
     setResult(null);
     setGoal('');
     onTasksCreated();
@@ -92,8 +106,8 @@ export function AiDecompositionPanel({ lists, onTasksCreated }: { lists: TickTic
               </div>
             ))}
           </div>
-          <button onClick={handleCreate} style={{ padding: '8px 16px', borderRadius: 'var(--tt-radius-sm)', border: 'none', background: 'var(--tt-accent)', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }} type="button">
-            创建选中任务 ({selected.size})
+          <button onClick={handleCreate} disabled={!selected.size || !lists.length} style={{ padding: '8px 16px', borderRadius: 'var(--tt-radius-sm)', border: 'none', background: 'var(--tt-accent)', color: '#fff', cursor: selected.size && lists.length ? 'pointer' : 'not-allowed', fontWeight: 600, fontSize: 13, opacity: selected.size && lists.length ? 1 : 0.6 }} type="button">
+            {lists.length ? `创建选中任务 (${selected.size})` : '请先创建清单'}
           </button>
         </>
       )}
@@ -120,8 +134,13 @@ export function AiDailyPlanPanel({ lists, onTasksCreated }: { lists: TickTickLis
 
   async function handleAccept() {
     if (!result) return;
-    const listId = lists.length > 0 ? lists[0].id : '';
+    const listId = lists[0]?.id;
+    if (!listId) {
+      toast('请先创建一个清单，再添加 AI 建议任务', 'warning');
+      return;
+    }
     let created = 0;
+    let failed = 0;
     for (const task of result.suggested_tasks) {
       try {
         await window.api.createTickTickTask({
@@ -132,10 +151,14 @@ export function AiDailyPlanPanel({ lists, onTasksCreated }: { lists: TickTickLis
           source: 'ai_plan',
         });
         created++;
-      } catch { /* skip */ }
+      } catch (e: any) {
+        failed++;
+        if (mountedRef.current) toast(e.message || `创建任务「${task.title}」失败`, 'error');
+      }
     }
     if (!mountedRef.current) return;
-    toast(`已添加 ${created} 个建议任务`, 'success');
+    if (created > 0) toast(failed ? `已添加 ${created} 个建议任务，${failed} 个失败` : `已添加 ${created} 个建议任务`, failed ? 'warning' : 'success');
+    else toast('未添加任何建议任务，请检查清单和任务内容', 'error');
     setResult(null);
     onTasksCreated();
   }
@@ -162,8 +185,8 @@ export function AiDailyPlanPanel({ lists, onTasksCreated }: { lists: TickTickLis
               </div>
             ))}
           </div>
-          <button onClick={handleAccept} style={{ padding: '8px 16px', borderRadius: 'var(--tt-radius-sm)', border: 'none', background: 'var(--tt-accent)', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 13 }} type="button">
-            全部添加到今天
+          <button onClick={handleAccept} disabled={!lists.length} style={{ padding: '8px 16px', borderRadius: 'var(--tt-radius-sm)', border: 'none', background: 'var(--tt-accent)', color: '#fff', cursor: lists.length ? 'pointer' : 'not-allowed', fontWeight: 600, fontSize: 13, opacity: lists.length ? 1 : 0.6 }} type="button">
+            {lists.length ? '全部添加到今天' : '请先创建清单'}
           </button>
         </>
       )}
