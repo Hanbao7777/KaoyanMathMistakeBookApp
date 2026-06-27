@@ -1,12 +1,87 @@
 # Known Issues
 
-## v1.0.0-beta.1
+## 构建与运行环境
+
+### `npm run build` 可能失败：缺少 Rollup optional dependency
+
+- 现象：`npm run build` 报错缺少 `@rollup/rollup-linux-x64-gnu` 等可选依赖。
+- 原因：Vite / Rollup 的平台 native optional dependency 在本地 `node_modules` 中缺失，通常是 npm optional dependency 安装问题。
+- workaround：按现有 lockfile 重新执行 `npm install`，必要时删除 `node_modules` 后重装。
+- 状态：当前环境已通过 `npm install` 修复，并已验证 `npm run typecheck` 与 `npm run build` 通过；保留此条作为新环境排查说明。
+
+### Electron exe 双击无反应（`ELECTRON_RUN_AS_NODE` 环境变量）
+
+- 现象：双击 `release/win-unpacked/考研高数错题本.exe` 或 portable exe 后没有窗口，或进程一闪而过。
+- 原因：系统或 shell 进程继承了 `ELECTRON_RUN_AS_NODE=0/1`，导致 Electron 以 Node 模式启动而非 GUI 模式。
+- workaround：启动前在 PowerShell 中执行 `$env:ELECTRON_RUN_AS_NODE = $null`，并检查系统环境变量中是否残留该变量。
+- 状态：非业务代码 bug，但影响打包版启动体验；需在文档和启动脚本中显式清理。
+
+---
+
+## TickTick 任务管理（Beta）
+
+TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详细清单见 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md)。
+
+### P0：布局与启动
+
+- **主内容区宽度被挤成约 12px**：TickTick 模式的根容器与旧 `.app-shell` grid 冲突，右侧内容不可见。
+- **侧边栏工具区被推到文档底部**：专注计时 / 设置需滚到很下方才能看到，且因主内容区过窄看起来像"打不开"。
+- **exe 启动环境**：同上构建环境节。
+
+### P1：数据完整性
+
+- **任务详情面板不能真正编辑保存**：表单使用 `defaultValue` 且无受控 state，保存按钮未调用 `updateTickTickTask`。
+- **Quick Add 在无清单时创建孤儿任务**：`list_id` 可能为空字符串，数据库产生无法在清单下显示的任务。
+- **完成关联复习任务时未真正同步**：`syncTaskCompletedToReview` IPC 链路未完全打通，renderer 端写死 `subject_id: 'math'` 且错误被静默吞掉。
+- **专注计时器状态竞态**：`handleSessionEnd` 读取创建 interval 时的闭包状态，可能导致休息轮次错乱或重复创建 session。
+
+### P2：体验与维护
+
+- **前后端默认设置不一致**：`autoCreateReviewTasks` 前端默认 `true`，后端默认 `false`。
+- **收集箱复用 TodayPage**：点击收集箱显示的是 Today 页结构，而非无日期任务列表。
+- **TickTickShell 组件重复/未使用**：`App.tsx` 手写了一套 shell，`TickTickShell.tsx` 未被使用，维护易分叉。
+- **大量错误被静默吞掉**：Today、Sidebar、Settings 等页面大量 `catch {}`，API 报错时用户只见空白。
+
+### Phase 2 占位功能
+
+- 看板视图（KanbanPage）、艾森豪威尔矩阵（EisenhowerPage）、习惯打卡（HabitsPage）为占位/空壳实现。
+- 日历的周视图和日视图是占位符。
+- 白噪音 UI 可选，但 Web Audio 生成未完整连接。
+
+---
+
+## 错题本核心功能
+
+### v1.0.0-beta.1（持续有效）
 
 - PDF 错题集导出目前为 Beta，复杂公式、长图分页可能存在排版问题。
 - 外部 PDF 阅读器不一定支持 `file:///xxx.pdf#page=xx` 自动跳页。
-- 当前采用“打开 PDF + 显示 PDF 页码 + 复制页码 + 手动跳页”的稳定方案。
-- App 不内置 OCR，教材和错题识别依赖 `prompts/` 中的 GPT 提示词生成导入包。
+- 当前采用"打开 PDF + 显示 PDF 页码 + 复制页码 + 手动跳页"的稳定方案。
 - 移动端布局已尽量适配，但主要体验仍以桌面端为主。
 - 本项目不包含任何教材 PDF，用户需自行准备合法教材文件。
 - 大量知识点或大量错题时，图谱视图性能仍可能需要后续优化。
 - 恢复备份后建议重启 App，而不是依赖所有页面状态自动刷新。
+
+---
+
+## AI / OCR（Beta）
+
+- OCR 依赖本地 Python 3.9+ 和 `paddlepaddle/paddleocr`，环境未就绪时 AI 导入不可用。
+- DeepSeek AI 结构化输出偶尔可能不符合预期 JSON 格式，需人工校对。
+- AI 错因诊断需要配置有效 DeepSeek API Key 且需联网调用 DeepSeek 服务。
+
+---
+
+## 开发/仓库治理
+
+### 行尾符（CRLF / LF）噪声
+
+- 当前工作区中约 23 个文件存在纯 CRLF ↔ LF 转换 diff（零逻辑变化），导致 `git diff` 显示约 18,000 行改动，掩盖真实逻辑变更。
+- 计划：新增 `.gitattributes` 并独立 commit 标准化，不混入功能 commit。
+- 状态：待执行。
+
+### 测试体系缺位
+
+- `package.json` 无正式 `test` 脚本。
+- 高风险链路（数据库迁移、导入解析、备份恢复、复习算法、TickTick 桥接同步）缺少自动化回归。
+- 状态：待建立最小测试金字塔。
