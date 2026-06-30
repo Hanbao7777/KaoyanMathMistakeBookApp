@@ -109,18 +109,23 @@
 
 验收：`npm test` 5/5 通过。
 
-#### Task 3.2: 结构化导入解析测试
+#### Task 3.2: 结构化导入解析测试（已完成）
 
-文件建议：`tests/main/import.test.cjs`
+文件：`tests/main/import.test.cjs`
 
-| # | 用例 | 说明 |
-|---|------|------|
-| 3.6 | 畸形 `wrong_questions_import.zip`（缺图片目录）→ 不崩溃，返回无效行 | 使用 tests/fixtures 下的畸形 fixture |
-| 3.7 | 畸形 Excel（缺少必填列 title/content）→ 对应行标记 invalid | |
-| 3.8 | 正常 `knowledge_map_import.zip` → 成功导入，知识点树可查询 | |
-| 3.9 | 图片路径解析正确（相对路径 → 绝对路径） | |
+| # | 用例 | 说明 | 状态 |
+|---|------|------|------|
+| 3.6 | 畸形 zip（缺 `import.xlsx`）→ 抛错，不崩溃 | `prepareZipImport` 拒绝 | ✅ |
+| 3.7 | Excel 中含不存在图片路径的行 → preview 标记 invalid，错误信息可观察 | `prepareExcelImport` | ✅ |
+| 3.8 | 畸形 JSON → 抛错，不崩溃 | `prepareJsonImport` | ✅ |
+| 3.9 | 正常 JSON → preview 全部 valid，`confirmStructuredImport` 创建错题 | happy path | ✅ |
+| 3.10 | 正常 zip（含 `import.xlsx`）→ 解压、preview、confirm 创建错题 | happy path | ✅ |
 
-依赖：需在 `tests/fixtures/` 下放置小型 zip fixture（可用脚本动态生成，避免提交二进制）。
+辅助改动：`tests/main/helpers/mainTestEnv.cjs` 新增 `dialog.showOpenDialog` stub，测试中动态覆盖返回路径。fixture 在测试中动态生成（`xlsx`/`adm-zip` 为现有依赖），不提交二进制样本。
+
+范围说明：本批次覆盖的是 `structuredImportService.ts` 的结构化错题导入解析。`knowledgeMapService.ts` 的知识地图导入属于独立服务边界，未纳入本批次，后续如需补测试应单独立项。
+
+验收：`npm test` 5/5 通过。
 
 ---
 
@@ -162,7 +167,7 @@
 ## Acceptance Criteria
 
 - [x] Batch 2 全部用例 `npm test` 通过。
-- [ ] Batch 3 全部用例 `npm test` 通过。
+- [x] Batch 3 全部用例 `npm test` 通过。
 - [ ] 新增测试不破坏 `npm run typecheck` 和 `npm run build`。
 - [ ] `npm run test:main` 运行时间 < 10 秒（单线程 sql.js 足够快）。
 - [ ] 每个测试文件独立，不依赖其他测试文件的执行顺序或残留状态。

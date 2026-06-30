@@ -15,6 +15,9 @@ function installElectronStub() {
     dialog: {
       showMessageBox() {
         return Promise.resolve();
+      },
+      showOpenDialog() {
+        return Promise.resolve({ canceled: true, filePaths: [] });
       }
     },
     shell: {
