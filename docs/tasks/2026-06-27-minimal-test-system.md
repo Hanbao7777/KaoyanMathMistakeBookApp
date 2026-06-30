@@ -129,19 +129,19 @@
 
 ---
 
-### ⏳ Batch 4 — IPC 契约 + 其他 Service（可选）
+### ✅ Batch 4a — IPC 契约静态扫描（已完成）
 
-#### Task 4.1: IPC 契约静态扫描
+文件：`tests/ipc/ipc-contract-check.test.cjs`
 
-文件建议：`tests/ipc/ipc-contract-check.cjs`
+| # | 检查项 | 说明 | 状态 |
+|---|--------|------|------|
+| 4.1 | `AppApi` 中每个方法在 `preload.ts` 中有对应实现 | 正则扫描 `api.ts` 方法名 vs `preload.ts` | ✅ |
+| 4.2 | `preload.ts` 中每个 `invoke`/`send` 在 `registerIpc.ts` 或 `main.ts` 中有对应 handler | 正则扫描 channel 名，扫描两个文件 | ✅ |
+| 4.3 | 契约扫描能检测到故意制造的假 channel 不匹配 | 自检测试 | ✅ |
 
-| # | 检查项 | 说明 |
-|---|--------|------|
-| 4.1 | `AppApi` 中每个方法在 `preload.ts` 中有对应实现 | 正则扫描 `api.ts` 方法名 vs `preload.ts` |
-| 4.2 | `preload.ts` 中每个 `invoke`/`send` 在 `registerIpc.ts` 中有对应 handler | 正则扫描 channel 名 |
-| 4.3 | 输出：缺失的方法/ channel 列表 | 不匹配时 process.exit(1) |
+发现的真实问题：`window:saveState`/`window:loadState` channel 在 `preload.ts` 中使用，但不在 `registerIpc.ts` 中注册，而是在 `main.ts` 中注册。扫描已扩展为同时扫描 `registerIpc.ts` 和 `main.ts`。
 
-注意：此测试不启动 Electron，纯静态扫描，可在 `npm test` 中运行。
+验收：`npm test` 3/3 通过。
 
 #### Task 4.2: Question Bank Service
 
@@ -168,7 +168,7 @@
 
 - [x] Batch 2 全部用例 `npm test` 通过。
 - [x] Batch 3 全部用例 `npm test` 通过。
-- [ ] 新增测试不破坏 `npm run typecheck` 和 `npm run build`。
+- [x] 新增测试不破坏 `npm run typecheck` 和 `npm run build`。
 - [ ] `npm run test:main` 运行时间 < 10 秒（单线程 sql.js 足够快）。
 - [ ] 每个测试文件独立，不依赖其他测试文件的执行顺序或残留状态。
 
