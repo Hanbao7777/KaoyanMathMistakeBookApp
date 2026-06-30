@@ -93,21 +93,21 @@
 
 ---
 
-### ⏳ Batch 3 — 导入解析 + 复习算法（随后）
+### ✅ Batch 3a — 复习算法 service 回归测试（已完成）
 
-#### Task 3.1: 复习算法纯函数测试
+文件：`tests/main/reviewAlgorithm.test.cjs`
 
-文件建议：`tests/main/review-algorithm.test.cjs`
+复习算法内嵌于 `databaseService.ts` 的 `submitReviewResult`，未提取为独立纯函数。因此采用 service 级黑盒回归测试，通过 `createQuestion` + `submitReviewResult` + `getQuestion` 验证间隔与掌握度转换。
 
-| # | 用例 | 说明 |
-|---|------|------|
-| 3.1 | 首次复习 correct → next_review_at 在 2 天后 | 基于当前间隔算法计算 |
-| 3.2 | 首次复习 wrong → next_review_at 在 1 天内，mastery_level 降级 | |
-| 3.3 | 首次复习 no_idea → next_review_at 当天或次日，mastery_level 降级 | |
-| 3.4 | 连续 3 次 correct → next_review_at 递增拉大 | |
-| 3.5 | 降级后再升级，间隔重新计算 | |
+| # | 用例 | 说明 | 状态 |
+|---|------|------|------|
+| 3.1 | 首次 correct → next_review_at +2 天，mastery 升一级 | consecutive_correct=1，interval=2 | ✅ |
+| 3.2 | wrong → next_review_at +1 天，mastery 降一级，consecutive_correct 归零 | | ✅ |
+| 3.3 | no_idea → next_review_at +1 天，mastery 降级，consecutive_correct 归零 | | ✅ |
+| 3.4 | 连续 3 次 correct → 间隔递增 2/4/7 天 | mastery 从 '较弱' 升到 '已掌握' | ✅ |
+| 3.5 | wrong 后再 correct → consecutive_correct 重置后从 1 重新开始，间隔回到 2 天 | | ✅ |
 
-依赖：需定位复习间隔算法所在函数（可能在 `databaseService.ts` 或独立函数），提取为可测试单元。
+验收：`npm test` 5/5 通过。
 
 #### Task 3.2: 结构化导入解析测试
 
