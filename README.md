@@ -95,6 +95,7 @@ npm install
 npm run dev
 npm run typecheck
 npm run build
+npm test
 npm run pack:win
 ```
 
