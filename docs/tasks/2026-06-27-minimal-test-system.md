@@ -143,6 +143,17 @@
 
 验收：`npm test` 3/3 通过。
 
+#### ✅ Batch 4d — Import Batch Deletion（已完成）
+
+文件：`tests/main/importBatchService.test.cjs`
+
+| # | 用例 | 说明 | 状态 |
+|---|------|------|------|
+| 4.9 | `deleteImportBatch()` 为 wrong_questions batch 创建 `before_delete_import` 保护备份并删除关联 `questions` | 校验 backup 文件、question 删除、batch 标记 deleted | ✅ |
+| 4.10 | `deleteImportBatch()` 在启用 asset deletion 时移动记录的 asset 到 `trash/imports/<batchId>/...` | 校验 movedAssets、源文件消失、trash 文件存在、asset deleted_at | ✅ |
+
+验收：`npm run build:main && node --test tests/main/importBatchService.test.cjs` 2/2 通过。
+
 #### ✅ Batch 4c — Question Bank Service（已完成）
 
 文件：`tests/main/questionBankService.test.cjs`
