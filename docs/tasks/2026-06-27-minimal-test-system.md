@@ -143,15 +143,19 @@
 
 验收：`npm test` 3/3 通过。
 
-#### Task 4.2: Question Bank Service
+#### ✅ Batch 4c — Question Bank Service（已完成）
 
-文件建议：`tests/main/questionBank.test.cjs`
+文件：`tests/main/questionBankService.test.cjs`
 
-| # | 用例 | 说明 |
-|---|------|------|
-| 4.4 | 题库导入后外部题目数据完整 | |
-| 4.5 | 作答记录关联正确（external_question_attempts） | |
-| 4.6 | 重复导入同一批次去重/跳过 | |
+| # | 用例 | 说明 | 状态 |
+|---|------|------|------|
+| 4.6 | `recordExternalQuestionAttempt` 写入 `external_question_attempts` | 校验 result/note/added_to_mistakes/created_question_id | ✅ |
+| 4.7 | `addExternalQuestionToMistakes` 创建错题并更新外部题目/attempt 关联 | 校验 `questions`、`external_questions`、`external_question_attempts` 副作用 | ✅ |
+| 4.8 | 重复 `addExternalQuestionToMistakes` 被拒绝 | duplicate guard | ✅ |
+
+发现并修复的真实问题：`recordExternalQuestionAttempt` 插入成功后用 `lastInsertId(database)` 回读 attempt 可能得到 0，导致误报“训练记录保存后读取失败”。修复为按 `external_question_id` 查询最新 attempt。
+
+验收：`npm run build:main && node --test tests/main/questionBankService.test.cjs` 3/3 通过。
 
 #### ✅ Batch 4b — Bridge Sync Service（已完成）
 

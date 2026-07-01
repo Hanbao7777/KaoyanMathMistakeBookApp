@@ -695,7 +695,7 @@ export async function recordExternalQuestionAttempt(input: ExternalQuestionAttem
     [input.externalQuestionId, input.result, now, input.note || '']
   );
   persistDatabase();
-  const attempt = oneSql<ExternalQuestionAttempt>(database, 'SELECT * FROM external_question_attempts WHERE id = ?', [lastInsertId(database)]);
+  const attempt = oneSql<ExternalQuestionAttempt>(database, 'SELECT * FROM external_question_attempts WHERE external_question_id = ? ORDER BY id DESC LIMIT 1', [input.externalQuestionId]);
   if (!attempt) throw new Error('训练记录保存后读取失败');
   return attempt;
 }
