@@ -153,14 +153,16 @@
 | 4.5 | 作答记录关联正确（external_question_attempts） | |
 | 4.6 | 重复导入同一批次去重/跳过 | |
 
-#### Task 4.3: Bridge Sync Service
+#### ✅ Batch 4b — Bridge Sync Service（已完成）
 
-文件建议：`tests/main/bridge.test.cjs`
+文件：`tests/main/bridgeService.test.cjs`
 
-| # | 用例 | 说明 |
-|---|------|------|
-| 4.7 | 完成 TickTick 任务 + sync_review=1 → review_logs 新增记录 | |
-| 4.8 | 专注时长写入 ticktick_focus_sessions → study_sessions 同步 | |
+| # | 用例 | 说明 | 状态 |
+|---|------|------|------|
+| 4.4 | TickTick task + `sync_review=1` bridge → `syncTaskCompletedToReview` 写入 `review_logs` | 校验 review log、question review_count/correct_count/consecutive_correct | ✅ |
+| 4.5 | 同一天同一 TickTick 任务重复同步 → 不重复写入 `review_logs` | 校验 duplicate guard | ✅ |
+
+验收：`npm run build:main && node --test tests/main/bridgeService.test.cjs` 2/2 通过。
 
 ---
 
