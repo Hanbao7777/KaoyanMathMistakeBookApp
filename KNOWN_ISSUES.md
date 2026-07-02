@@ -80,10 +80,10 @@ TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详�
 - 计划：新增 `.gitattributes` 并独立 commit 标准化，不混入功能 commit。
 - 状态：待执行。
 
-### 测试体系（最小回归套件已落地，待接 CI）
+### 测试体系（最小回归套件已落地，最小 CI 已接入）
 
 - 已有 `npm test` / `npm run test:main` 入口，基于 Node.js 内置 `node:test`，构建后在 `dist/main/` 上运行 `.test.cjs`。
 - 已覆盖的高风险链路（约 31 个用例）：schema 初始化、备份/恢复、结构化导入解析、导入批次删除、复习算法、TickTick 任务创建/更新边界、TickTick 桥接同步、外部题库作答、IPC 契约静态扫描。
-- 剩余缺口：未接入 CI（提交门槛未强制）；未覆盖数据库 migration 升级路径（当前仅验证全新初始化）；未覆盖 renderer 组件与 Electron 端到端；知识地图导入（`knowledgeMapService`）与 study supervisor 尚未纳入。
+- 剩余缺口：未覆盖数据库 migration 升级路径（当前仅验证全新初始化）；未覆盖 renderer 组件与 Electron 端到端；知识地图导入（`knowledgeMapService`）与 study supervisor 尚未纳入。
 - 详见任务台账 [docs/tasks/2026-06-27-minimal-test-system.md](docs/tasks/2026-06-27-minimal-test-system.md)。
-- 状态：最小回归套件已落地，待接 CI 并继续扩展。
+- 状态：最小回归套件已落地，最小 CI 已接入（GitHub Actions 运行 test/typecheck/build），仍需继续扩展覆盖面。

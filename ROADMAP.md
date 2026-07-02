@@ -11,7 +11,7 @@
 1. **交付稳定化** — 当前 `typecheck`/`build` 已恢复通过；下一步确保 `pack:win` 和 Electron 手工验收可复现。
 2. **TickTick 收口** — 按 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md) 处理 P0（布局/启动）和 P1（数据保存/同步链路）。
 3. **文档一致性** — README / ROADMAP / KNOWN_ISSUES 已校准；`TICKTICK_FEATURES.md` / `TICKTICK_KNOWN_BUGS.md` 后续择机合并归档。
-4. **最小测试体系** — ✅ 已落地最小回归套件（`npm test`，约 31 个用例，覆盖 schema/备份恢复/导入解析/导入批次删除/复习算法/TickTick 创建更新/桥接同步/题库/IPC 契约）；🔧 待接 CI 作为提交门槛，并补 migration 升级路径与知识地图导入覆盖。
+4. **最小测试体系** — ✅ 已落地最小回归套件（`npm test`，约 31 个用例，覆盖 schema/备份恢复/导入解析/导入批次删除/复习算法/TickTick 创建更新/桥接同步/题库/IPC 契约）；✅ 最小 CI 已接入（GitHub Actions 在 push/PR 到 main 上运行 test/typecheck/build）作为提交门槛；🔧 仍需补 migration 升级路径与知识地图导入覆盖。
 5. **工作区改动收敛** — 分离真实逻辑改动与行尾符噪声，完成未提交 diff 的提交。
 
 ---
