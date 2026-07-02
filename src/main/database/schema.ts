@@ -286,7 +286,6 @@ CREATE TABLE IF NOT EXISTS daily_reviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_questions_created_at ON questions(created_at);
-CREATE INDEX IF NOT EXISTS idx_questions_next_review_at ON questions(next_review_at);
 CREATE INDEX IF NOT EXISTS idx_questions_category ON questions(category);
 CREATE INDEX IF NOT EXISTS idx_questions_mastery ON questions(mastery_level);
 CREATE INDEX IF NOT EXISTS idx_review_logs_question ON review_logs(question_id);
