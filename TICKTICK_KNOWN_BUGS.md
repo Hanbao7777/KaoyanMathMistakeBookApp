@@ -28,8 +28,9 @@ Electron 打包版也要实际打开验证，不要只看浏览器/Vite。
 - `src/renderer/styles/ticktick.css`
 
 当前状态：
-- Codex 已做一个未完整验证的草稿改动：把 TickTick 分支外层从 `className="app-shell"` 改成 `className="ticktick-root"`。
-- 还需要补齐 `.ticktick-root` / `.ticktick-app-shell` / `.ticktick-sidebar` / `.ticktick-main` 的高度、宽度、`min-height: 0`、`min-width: 0`、overflow 规则。
+- 代码已修，待人工/打包版验收。TickTick 分支外层已从 `className="app-shell"` 改为 `className="ticktick-root"` 并渲染 `TickTickShell`，不再复用旧错题本布局。
+- `.ticktick-root` / `.ticktick-app-shell` / `.ticktick-main` / `.ticktick-main-content` 的高度、`min-width:0` / `min-height:0` / overflow 规则已在 `ticktick.css` 补齐。
+- 仍需在打包版逐页确认（见下方验收），确认前不标记为已完全闭环。
 
 建议修法：
 - TickTick 模式不要复用 `.app-shell`。
@@ -81,8 +82,9 @@ Electron 打包版也要实际打开验证，不要只看浏览器/Vite。
 - `src/renderer/styles/ticktick.css`
 
 当前状态：
-- Codex 已做一个未完整验证的草稿改动：把侧边栏中间内容包进 `.tt-sidebar-scroll`，工具区改成 `.tt-sidebar-tools`，移除了 inline `marginTop: 'auto'`。
-- 还需要补 CSS。
+- 代码已修，待人工/打包版验收。侧边栏中间内容已包进 `.tt-sidebar-scroll`，工具区改为 `.tt-sidebar-tools`，已移除 inline `marginTop:'auto'`。
+- 对应 CSS（`.ticktick-sidebar` / `.tt-sidebar-scroll` / `.tt-sidebar-tools`）已在 `ticktick.css` 补齐。
+- 该项与主内容区宽度问题联动，仍需在打包版一并人工确认后才算闭环。
 
 建议修法：
 - 侧边栏本身固定窗口高度。

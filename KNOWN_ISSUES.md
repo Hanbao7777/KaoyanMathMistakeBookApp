@@ -24,9 +24,9 @@ TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详�
 
 ### P0：布局与启动
 
-- **主内容区宽度被挤成约 12px**：TickTick 模式的根容器与旧 `.app-shell` grid 冲突，右侧内容不可见。
-- **侧边栏工具区被推到文档底部**：专注计时 / 设置需滚到很下方才能看到，且因主内容区过窄看起来像"打不开"。
-- **exe 启动环境**：同上构建环境节。
+- **主内容区宽度被挤成约 12px**（代码已修，待人工/打包版验收）：根容器已从旧 `.app-shell` grid 隔离为独立的 `.ticktick-root` + `TickTickShell`，`ticktick.css` 已补齐宽高/overflow 规则；仍需在打包版逐页确认主内容区正常占满。
+- **侧边栏工具区被推到文档底部**（代码已修，待人工/打包版验收）：已移除 inline `marginTop:auto`，改为 `.tt-sidebar-scroll` 中间滚动 + `.tt-sidebar-tools` 固定工具区；仍需人工确认专注计时/设置常驻可见且可切换。
+- **exe 启动环境**（workaround / 文档收口）：非业务代码 bug，启动前需清理 `ELECTRON_RUN_AS_NODE`，详见构建环境节。
 
 ### P1：数据完整性
 
