@@ -81,7 +81,7 @@
 - 侧边栏工具区定位：专注计时/设置不应被推到文档底部 — 代码已修，待人工/打包版验收
 - 任务详情面板真正编辑保存：受控 state + `updateTickTickTask` API 调用 — 代码已修，待人工/端到端验收
 - 孤儿任务防护：无清单时禁用 Quick Add，后端校验 `list_id` — 代码已修，待人工/端到端验收
-- 同步链路打通：完成关联复习任务时调用 `syncTaskCompletedToReview`，不写死 subject
+- 同步链路打通（已修复）：完成/取消完成收口到 main 侧 `completeTaskWithReviewSync` / `uncompleteTaskWithReviewSync` 统一入口，所有 renderer 入口一致生效
 - 专注计时器状态竞态：用 effect 驱动 session end，避免 stale closure
 
 ### TickTick P2 / 体验

@@ -61,17 +61,8 @@ export function TodayPage() {
     try {
       if (task.is_completed) {
         await window.api.uncompleteTickTickTask(task.id);
-        // Also undo sync
-        try { await window.api.undoReviewTaskSync(task.id, task.title); } catch {}
       } else {
         await window.api.completeTickTickTask(task.id);
-        // Sync to mistake book review via bridge
-        const bridges = await window.api.getTickTickTaskBridges(task.id);
-        if (bridges.some(b => b.sync_review)) {
-          try {
-            await window.api.syncTickTickTaskCompletedToReview(task.id, task.title, task.estimated_minutes || 25);
-          } catch (e) { console.error('Sync review failed:', e); }
-        }
       }
       versionRef.current++;
       await load();

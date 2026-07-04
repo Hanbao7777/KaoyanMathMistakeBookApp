@@ -198,29 +198,15 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - 清空 TickTick 清单后，不能创建 list_id 为空的任务。
 - AI 拆解/每日计划接受任务时也不能写入空 list_id。
 
-## P1：TickTick 完成关联复习任务时没有调用真正的同步 IPC
+## P1：TickTick 完成关联复习任务时没有调用真正的同步 IPC（已修复）
 
-现象：
-- 完成一个和错题本复习关联的 TickTick 任务后，预期应同步复习记录/掌握度。
-- 当前 `TodayPage` 只是手动创建一条 study session，而且 subject 写死为 `math`，失败还被吞掉。
+状态：已修复。完成/取消完成已收口到 main 侧 `completeTaskWithReviewSync` / `uncompleteTaskWithReviewSync` 统一入口，所有 renderer 入口一致生效。
 
-原因：
-- main 里已有 `ticktick:sync:reviewTask`：`src/main/ipc/registerIpc.ts`。
-- preload 只暴露了 `triggerReviewTaskGeneration`，没有暴露 `syncTaskCompletedToReview` 之类的方法。
-- `src/renderer/pages/ticktick/TodayPage.tsx` 没有调用 main 的 `syncTaskCompletedToReview`。
-
-涉及文件：
-- `src/main/ipc/registerIpc.ts`
-- `src/preload/preload.ts`
-- `src/renderer/pages/ticktick/TodayPage.tsx`
-- `src/renderer/pages/ticktick/ListDetailPage.tsx`
-- `src/main/services/bridgeService.ts`
-
-建议修法：
-- 在 preload 暴露 `syncTickTickTaskCompletedToReview(taskId, taskTitle, actualMinutes)`。
-- Today/ListDetail 完成任务时统一调用该 API。
-- 不要在 renderer 写死 `subject_id: 'math'`。
-- 同步失败应给 toast 或至少 console/error，不要完全吞掉。
+修复方式：
+- `src/main/services/bridgeService.ts` 新增 `completeTaskWithReviewSync` / `uncompleteTaskWithReviewSync`，完成任务后自动调用 `syncTaskCompletedToReview`，取消完成时自动调用 `undoSyncTaskCompleted`。
+- `src/main/ipc/registerIpc.ts` 的 `ticktick:tasks:complete` / `ticktick:tasks:uncomplete` 改为调用统一入口。
+- `src/renderer/pages/ticktick/TodayPage.tsx` 已移除手工同步调用。
+- 自动化测试：`tests/main/bridgeService.test.cjs` 覆盖统一入口 complete/uncomplete 同步与撤销。
 
 验收：
 - 完成有关联错题复习的任务后，错题本复习记录真实增加。

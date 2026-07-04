@@ -1,6 +1,6 @@
 import { getDatabase, persistDatabase, submitReviewResult } from './databaseService';
-import { getTickTickSettings, getBridgesForLinked } from './ticktickService';
-import type { TickTickBridgeLinkedType } from '../../shared/types';
+import { getTickTickSettings, getBridgesForLinked, completeTickTickTask, uncompleteTickTickTask } from './ticktickService';
+import type { TickTickBridgeLinkedType, TickTickTask } from '../../shared/types';
 
 function todayStr(): string {
   const d = new Date();
@@ -168,6 +168,30 @@ export async function undoSyncTaskCompleted(ticktickTaskId: string, taskTitle: s
     [today, `%TickTick 任务完成: ${taskTitle.replace(/%/g, '\\%').replace(/_/g, '\\_')}%`]
   );
   persistDatabase();
+}
+
+// Unified entry: complete a TickTick task and sync review via bridge (single source of truth)
+export async function completeTaskWithReviewSync(taskId: string): Promise<TickTickTask | null> {
+  const task = await completeTickTickTask(taskId);
+  if (!task) return null;
+  try {
+    await syncTaskCompletedToReview(taskId, task.title, task.actual_minutes || task.estimated_minutes || 0);
+  } catch (e) {
+    console.error('bridgeService: completeTaskWithReviewSync sync failed', e);
+  }
+  return task;
+}
+
+// Unified entry: uncomplete a TickTick task and undo review sync (single source of truth)
+export async function uncompleteTaskWithReviewSync(taskId: string): Promise<TickTickTask | null> {
+  const task = await uncompleteTickTickTask(taskId);
+  if (!task) return null;
+  try {
+    await undoSyncTaskCompleted(taskId, task.title);
+  } catch (e) {
+    console.error('bridgeService: uncompleteTaskWithReviewSync undo failed', e);
+  }
+  return task;
 }
 
 async function getOrCreateDefaultList(db: import('sql.js').Database): Promise<string> {

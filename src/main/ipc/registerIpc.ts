@@ -96,7 +96,7 @@ import {
 import {
   listTickTickLists, getTickTickList, createTickTickList, updateTickTickList, deleteTickTickList, reorderTickTickLists,
   listTickTickTasks, getTickTickTask, createTickTickTask, updateTickTickTask, deleteTickTickTask,
-  completeTickTickTask, uncompleteTickTickTask, getTodayTickTickTasks,
+  getTodayTickTickTasks,
   listTickTickTags,
   listTickTickFocusSessions, createTickTickFocusSession,
   getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
@@ -104,7 +104,7 @@ import {
   getTickTickSettings, saveTickTickSettings,
   listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
-import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
+import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted, completeTaskWithReviewSync, uncompleteTaskWithReviewSync } from '../services/bridgeService';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
   DatabaseBackupKind,
@@ -456,8 +456,8 @@ export function registerIpc() {
   handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTask(input));
   handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTask(id, input));
   handle('ticktick:tasks:delete', (id: string) => deleteTickTickTask(id));
-  handle('ticktick:tasks:complete', (id: string) => completeTickTickTask(id));
-  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTickTickTask(id));
+  handle('ticktick:tasks:complete', (id: string) => completeTaskWithReviewSync(id));
+  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTaskWithReviewSync(id));
   handle('ticktick:tasks:today', () => getTodayTickTickTasks());
 
   // TickTick Tags

@@ -90,3 +90,50 @@ test('syncTaskCompletedToReview does not duplicate same task sync on same day', 
   assert.equal(updated.review_count, 1);
   assert.equal(updated.correct_count, 1);
 });
+
+test('completeTaskWithReviewSync writes review log for bridged task via unified entry', async () => {
+  const question = await createQuestion();
+  const task = await createTask('统一完成复习');
+  await createQuestionBridge(task.id, question.id);
+
+  const updated = await bridgeService.completeTaskWithReviewSync(task.id);
+
+  assert.ok(updated);
+  assert.equal(updated.is_completed, 1);
+
+  const logs = await databaseService.listReviewLogs(question.id);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0].result, 'correct');
+  assert.match(logs[0].note, /TickTick 任务完成: 统一完成复习/);
+});
+
+test('completeTaskWithReviewSync does not write review log for task without bridge', async () => {
+  const task = await createTask('无桥接任务');
+
+  const updated = await bridgeService.completeTaskWithReviewSync(task.id);
+
+  assert.ok(updated);
+  assert.equal(updated.is_completed, 1);
+
+  const db = await databaseService.getDatabase();
+  const rows = databaseService.allSql(db, 'SELECT * FROM review_logs');
+  assert.equal(rows.length, 0);
+});
+
+test('uncompleteTaskWithReviewSync removes the synced review log via unified entry', async () => {
+  const question = await createQuestion();
+  const task = await createTask('统一取消复习');
+  await createQuestionBridge(task.id, question.id);
+
+  await bridgeService.completeTaskWithReviewSync(task.id);
+  const logsAfterComplete = await databaseService.listReviewLogs(question.id);
+  assert.equal(logsAfterComplete.length, 1);
+
+  const updated = await bridgeService.uncompleteTaskWithReviewSync(task.id);
+
+  assert.ok(updated);
+  assert.equal(updated.is_completed, 0);
+
+  const logsAfterUndo = await databaseService.listReviewLogs(question.id);
+  assert.equal(logsAfterUndo.length, 0);
+});
