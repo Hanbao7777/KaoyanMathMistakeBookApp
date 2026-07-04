@@ -158,6 +158,10 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - `src/main/services/ticktickService.ts`
 - `src/preload/preload.ts`
 
+当前状态：
+- 代码已修，待人工/端到端验收。`TaskDetailPanel.tsx` 已改为受控表单（title/due_date/due_time/priority/list_id/note/tags 均用 `useState`），保存调用 `window.api.updateTickTickTask(task.id, ...)`。
+- 仍需人工确认：改动关闭再打开可保留、切换清单可跨清单移动。
+
 建议修法：
 - 给 title、note、due_date、priority、list_id、tags 等字段加本地 state。
 - 保存时调用 `window.api.updateTickTickTask(task.id, payload)`。
@@ -181,6 +185,10 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - `src/renderer/components/TickTick/QuickAddBar.tsx`
 - `src/main/services/ticktickService.ts`
 - `src/renderer/components/TickTick/AiPanel.tsx` 也有类似默认清单依赖，需顺手检查。
+
+当前状态：
+- 代码已修，待人工/端到端验收。前端 `QuickAddBar.tsx` 与 `AiPanel.tsx` 在 `!lists.length` 时禁用输入/按钮并提示“请先创建清单”；后端 `createTickTickTask` / `updateTickTickTask` 对空或不存在的 `list_id` 抛出可读错误（“请先创建或选择一个清单”/“清单不存在，请刷新后重试”）。
+- 仍需人工确认：清空清单后无法创建 list_id 为空的任务，AI 拆解/每日计划路径同样受阻。
 
 建议修法：
 - 前端：没有清单时禁用快速添加，提示先创建清单，或自动创建默认“收集箱”清单。
