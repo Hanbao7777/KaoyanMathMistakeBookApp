@@ -15,8 +15,10 @@ export function CalendarPage() {
   const [loading, setLoading] = useState(false);
   const [weekTasks, setWeekTasks] = useState<Record<string, TickTickTask[]>>({});
   const [weekLoading, setWeekLoading] = useState(false);
+  const [weekError, setWeekError] = useState<string | null>(null);
   const [dayTasks, setDayTasks] = useState<TickTickTask[]>([]);
   const [dayLoading, setDayLoading] = useState(false);
+  const [dayError, setDayError] = useState<string | null>(null);
   const [weekOffset, setWeekOffset] = useState(0);
   const [dayOffset, setDayOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -69,6 +71,7 @@ export function CalendarPage() {
 
   const loadWeekTasks = useCallback(async () => {
     setWeekLoading(true);
+    setWeekError(null);
     try {
       const results = await Promise.all(
         weekDateStrs.map(date => window.api.listTickTickTasks({ dueDate: date, includeCompleted: false }))
@@ -81,6 +84,7 @@ export function CalendarPage() {
     } catch (e) {
       console.error('CalendarPage week load', e);
       setWeekTasks({});
+      setWeekError(toReadableError(e, '周视图加载失败，请重试'));
     } finally {
       setWeekLoading(false);
     }
@@ -93,12 +97,14 @@ export function CalendarPage() {
 
   const loadDayTasks = useCallback(async () => {
     setDayLoading(true);
+    setDayError(null);
     try {
       const tasks = await window.api.listTickTickTasks({ dueDate: displayDayStr, includeCompleted: false });
       setDayTasks(tasks.filter(t => !t.parent_id));
     } catch (e) {
       console.error('CalendarPage day load', e);
       setDayTasks([]);
+      setDayError(toReadableError(e, '日视图加载失败，请重试'));
     } finally {
       setDayLoading(false);
     }
@@ -204,6 +210,12 @@ export function CalendarPage() {
             <button onClick={() => setWeekOffset(w => w + 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronRight size={14} /></button>
             {weekOffset !== 0 ? <button onClick={() => setWeekOffset(0)} type="button" style={{ fontSize: 11, color: 'var(--tt-accent)', background: 'none', border: '1px solid var(--tt-accent)', borderRadius: 4, padding: '2px 6px', cursor: 'pointer' }}>本周</button> : null}
           </div>
+        {weekError ? (
+          <div className="tt-empty tt-load-error" role="alert">
+            <div>{weekError}</div>
+            <button type="button" className="tt-retry-btn" onClick={loadWeekTasks}>重试</button>
+          </div>
+        ) : (
         <div style={{ display: 'flex', gap: 4, flex: 1, overflow: 'auto', opacity: weekLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {weekDateStrs.map((dateStr, i) => {
             const isToday = dateStr === todayStr;
@@ -226,6 +238,7 @@ export function CalendarPage() {
             );
           })}
         </div>
+        )}
         </>
       ) : null}
 
@@ -239,6 +252,12 @@ export function CalendarPage() {
             <button onClick={() => setDayOffset(d => d + 1)} type="button" style={{ background: 'var(--tt-bg)', border: '1px solid var(--tt-border)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer', color: 'var(--tt-text)' }}><ChevronRight size={14} /></button>
             {dayOffset !== 0 ? <button onClick={() => setDayOffset(0)} type="button" style={{ fontSize: 11, color: 'var(--tt-accent)', background: 'none', border: '1px solid var(--tt-accent)', borderRadius: 4, padding: '2px 6px', cursor: 'pointer' }}>今天</button> : null}
           </div>
+        {dayError ? (
+          <div className="tt-empty tt-load-error" role="alert">
+            <div>{dayError}</div>
+            <button type="button" className="tt-retry-btn" onClick={loadDayTasks}>重试</button>
+          </div>
+        ) : (
         <div style={{ flex: 1, overflow: 'auto', opacity: dayLoading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>
             {displayDay.getFullYear()}年{displayDay.getMonth() + 1}月{displayDay.getDate()}日
@@ -256,6 +275,7 @@ export function CalendarPage() {
             <div className="tt-empty">今天没有安排任务</div>
           )}
         </div>
+        )}
         </>
       ) : null}
 

@@ -89,7 +89,7 @@
 - 前后端默认设置值统一 — ✅ 已完成（代码层，`autoCreateReviewTasks` 前后端默认均为 `true`）
 - 收集箱实现独立 InboxPage（不复用 TodayPage）— ✅ 已完成（代码层，待人工确认过滤行为）
 - TickTickShell 与 App.tsx 的 shell 二选一，删除死代码 — ✅ 已完成（App 统一使用 `TickTickShell`）
-- 页面级错误提示替代静默 `catch {}` — 🔧 主链路 5 页 + 第二梯队（Eisenhower/Kanban/Habits）初始化加载已补可见错误态 + 重试；FocusTimerPage/DesktopWidget 计时器命令失败已补 toast 反馈（待人工验收），其余操作路径的静默 `catch` 仍待逐步补齐
+- 页面级错误提示替代静默 `catch {}` — 🔧 初始化加载（主链路 5 页 + Eisenhower/Kanban/Habits）+ 操作路径（Calendar 周/日视图、Inbox toggle、Widget loadData/completeTask/addTask、FocusTimer 命令与设置加载）已补可见错误态/toast + 重试（待人工验收）；高频轮询 catch 故意保留静默；Kanban/Eisenhower toggle/delete 仍待补齐
 
 ### Desktop Widget 验证
 

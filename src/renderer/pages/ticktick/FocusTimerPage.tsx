@@ -2,7 +2,7 @@ import { Pause, Play, SkipForward, Square } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickTask, TickTickSettings } from '../../../shared/types';
 import { useToast } from '../../components/Toast';
-import { runCommand } from '../../../shared/loadState';
+import { runCommand, runLoad } from '../../../shared/loadState';
 
 type TimerStatus = 'idle' | 'running' | 'paused' | 'break';
 
@@ -20,6 +20,7 @@ export function FocusTimerPage() {
   const { toast } = useToast();
   const [settings, setSettings] = useState<TickTickSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [timerState, setTimerState] = useState<SharedTimerState>({
     status: 'idle',
     secondsLeft: 25 * 60,
@@ -37,19 +38,29 @@ export function FocusTimerPage() {
   const longBreak = settings?.pomodoro?.longBreakMinutes || 15;
   const sessionsBeforeLong = settings?.pomodoro?.sessionsBeforeLongBreak || 4;
 
-  useEffect(() => {
-    window.api.getTickTickSettings().then(s => {
-      setSettings(s);
-      setSettingsLoaded(true);
-      window.api.setTimerConfig({
+  async function loadSettings() {
+    setLoadError(null);
+    const outcome = await runLoad(async () => {
+      const s = await window.api.getTickTickSettings();
+      await window.api.setTimerConfig({
         focusMinutes: s.pomodoro?.focusMinutes || 25,
         shortBreakMinutes: s.pomodoro?.shortBreakMinutes || 5,
         longBreakMinutes: s.pomodoro?.longBreakMinutes || 15,
         sessionsBeforeLongBreak: s.pomodoro?.sessionsBeforeLongBreak || 4,
       });
-    });
-    window.api.listTickTickTasks({ includeCompleted: false }).then(setTasks);
-  }, []);
+      return s;
+    }, '设置加载失败，请重试');
+    if (outcome.ok) {
+      setSettings(outcome.value);
+      setSettingsLoaded(true);
+    } else {
+      setLoadError(outcome.message);
+      setSettingsLoaded(true);
+    }
+    window.api.listTickTickTasks({ includeCompleted: false }).then(setTasks).catch(() => {});
+  }
+
+  useEffect(() => { loadSettings(); }, []);
 
   // Poll shared timer state for display (read-only, does not advance time)
   useEffect(() => {
@@ -86,6 +97,14 @@ export function FocusTimerPage() {
   const ringColor = status === 'break' ? 'break' : status === 'paused' ? 'paused' : 'focus';
 
   if (!settingsLoaded) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
+  if (loadError) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{loadError}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setSettingsLoaded(false); loadSettings(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   const noiseOptions = [
     { key: 'none', label: '无' },

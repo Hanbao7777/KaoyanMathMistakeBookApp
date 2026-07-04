@@ -40,7 +40,7 @@ TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详�
 - ~~**前后端默认设置不一致**~~（已修复）：前后端 `autoCreateReviewTasks` 默认值现已统一为 `true`。
 - ~~**收集箱复用 TodayPage**~~（已修复）：已实现独立 `InboxPage`（过滤 `!due_date && !parent_id`），`inbox` 路由不再渲染 TodayPage；待人工确认过滤行为。
 - ~~**TickTickShell 组件重复/未使用**~~（已修复）：`App.tsx` 已统一使用 `TickTickShell`，不再手写重复 shell。
-- **大量错误被静默吞掉**（主链路 + 第二梯队已收口，待人工验收）：TodayPage / InboxPage / CalendarPage / TickTickSidebar / TickTickSettingsPage / EisenhowerPage / KanbanPage / HabitsPage 初始化失败已改为可见错误态 + 重试入口（共享 `runLoad`）；FocusTimerPage / DesktopWidget 计时器命令失败已改为 toast 可见反馈（`runCommand`）；其余操作路径的静默 `catch` 仍待逐步补齐。
+- **大量错误被静默吞掉**（主链路 + 第二梯队 + 操作路径已大面积收口，待人工验收）：初始化加载失败已改为可见错误态 + 重试入口（`runLoad`）；计时器命令 / 任务完成 / 快速添加等操作失败已改为 toast 可见反馈（`runCommand`）；Calendar 周/日视图加载失败已补可见错误态 + 重试；FocusTimerPage 初始化设置加载失败已补可见错误态 + 重试；高频轮询（500ms 计时器轮询、30s Widget 数据轮询）的 `catch` 故意保留静默避免 toast 刷屏；Kanban/Eisenhower 的 toggle/delete 操作路径仍有 `console.error` only，待后续逐步补齐。
 
 ### Phase 2 占位功能
 

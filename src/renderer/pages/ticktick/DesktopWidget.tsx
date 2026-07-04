@@ -3,7 +3,7 @@ import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { useToast } from '../../components/Toast';
-import { runCommand } from '../../../shared/loadState';
+import { runCommand, toReadableError } from '../../../shared/loadState';
 
 const widgetSettingsKey = 'kaoyan-widget-settings-v2';
 const widgetMinWidth = 280;
@@ -105,6 +105,7 @@ export function DesktopWidget() {
   const [showSettings, setShowSettings] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickTitle, setQuickTitle] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
 
   const effectiveTheme = getEffectiveTheme(settings.theme);
@@ -145,8 +146,10 @@ export function DesktopWidget() {
         const startOfToday = new Date(`${today()}T00:00:00`).getTime();
         setDaysUntilExam(Math.max(0, Math.ceil((target - startOfToday) / 86400000)));
       }
+      setLoadError(null);
     } catch (error) {
       console.error('DesktopWidget:loadData', error);
+      setLoadError(toReadableError(error, '数据加载失败，请重试'));
     }
   }
 
@@ -184,31 +187,25 @@ export function DesktopWidget() {
   function resetTimer() { runCommand(() => window.api.resetSharedTimer(), '计时器重置失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
 
   async function completeTask(task: TickTickTask) {
-    try {
-      await window.api.completeTickTickTask(task.id);
-      await loadData();
-    } catch (error) {
-      console.error('DesktopWidget:completeTask', error);
-    }
+    const outcome = await runCommand(() => window.api.completeTickTickTask(task.id), '完成任务失败');
+    if (!outcome.ok) { toast(outcome.message, 'error'); return; }
+    await loadData();
   }
 
   async function addTask() {
     const title = quickTitle.trim();
     const list = lists[0];
     if (!title || !list) return;
-    try {
-      await window.api.createTickTickTask({
-        list_id: list.id,
-        title,
-        due_date: today(),
-        priority: 'none',
-      });
-      setQuickTitle('');
-      setQuickAddOpen(false);
-      await loadData();
-    } catch (error) {
-      console.error('DesktopWidget:addTask', error);
-    }
+    const outcome = await runCommand(() => window.api.createTickTickTask({
+      list_id: list.id,
+      title,
+      due_date: today(),
+      priority: 'none',
+    }), '添加任务失败');
+    if (!outcome.ok) { toast(outcome.message, 'error'); return; }
+    setQuickTitle('');
+    setQuickAddOpen(false);
+    await loadData();
   }
 
   function handleResizePointerDown(event: ReactPointerEvent<HTMLElement>, direction: ResizeDirection) {
@@ -399,6 +396,11 @@ export function DesktopWidget() {
             <span>今日任务</span>
             <strong>{completedCount}/{tasks.filter((task) => !task.parent_id).length}</strong>
           </div>
+          {loadError ? (
+            <div className="widget-empty" role="alert" style={{ color: 'var(--tt-danger, #e53935)' }}>
+              {loadError}
+            </div>
+          ) : (
           <div className="widget-task-list">
             {activeTasks.length > 0 ? activeTasks.map((task) => (
               <button className="widget-task-row" key={task.id} onClick={() => completeTask(task)} title="点击完成任务" type="button">
@@ -412,6 +414,7 @@ export function DesktopWidget() {
               <div className="widget-empty">今天没有未完成任务</div>
             )}
           </div>
+          )}
         </section>
       </main>
 

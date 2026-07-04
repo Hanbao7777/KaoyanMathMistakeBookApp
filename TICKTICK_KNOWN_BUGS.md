@@ -325,8 +325,10 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - 主链路已收口，待人工验收。TodayPage / InboxPage / CalendarPage / TickTickSidebar / TickTickSettingsPage 的初始化加载已改用共享 `runLoad`（`src/shared/loadState.ts`）：失败时保留 `console.error`、设置可读 error state、渲染可见错误态 + "重试"入口（侧边栏为降级提示，保留基础导航）。
 - 第二梯队已收口：EisenhowerPage / KanbanPage / HabitsPage 初始化加载失败已改为可见错误态 + 重试入口。
 - FocusTimerPage / DesktopWidget 的计时器命令失败已改为 `runCommand` + toast 可见反馈，不再纯吞错。
+- 操作路径收口：Calendar 周/日视图加载失败已补可见错误态 + 重试；DesktopWidget `loadData`/`completeTask`/`addTask` 失败已补可见反馈（`loadData` 为内联错误态避免轮询 toast 刷屏，`completeTask`/`addTask` 为 toast）；Inbox `handleToggle` 失败已补 toast；FocusTimerPage 初始化设置加载失败已补可见错误态 + 重试。
+- 故意保留静默：FocusTimerPage / DesktopWidget 的 500ms 计时器轮询 `catch {}` 保留不动（高频轮询，toast 会刷屏）。
 - 覆盖单测见 `tests/main/loadState.test.cjs`（`toReadableError` / `runLoad` / `runCommand`，含空错误 fallback 与"空结果≠失败"）。
-- 剩余：部分操作路径（如 toggle/delete）的静默 `catch` 仍待逐步补齐。
+- 剩余：Kanban/Eisenhower 的 `handleToggle`/`handleDelete` 等操作路径仍有 `console.error` only 或无 catch，待后续逐步补齐。
 
 验收：
 - 模拟 IPC reject 时，页面显示错误提示而不是空白。

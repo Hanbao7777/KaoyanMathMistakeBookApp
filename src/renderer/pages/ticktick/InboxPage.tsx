@@ -3,9 +3,11 @@ import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
-import { runLoad } from '../../../shared/loadState';
+import { useToast } from '../../components/Toast';
+import { runCommand, runLoad } from '../../../shared/loadState';
 
 export function InboxPage() {
+  const { toast } = useToast();
   const [lists, setLists] = useState<TickTickList[]>([]);
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
@@ -34,14 +36,12 @@ export function InboxPage() {
   useEffect(() => { load(); }, []);
 
   async function handleToggle(task: TickTickTask) {
-    try {
-      if (task.is_completed) {
-        await window.api.uncompleteTickTickTask(task.id);
-      } else {
-        await window.api.completeTickTickTask(task.id);
-      }
-      await load();
-    } catch (e) { console.error('InboxPage', e); }
+    const fn = task.is_completed
+      ? () => window.api.uncompleteTickTickTask(task.id)
+      : () => window.api.completeTickTickTask(task.id);
+    const outcome = await runCommand(fn, '操作失败，请重试');
+    if (!outcome.ok) { toast(outcome.message, 'error'); return; }
+    await load();
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
