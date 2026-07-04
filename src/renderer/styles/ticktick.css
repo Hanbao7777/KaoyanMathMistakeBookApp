@@ -638,6 +638,29 @@
   font-size: 13px;
 }
 
+/* ── Page load error state ── */
+.tt-load-error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--tt-danger);
+}
+
+.tt-retry-btn {
+  padding: 4px 14px;
+  border: 1px solid var(--tt-border);
+  border-radius: var(--tt-radius-sm);
+  background: var(--tt-bg);
+  color: var(--tt-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tt-retry-btn:hover {
+  background: var(--tt-bg-hover);
+}
+
 /* ── Spinner ── */
 .tt-spinner {
   display: inline-block;

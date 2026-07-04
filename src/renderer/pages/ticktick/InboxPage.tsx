@@ -3,23 +3,31 @@ import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { QuickAddBar } from '../../components/TickTick/QuickAddBar';
 import { TaskRow } from '../../components/TickTick/TaskRow';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
+import { runLoad } from '../../../shared/loadState';
 
 export function InboxPage() {
   const [lists, setLists] = useState<TickTickList[]>([]);
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    try {
+    setError(null);
+    const outcome = await runLoad(async () => {
       const [l, all] = await Promise.all([
         window.api.listTickTickLists(),
         window.api.listTickTickTasks({ includeCompleted: false }),
       ]);
-      setLists(l);
+      return { l, all };
+    }, '收集箱加载失败，请重试');
+    if (outcome.ok) {
+      setLists(outcome.value.l);
       // Only show tasks with no due date, no parent (top-level only)
-      setTasks(all.filter(t => !t.due_date && !t.parent_id));
-    } catch (e) { console.error('InboxPage', e); }
+      setTasks(outcome.value.all.filter(t => !t.due_date && !t.parent_id));
+    } else {
+      setError(outcome.message);
+    }
     setLoading(false);
   }
 
@@ -37,6 +45,14 @@ export function InboxPage() {
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   return (
     <>

@@ -1,6 +1,7 @@
 import { Calendar, CheckCircle, ClipboardList, Clock3, Grid3X3, Hash, Inbox, Layout, Monitor, Plus, Settings } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickList, TickTickTag } from '../../../shared/types';
+import { runLoad } from '../../../shared/loadState';
 
 type TickTickPageKey = 'today' | 'calendar' | 'inbox' | 'list' | 'focus' | 'settings' | 'kanban' | 'eisenhower' | 'habits';
 
@@ -18,24 +19,30 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
   const [inboxCount, setInboxCount] = useState(0);
   const [showAddList, setShowAddList] = useState(false);
   const [newListName, setNewListName] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    try {
+    setError(null);
+    const outcome = await runLoad(async () => {
       const [l, t] = await Promise.all([
         window.api.listTickTickLists(),
         window.api.listTickTickTags(),
       ]);
+      const todayData = await window.api.getTodayTickTickTasks();
+      const allTasks = await window.api.listTickTickTasks({ includeNoDate: true });
+      return { l, t, todayData, allTasks };
+    }, '侧边栏加载失败');
+    if (outcome.ok) {
+      const { l, t, todayData, allTasks } = outcome.value;
       setLists(l);
       setTags(t);
-
       // Get today count
-      const todayData = await window.api.getTodayTickTickTasks();
       setTodayCount(todayData.overdue.length + todayData.today.length);
-
       // Inbox = tasks with no due date
-      const allTasks = await window.api.listTickTickTasks({ includeNoDate: true });
       setInboxCount(allTasks.filter(t => !t.due_date).length);
-    } catch (e) { console.error('TickTickSidebar', e); }
+    } else {
+      setError(outcome.message);
+    }
   }
 
   useEffect(() => { load(); }, [page]);
@@ -76,6 +83,12 @@ export function TickTickSidebar({ page, selectedListId, onNavigate, onModeChange
       </div>
 
       <div className="tt-sidebar-scroll">
+        {error ? (
+          <div className="tt-sidebar-error" role="alert" style={{ margin: '8px 10px', padding: '8px 10px', borderRadius: 'var(--tt-radius-sm)', background: 'var(--tt-bg-hover)', fontSize: 12, color: 'var(--tt-danger)' }}>
+            <div>{error}（计数可能不是最新）</div>
+            <button type="button" className="tt-retry-btn" onClick={load} style={{ marginTop: 4, fontSize: 11, padding: '2px 8px', border: '1px solid var(--tt-border)', borderRadius: 'var(--tt-radius-sm)', background: 'none', cursor: 'pointer', color: 'var(--tt-text-secondary)' }}>重试</button>
+          </div>
+        ) : null}
         {/* Smart Lists */}
         <div className="tt-sidebar-section">
           <div className="tt-sidebar-label">智能列表</div>

@@ -1,6 +1,7 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { TickTickCalendarDay, TickTickTask } from '../../../shared/types';
+import { toReadableError } from '../../../shared/loadState';
 
 export function CalendarPage() {
   const today = new Date();
@@ -18,11 +19,18 @@ export function CalendarPage() {
   const [dayLoading, setDayLoading] = useState(false);
   const [weekOffset, setWeekOffset] = useState(0);
   const [dayOffset, setDayOffset] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadMonth = useCallback(() => {
     setLoading(true);
-    window.api.getTickTickCalendarMonth(year, month).then(setDays).catch((e) => { console.error('CalendarPage', e); setDays([]); }).finally(() => setLoading(false));
+    setError(null);
+    window.api.getTickTickCalendarMonth(year, month)
+      .then(setDays)
+      .catch((e) => { console.error('CalendarPage', e); setDays([]); setError(toReadableError(e, '日历加载失败，请重试')); })
+      .finally(() => setLoading(false));
   }, [year, month]);
+
+  useEffect(() => { loadMonth(); }, [loadMonth]);
 
   const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
@@ -160,7 +168,14 @@ export function CalendarPage() {
         </div>
       </div>
 
-      {view === 'month' ? (
+      {error && view === 'month' ? (
+        <div className="tt-empty tt-load-error" role="alert">
+          <div>{error}</div>
+          <button type="button" className="tt-retry-btn" onClick={loadMonth}>重试</button>
+        </div>
+      ) : null}
+
+      {view === 'month' && !error ? (
         <div className="tt-month-grid" style={{ opacity: loading ? 0.5 : 1, transition: 'opacity 0.15s' }}>
           {weekHeaders.map(h => <div key={h} className="day-header">{h}</div>)}
           {cells.map((day, i) => {

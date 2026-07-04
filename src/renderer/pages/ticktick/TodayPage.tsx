@@ -6,6 +6,7 @@ import { TaskRow } from '../../components/TickTick/TaskRow';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
 import { AiDecompositionPanel, AiDailyPlanPanel, AiReviewPanel } from '../../components/TickTick/AiPanel';
 import { useToast } from '../../components/Toast';
+import { runLoad } from '../../../shared/loadState';
 
 type GroupKey = 'overdue' | 'today' | 'upcoming' | 'completed';
 
@@ -19,30 +20,36 @@ export function TodayPage() {
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [collapsed, setCollapsed] = useState<Set<GroupKey>>(new Set(['completed']));
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const versionRef = useRef(0);
   const togglingRef = useRef(false);
 
   async function load() {
     const version = ++versionRef.current;
-    try {
+    setError(null);
+    const outcome = await runLoad(async () => {
       const [l, todayData] = await Promise.all([
         window.api.listTickTickLists(),
         window.api.getTodayTickTickTasks(),
       ]);
-      if (version !== versionRef.current) return;
-      setLists(l);
-      setOverdue(todayData.overdue);
-      setToday(todayData.today);
-      setUpcoming(todayData.upcoming);
-
       // Load today's completed tasks (by completion date, not just due date)
       const todayLocal = new Date();
       const todayStr2 = `${todayLocal.getFullYear()}-${String(todayLocal.getMonth() + 1).padStart(2, '0')}-${String(todayLocal.getDate()).padStart(2, '0')}`;
       const allCompleted = await window.api.listTickTickTasks({ includeCompleted: true });
-      if (version !== versionRef.current) return;
+      return { l, todayData, allCompleted, todayStr2 };
+    }, '任务加载失败，请重试');
+    if (version !== versionRef.current) return;
+    if (outcome.ok) {
+      const { l, todayData, allCompleted, todayStr2 } = outcome.value;
+      setLists(l);
+      setOverdue(todayData.overdue);
+      setToday(todayData.today);
+      setUpcoming(todayData.upcoming);
       setCompleted(allCompleted.filter(t => t.is_completed && !t.parent_id && t.completed_at && t.completed_at.startsWith(todayStr2)));
-    } catch (e) { console.error('TodayPage', e); }
+    } else {
+      setError(outcome.message);
+    }
     setLoading(false);
   }
 
@@ -99,6 +106,14 @@ export function TodayPage() {
   const weekdayStr = `周${weekdays[todayDate.getDay()]}`;
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty"><div className="tt-spinner" />加载中...</div></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   const completedCount = completed.length;
 

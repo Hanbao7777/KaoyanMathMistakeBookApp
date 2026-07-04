@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { TickTickSettings } from '../../../shared/types';
 import { useToast } from '../../components/Toast';
+import { runLoad } from '../../../shared/loadState';
 
 const DARK_KEY = 'kaoyan-dark-mode';
 
@@ -25,17 +26,27 @@ export function TickTickSettingsPage() {
   const [lists, setLists] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(true);
   const [dark, setDark] = useState(getDarkMode);
+  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    Promise.all([
-      window.api.getTickTickSettings(),
-      window.api.listTickTickLists(),
-    ]).then(([s, l]) => {
-      setSettings(s);
-      setLists(l);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
+  async function load() {
+    setError(null);
+    const outcome = await runLoad(async () => {
+      const [s, l] = await Promise.all([
+        window.api.getTickTickSettings(),
+        window.api.listTickTickLists(),
+      ]);
+      return { s, l };
+    }, '设置加载失败，请重试');
+    if (outcome.ok) {
+      setSettings(outcome.value.s);
+      setLists(outcome.value.l);
+    } else {
+      setError(outcome.message);
+    }
+    setLoading(false);
+  }
+
+  useEffect(() => { load(); }, []);
 
   async function handleSave() {
     try {
@@ -47,6 +58,14 @@ export function TickTickSettingsPage() {
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-empty">加载中...</div></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   const p = settings.pomodoro;
 
