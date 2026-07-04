@@ -249,6 +249,9 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - `src/renderer/pages/ticktick/TickTickSettingsPage.tsx`
 - `src/main/services/ticktickService.ts`
 
+当前状态：
+- 已修复（代码层）。前后端默认值现已统一为 `autoCreateReviewTasks: true`（`ticktickService.ts` 的 `DEFAULT_TICKTICK_SETTINGS` 与 `TickTickSettingsPage.tsx` 的 `defaultSettings` 一致）。
+
 建议修法：
 - 统一默认值，最好以后端 `getTickTickSettings()` 返回值为准。
 - 前端本地 default 只用于 loading fallback，不应表达不同业务默认。
@@ -270,6 +273,9 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - `src/renderer/pages/ticktick/TodayPage.tsx`
 - 可新增 `src/renderer/pages/ticktick/InboxPage.tsx`
 
+当前状态：
+- 已修复（代码层）。`src/renderer/pages/ticktick/InboxPage.tsx` 已独立实现，过滤 `!due_date && !parent_id`；`App.tsx` 中 `ttPage === 'inbox'` 已渲染 `<InboxPage />`，不再复用 `<TodayPage />`。仍待人工确认无日期过滤与设置日期后从收集箱消失的行为。
+
 建议修法：
 - 实现 `InboxPage`，使用 `window.api.listTickTickTasks({ includeNoDate: true })` 并过滤 `!due_date && !parent_id`。
 - 支持快速添加，默认 due_date 为空。
@@ -286,6 +292,9 @@ $env:ELECTRON_RUN_AS_NODE = $null
 
 风险：
 - 修布局或计时器条时可能只改一处，另一处继续坏。
+
+当前状态：
+- 已修复（代码层）。`App.tsx` 已实际使用 `TickTickShell`（`import` 并在 TickTick 分支渲染），不再手写重复 shell，维护分叉风险消除。
 
 建议修法：
 - 要么 App 统一使用 `TickTickShell`，要么删除未使用组件。

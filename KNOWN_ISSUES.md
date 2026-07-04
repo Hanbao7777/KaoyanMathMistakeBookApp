@@ -37,9 +37,9 @@ TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详�
 
 ### P2：体验与维护
 
-- **前后端默认设置不一致**：`autoCreateReviewTasks` 前端默认 `true`，后端默认 `false`。
-- **收集箱复用 TodayPage**：点击收集箱显示的是 Today 页结构，而非无日期任务列表。
-- **TickTickShell 组件重复/未使用**：`App.tsx` 手写了一套 shell，`TickTickShell.tsx` 未被使用，维护易分叉。
+- ~~**前后端默认设置不一致**~~（已修复）：前后端 `autoCreateReviewTasks` 默认值现已统一为 `true`。
+- ~~**收集箱复用 TodayPage**~~（已修复）：已实现独立 `InboxPage`（过滤 `!due_date && !parent_id`），`inbox` 路由不再渲染 TodayPage；待人工确认过滤行为。
+- ~~**TickTickShell 组件重复/未使用**~~（已修复）：`App.tsx` 已统一使用 `TickTickShell`，不再手写重复 shell。
 - **大量错误被静默吞掉**：Today、Sidebar、Settings 等页面大量 `catch {}`，API 报错时用户只见空白。
 
 ### Phase 2 占位功能
