@@ -244,9 +244,14 @@ export interface AppApi {
   getTickTickWhiteNoiseState: () => Promise<{ enabled: boolean; noise: TickTickWhiteNoise }>;
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => Promise<void>;
 
-  // Shared timer state
+  // Shared timer state (single source of truth: main engine)
   getSharedTimerState: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
-  setSharedTimerState: (state: any) => Promise<void>;
+  startSharedTimer: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  pauseSharedTimer: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  resetSharedTimer: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  skipBreakSharedTimer: () => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  bindTimerTask: (taskId: string | null) => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
+  setTimerConfig: (config: { focusMinutes?: number; shortBreakMinutes?: number; longBreakMinutes?: number; sessionsBeforeLongBreak?: number }) => Promise<{ status: string; secondsLeft: number; totalSeconds: number; completedSessions: number; currentSession: number; sessionStartTime: number | null; boundTaskId: string | null }>;
 
   // Widget
   openWidget: () => void;

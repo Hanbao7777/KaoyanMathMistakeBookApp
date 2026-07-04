@@ -1,10 +1,9 @@
 import { Check, ExternalLink, MoreHorizontal, Pause, Pin, Play, Plus, RotateCcw, X } from 'lucide-react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 
 const widgetSettingsKey = 'kaoyan-widget-settings-v2';
-const widgetTimerKey = 'kaoyan-widget-timer-state-v2';
 const widgetMinWidth = 280;
 const widgetMinHeight = 360;
 const widgetMaxWidth = 420;
@@ -21,12 +20,14 @@ interface WidgetSettings {
   restoreBounds: boolean;
 }
 
-interface WidgetTimerState {
-  status: TimerStatus;
+interface SharedTimerState {
+  status: string;
   secondsLeft: number;
   totalSeconds: number;
-  sessionStartTime: number | null;
   completedSessions: number;
+  currentSession: number;
+  sessionStartTime: number | null;
+  boundTaskId: string | null;
 }
 
 const defaultSettings: WidgetSettings = {
@@ -36,12 +37,14 @@ const defaultSettings: WidgetSettings = {
   restoreBounds: true,
 };
 
-const defaultTimer: WidgetTimerState = {
+const defaultTimer: SharedTimerState = {
   status: 'idle',
   secondsLeft: 25 * 60,
   totalSeconds: 25 * 60,
-  sessionStartTime: null,
   completedSessions: 0,
+  currentSession: 1,
+  sessionStartTime: null,
+  boundTaskId: null,
 };
 
 function readJson<T>(key: string, fallback: T): T {
@@ -91,7 +94,7 @@ function priorityRank(task: TickTickTask) {
 
 export function DesktopWidget() {
   const [settings, setSettings] = useState<WidgetSettings>(() => readJson(widgetSettingsKey, defaultSettings));
-  const [timer, setTimer] = useState<WidgetTimerState>(() => readJson(widgetTimerKey, defaultTimer));
+  const [timer, setTimer] = useState<SharedTimerState>(defaultTimer);
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [lists, setLists] = useState<TickTickList[]>([]);
   const [examDate, setExamDate] = useState<string | null>(null);
@@ -99,21 +102,13 @@ export function DesktopWidget() {
   const [showSettings, setShowSettings] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [quickTitle, setQuickTitle] = useState('');
-  const [nowTick, setNowTick] = useState(0);
-  const intervalRef = useRef<number | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
 
   const effectiveTheme = getEffectiveTheme(settings.theme);
   const isDark = effectiveTheme === 'dark';
 
-  const secondsLeft = useMemo(() => {
-    void nowTick;
-    if (timer.status !== 'running' || !timer.sessionStartTime) return timer.secondsLeft;
-    const elapsed = Math.floor((Date.now() - timer.sessionStartTime) / 1000);
-    return Math.max(0, timer.totalSeconds - elapsed);
-  }, [timer, nowTick]);
-
-  const progress = timer.totalSeconds > 0 ? Math.max(0, secondsLeft) / timer.totalSeconds : 0;
+  const secondsLeft = Math.max(0, timer.secondsLeft);
+  const progress = timer.totalSeconds > 0 ? secondsLeft / timer.totalSeconds : 0;
   const circumference = 2 * Math.PI * 52;
   const dashOffset = circumference * (1 - progress);
   const activeTasks = tasks
@@ -163,71 +158,27 @@ export function DesktopWidget() {
     window.api.toggleWidgetPin(settings.pinned);
   }, [settings]);
 
+  // Poll shared timer state for display (read-only, does not advance time)
   useEffect(() => {
-    window.localStorage.setItem(widgetTimerKey, JSON.stringify({ ...timer, secondsLeft }));
-    window.api.setSharedTimerState({
-      status: timer.status,
-      secondsLeft,
-      totalSeconds: timer.totalSeconds,
-      completedSessions: timer.completedSessions,
-      currentSession: timer.completedSessions + 1,
-      sessionStartTime: timer.sessionStartTime,
-      boundTaskId: null,
-    }).catch(() => {});
-  }, [timer, secondsLeft]);
-
-  useEffect(() => {
-    if (timer.status !== 'running') return undefined;
-    intervalRef.current = window.setInterval(() => setNowTick((value) => value + 1), 250);
-    return () => {
-      if (intervalRef.current) window.clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    };
-  }, [timer.status]);
-
-  useEffect(() => {
-    if (timer.status !== 'running' || secondsLeft > 0) return;
-    setTimer((current) => ({
-      ...current,
-      status: 'idle',
-      secondsLeft: current.totalSeconds,
-      sessionStartTime: null,
-      completedSessions: current.completedSessions + 1,
-    }));
-  }, [timer.status, secondsLeft]);
+    let cancelled = false;
+    async function poll() {
+      try {
+        const state = await window.api.getSharedTimerState();
+        if (!cancelled) setTimer(state);
+      } catch {}
+    }
+    poll();
+    const interval = setInterval(poll, 500);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, []);
 
   function updateSettings(patch: Partial<WidgetSettings>) {
     setSettings((current) => ({ ...current, ...patch }));
   }
 
-  function startTimer() {
-    setTimer((current) => ({
-      ...current,
-      status: 'running',
-      totalSeconds: current.totalSeconds || 25 * 60,
-      secondsLeft: secondsLeft > 0 ? secondsLeft : current.totalSeconds || 25 * 60,
-      sessionStartTime: Date.now() - Math.max(0, (current.totalSeconds - secondsLeft) * 1000),
-    }));
-  }
-
-  function pauseTimer() {
-    setTimer((current) => ({
-      ...current,
-      status: 'paused',
-      secondsLeft,
-      sessionStartTime: null,
-    }));
-  }
-
-  function resetTimer() {
-    setTimer((current) => ({
-      ...current,
-      status: 'idle',
-      secondsLeft: 25 * 60,
-      totalSeconds: 25 * 60,
-      sessionStartTime: null,
-    }));
-  }
+  function startTimer() { window.api.startSharedTimer().catch(() => {}); }
+  function pauseTimer() { window.api.pauseSharedTimer().catch(() => {}); }
+  function resetTimer() { window.api.resetSharedTimer().catch(() => {}); }
 
   async function completeTask(task: TickTickTask) {
     try {

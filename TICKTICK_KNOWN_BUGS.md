@@ -212,28 +212,28 @@ $env:ELECTRON_RUN_AS_NODE = $null
 - 完成有关联错题复习的任务后，错题本复习记录真实增加。
 - 在“今日待复习/统计/备考监督”里能看到同步效果。
 
-## P1：TickTick 专注计时器结束逻辑存在 stale closure / 状态竞态
+## P1：TickTick 专注计时器结束逻辑存在 stale closure / 状态竞态（已修复）
 
-现象：
+状态：已修复。计时器状态已收口到 main 侧 `FocusTimerEngine` 单一真源，FocusTimerPage 和 DesktopWidget 均为只读客户端 + 命令入口，不再各自独立推进时间。
+
+现象（已修复）：
 - 专注倒计时结束后，可能不能正确进入休息，或休息结束后状态不正确。
 - 自动开始休息时可能重复/错乱。
+- 主页面和桌面悬浮窗各自维护独立状态机和 interval，状态分叉。
 
-原因：
-- `src/renderer/pages/ticktick/FocusTimerPage.tsx:startTimer` 的 interval 回调调用 `handleSessionEnd()`，但 `handleSessionEnd` 读取的是创建 interval 时闭包里的 `status/currentSession/settings`。
-- `handleSessionEnd()` 里又调用 `startTimer()`，容易在状态还没更新时复用旧状态。
-
-涉及文件：
-- `src/renderer/pages/ticktick/FocusTimerPage.tsx`
-
-建议修法：
-- 用 reducer 或显式 state machine 管理 `idle/running/paused/break`。
-- interval 只负责递减；当 `secondsLeft` 变为 0 时，由 effect 根据最新 state 处理 session end。
-- 保存 session 的 duration 应基于当前 session 配置，不要从可能过期的闭包读取。
+修复方式：
+- `src/main/services/focusTimerEngine.ts`：新增 `FocusTimerEngine` 类，管理 `idle/running/paused/break` 状态迁移，main 进程单一 interval 调用 `tick()` 推进时间。
+- `src/main/ipc/registerIpc.ts`：`sharedTimerState` 替换为 `FocusTimerEngine` 实例，新增 `timer:start` / `timer:pause` / `timer:reset` / `timer:skipBreak` / `timer:bindTask` / `timer:setConfig` 命令 IPC。
+- `src/renderer/pages/ticktick/FocusTimerPage.tsx`：移除本地状态机/interval/localStorage，改为轮询 `getSharedTimerState` + 发送命令。
+- `src/renderer/pages/ticktick/DesktopWidget.tsx`：移除独立计时器状态机/interval/localStorage，改为同一轮询 + 命令入口。
+- `src/preload/preload.ts` + `src/shared/api.ts`：移除 `setSharedTimerState`，新增 `startSharedTimer` / `pauseSharedTimer` / `resetSharedTimer` / `skipBreakSharedTimer` / `bindTimerTask` / `setTimerConfig`。
+- 自动化测试：`tests/main/focusTimerEngine.test.cjs` 覆盖 start/pause/reset/skipBreak/tick 自动迁移/长休息/回调等 11 条用例。
 
 验收：
 - 设为 1 分钟专注/1 分钟休息测试完整循环。
 - 专注结束只创建一条 focus session。
 - 休息结束回到下一轮专注准备状态，轮次正确。
+- 主页面和 Widget 显示同一套状态，不再各自独立推进。
 
 ## P2：TickTick 设置默认值前后端不一致
 

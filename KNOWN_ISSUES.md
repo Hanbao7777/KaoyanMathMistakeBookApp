@@ -33,7 +33,7 @@ TickTick 模块已大量实现，但主流程仍有 P0/P1 问题待修复。详�
 - **任务详情面板不能真正编辑保存**（代码已修，待人工/端到端验收）：已改为受控表单并调用 `updateTickTickTask`；仍需人工确认改动持久化与跨清单移动。
 - **Quick Add 在无清单时创建孤儿任务**（代码已修，待人工/端到端验收）：前端在无清单时禁用 Quick Add / AI 创建并提示先建清单，后端校验 `list_id` 非空且存在；仍需人工确认清空清单后无法写入空 `list_id`。
 - **完成关联复习任务时未真正同步**（已修复）：完成/取消完成已收口到 main 侧 `completeTaskWithReviewSync` / `uncompleteTaskWithReviewSync` 统一入口，所有 renderer 入口一致触发 review sync / undo sync。
-- **专注计时器状态竞态**：`handleSessionEnd` 读取创建 interval 时的闭包状态，可能导致休息轮次错乱或重复创建 session。
+- **专注计时器状态竞态**（已修复）：计时器状态已收口到 main 侧 `FocusTimerEngine` 单一真源，FocusTimerPage 和 DesktopWidget 均为只读客户端 + 命令入口，不再各自独立推进时间。
 
 ### P2：体验与维护
 

@@ -105,6 +105,7 @@ import {
   listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
 import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted, completeTaskWithReviewSync, uncompleteTaskWithReviewSync } from '../services/bridgeService';
+import { FocusTimerEngine } from '../services/focusTimerEngine';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
   DatabaseBackupKind,
@@ -160,24 +161,28 @@ function handle<TArgs extends unknown[], TResult>(channel: string, listener: (..
   });
 }
 
-// ── Shared Timer State ──
-let sharedTimerState: {
-  status: string;
-  secondsLeft: number;
-  totalSeconds: number;
-  completedSessions: number;
-  currentSession: number;
-  sessionStartTime: number | null;
-  boundTaskId: string | null;
-} = {
-  status: 'idle',
-  secondsLeft: 25 * 60,
-  totalSeconds: 25 * 60,
-  completedSessions: 0,
-  currentSession: 1,
-  sessionStartTime: null,
-  boundTaskId: null,
-};
+// ── Shared Timer State (single source of truth: FocusTimerEngine) ──
+const focusTimerEngine = new FocusTimerEngine();
+let focusTimerInterval: ReturnType<typeof setInterval> | null = null;
+
+focusTimerEngine.setSessionEndCallback((info) => {
+  createTickTickFocusSession({
+    task_id: info.boundTaskId,
+    start_time: new Date(info.sessionStartTime).toISOString(),
+    end_time: new Date().toISOString(),
+    duration_minutes: info.durationMinutes,
+    session_type: 'focus',
+    completed: 1,
+  }).catch((e) => { console.error('focusTimerEngine: saveSession', e); });
+});
+
+function startEngineTick() {
+  if (focusTimerInterval) return;
+  focusTimerInterval = setInterval(() => {
+    focusTimerEngine.tick();
+  }, 500);
+}
+startEngineTick();
 
 // ── Widget Window ──
 
@@ -516,10 +521,16 @@ export function registerIpc() {
     (await import('../services/databaseService')).persistDatabase();
   });
 
-  // Shared timer state IPC
-  handle('timer:getState', () => sharedTimerState);
-  handle('timer:setState', (state: any) => {
-    sharedTimerState = { ...sharedTimerState, ...state };
+  // Shared timer state IPC (single source of truth: engine)
+  handle('timer:getState', () => focusTimerEngine.getState());
+  handle('timer:start', () => { focusTimerEngine.start(); return focusTimerEngine.getState(); });
+  handle('timer:pause', () => { focusTimerEngine.pause(); return focusTimerEngine.getState(); });
+  handle('timer:reset', () => { focusTimerEngine.reset(); return focusTimerEngine.getState(); });
+  handle('timer:skipBreak', () => { focusTimerEngine.skipBreak(); return focusTimerEngine.getState(); });
+  handle('timer:bindTask', (taskId: string | null) => { focusTimerEngine.setBoundTaskId(taskId); return focusTimerEngine.getState(); });
+  handle('timer:setConfig', (config: { focusMinutes?: number; shortBreakMinutes?: number; longBreakMinutes?: number; sessionsBeforeLongBreak?: number }) => {
+    focusTimerEngine.setConfig(config);
+    return focusTimerEngine.getState();
   });
 
   // Widget

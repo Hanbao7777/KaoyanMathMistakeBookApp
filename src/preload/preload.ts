@@ -234,9 +234,14 @@ const api: AppApi = {
   getTickTickWhiteNoiseState: () => invoke<{ enabled: boolean; noise: TickTickWhiteNoise }>('ticktick:whiteNoise:get'),
   setTickTickWhiteNoiseState: (state: { enabled: boolean; noise: TickTickWhiteNoise }) => invoke<void>('ticktick:whiteNoise:set', state),
 
-  // Shared timer state
+  // Shared timer state (single source of truth: main engine)
   getSharedTimerState: () => invoke('timer:getState'),
-  setSharedTimerState: (state: any) => invoke<void>('timer:setState', state),
+  startSharedTimer: () => invoke('timer:start'),
+  pauseSharedTimer: () => invoke('timer:pause'),
+  resetSharedTimer: () => invoke('timer:reset'),
+  skipBreakSharedTimer: () => invoke('timer:skipBreak'),
+  bindTimerTask: (taskId: string | null) => invoke('timer:bindTask', taskId),
+  setTimerConfig: (config: { focusMinutes?: number; shortBreakMinutes?: number; longBreakMinutes?: number; sessionsBeforeLongBreak?: number }) => invoke('timer:setConfig', config),
 
   // Widget
   openWidget: () => { ipcRenderer.send('widget:open'); },
