@@ -2,6 +2,8 @@ import { Check, ExternalLink, MoreHorizontal, Pause, Pin, Play, Plus, RotateCcw,
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
+import { useToast } from '../../components/Toast';
+import { runCommand } from '../../../shared/loadState';
 
 const widgetSettingsKey = 'kaoyan-widget-settings-v2';
 const widgetMinWidth = 280;
@@ -93,6 +95,7 @@ function priorityRank(task: TickTickTask) {
 }
 
 export function DesktopWidget() {
+  const { toast } = useToast();
   const [settings, setSettings] = useState<WidgetSettings>(() => readJson(widgetSettingsKey, defaultSettings));
   const [timer, setTimer] = useState<SharedTimerState>(defaultTimer);
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
@@ -176,9 +179,9 @@ export function DesktopWidget() {
     setSettings((current) => ({ ...current, ...patch }));
   }
 
-  function startTimer() { window.api.startSharedTimer().catch(() => {}); }
-  function pauseTimer() { window.api.pauseSharedTimer().catch(() => {}); }
-  function resetTimer() { window.api.resetSharedTimer().catch(() => {}); }
+  function startTimer() { runCommand(() => window.api.startSharedTimer(), '计时器启动失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
+  function pauseTimer() { runCommand(() => window.api.pauseSharedTimer(), '计时器暂停失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
+  function resetTimer() { runCommand(() => window.api.resetSharedTimer(), '计时器重置失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
 
   async function completeTask(task: TickTickTask) {
     try {

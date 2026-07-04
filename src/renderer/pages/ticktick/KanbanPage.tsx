@@ -3,22 +3,32 @@ import { CheckCircle2, Edit3, MoveRight, Trash2, XCircle } from 'lucide-react';
 import type { TickTickList, TickTickTask } from '../../../shared/types';
 import { ContextMenu } from '../../components/TickTick/ContextMenu';
 import { TaskDetailPanel } from '../../components/TickTick/TaskDetailPanel';
+import { runLoad } from '../../../shared/loadState';
 
 export function KanbanPage() {
   const [lists, setLists] = useState<TickTickList[]>([]);
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [selectedTask, setSelectedTask] = useState<TickTickTask | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [dragOverListId, setDragOverListId] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; task: TickTickTask } | null>(null);
 
   async function load() {
-    const [l, t] = await Promise.all([
-      window.api.listTickTickLists(),
-      window.api.listTickTickTasks({ includeCompleted: false }),
-    ]);
-    setLists(l);
-    setTasks(t.filter(t => !t.parent_id));
+    setError(null);
+    const outcome = await runLoad(async () => {
+      const [l, t] = await Promise.all([
+        window.api.listTickTickLists(),
+        window.api.listTickTickTasks({ includeCompleted: false }),
+      ]);
+      return { l, t };
+    }, '看板加载失败，请重试');
+    if (outcome.ok) {
+      setLists(outcome.value.l);
+      setTasks(outcome.value.t.filter(t => !t.parent_id));
+    } else {
+      setError(outcome.message);
+    }
     setLoading(false);
   }
 
@@ -81,6 +91,14 @@ export function KanbanPage() {
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-spinner" /></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="ticktick-main-content" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>

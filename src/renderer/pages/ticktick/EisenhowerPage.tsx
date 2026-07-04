@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { TickTickTask } from '../../../shared/types';
 import { TaskRow } from '../../components/TickTick/TaskRow';
+import { runLoad } from '../../../shared/loadState';
 
 const quadrants = [
   { key: 'q1', title: '重要且紧急', subtitle: '立即处理', priority: '高' as const, color: '#e53935' },
@@ -12,10 +13,18 @@ const quadrants = [
 export function EisenhowerPage() {
   const [tasks, setTasks] = useState<TickTickTask[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    const t = await window.api.listTickTickTasks({ includeCompleted: false });
-    setTasks(t.filter(t => !t.parent_id));
+    setError(null);
+    const outcome = await runLoad(async () => {
+      return window.api.listTickTickTasks({ includeCompleted: false });
+    }, '任务加载失败，请重试');
+    if (outcome.ok) {
+      setTasks(outcome.value.filter(t => !t.parent_id));
+    } else {
+      setError(outcome.message);
+    }
     setLoading(false);
   }
 
@@ -28,6 +37,14 @@ export function EisenhowerPage() {
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-spinner" /></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="ticktick-main-content">

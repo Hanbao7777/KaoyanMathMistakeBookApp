@@ -38,3 +38,24 @@ export async function runLoad<T>(
     return { ok: false, message: toReadableError(err, fallback) };
   }
 }
+
+const DEFAULT_COMMAND_ERROR = '操作失败，请重试';
+
+/**
+ * Run an async user command and capture the result as an outcome.
+ * Mirrors runLoad but is intended for command-style operations
+ * (start/pause/reset/toggle/etc.) where the caller wants a readable
+ * error message to show as toast/feedback instead of silently swallowing.
+ */
+export async function runCommand<T>(
+  fn: () => Promise<T>,
+  fallback: string = DEFAULT_COMMAND_ERROR
+): Promise<LoadOutcome<T>> {
+  try {
+    const value = await fn();
+    return { ok: true, value };
+  } catch (err) {
+    console.error(err);
+    return { ok: false, message: toReadableError(err, fallback) };
+  }
+}

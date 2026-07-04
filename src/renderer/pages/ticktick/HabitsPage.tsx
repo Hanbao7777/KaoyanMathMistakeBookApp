@@ -2,6 +2,7 @@ import { Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickHabit } from '../../../shared/types';
 import { useToast } from '../../components/Toast';
+import { runLoad } from '../../../shared/loadState';
 
 function localDate() {
   const d = new Date();
@@ -13,13 +14,18 @@ export function HabitsPage() {
   const [habits, setHabits] = useState<TickTickHabit[]>([]);
   const [newName, setNewName] = useState('');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
-    setLoading(true);
-    try {
-      const h = await window.api.listTickTickHabits();
-      setHabits(h);
-    } catch (e) { console.error('HabitsPage', e); }
+    setError(null);
+    const outcome = await runLoad(async () => {
+      return window.api.listTickTickHabits();
+    }, '习惯加载失败，请重试');
+    if (outcome.ok) {
+      setHabits(outcome.value);
+    } else {
+      setError(outcome.message);
+    }
     setLoading(false);
   }
 
@@ -49,6 +55,14 @@ export function HabitsPage() {
   }
 
   if (loading) return <div className="ticktick-main-content"><div className="tt-spinner" /></div>;
+  if (error) return (
+    <div className="ticktick-main-content">
+      <div className="tt-empty tt-load-error" role="alert">
+        <div>{error}</div>
+        <button type="button" className="tt-retry-btn" onClick={() => { setLoading(true); load(); }}>重试</button>
+      </div>
+    </div>
+  );
 
   const today = localDate();
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];

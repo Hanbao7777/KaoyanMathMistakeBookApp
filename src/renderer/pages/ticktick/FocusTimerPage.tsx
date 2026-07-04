@@ -1,6 +1,8 @@
 import { Pause, Play, SkipForward, Square } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { TickTickTask, TickTickSettings } from '../../../shared/types';
+import { useToast } from '../../components/Toast';
+import { runCommand } from '../../../shared/loadState';
 
 type TimerStatus = 'idle' | 'running' | 'paused' | 'break';
 
@@ -15,6 +17,7 @@ interface SharedTimerState {
 }
 
 export function FocusTimerPage() {
+  const { toast } = useToast();
   const [settings, setSettings] = useState<TickTickSettings | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [timerState, setTimerState] = useState<SharedTimerState>({
@@ -64,13 +67,13 @@ export function FocusTimerPage() {
 
   const status = timerState.status as TimerStatus;
 
-  function handleStart() { window.api.startSharedTimer().catch(() => {}); }
-  function handlePause() { window.api.pauseSharedTimer().catch(() => {}); }
-  function handleReset() { window.api.resetSharedTimer().catch(() => {}); }
-  function handleSkipBreak() { window.api.skipBreakSharedTimer().catch(() => {}); }
+  function handleStart() { runCommand(() => window.api.startSharedTimer(), '计时器启动失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
+  function handlePause() { runCommand(() => window.api.pauseSharedTimer(), '计时器暂停失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
+  function handleReset() { runCommand(() => window.api.resetSharedTimer(), '计时器重置失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
+  function handleSkipBreak() { runCommand(() => window.api.skipBreakSharedTimer(), '跳过休息失败').then(r => { if (!r.ok) toast(r.message, 'error'); }); }
 
   function handleBindTask(taskId: string | null) {
-    window.api.bindTimerTask(taskId).catch(() => {});
+    runCommand(() => window.api.bindTimerTask(taskId), '绑定任务失败').then(r => { if (!r.ok) toast(r.message, 'error'); });
   }
 
   const secondsLeft = Math.max(0, timerState.secondsLeft);
