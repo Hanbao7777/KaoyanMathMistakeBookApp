@@ -142,12 +142,55 @@ Gateway 与 Database Coordinator 的职责边界固定为：
 
 ```text
 transport → gateway authentication → schema validation → policy/risk
-          → idempotency admission → command/query bus
-          → database coordinator serialization/transaction/persist/revision
-          → domain events → audit/result
+          → coordinator control-write admission/reservation
+          → command/query bus
+          → database coordinator one transaction: domain mutation + dataRevision
+            + execution receipt + terminal idempotency + required audit
+          → atomic publish → domain events → result/replay
 ```
 
 Gateway 不实现第二套写入队列；Database Coordinator 是数据库串行化、事务、持久化和修订号的唯一所有者。
+
+##### Phase B Gateway Module and authentication Seam
+
+Phase B places one deep `AgentGateway` Module at the application-admission seam. Its Interface is deliberately only:
+
+```ts
+interface AgentGateway {
+  execute(commandEnvelope: AgentCommandEnvelope, principal: AgentPrincipal): Promise<AgentExecuteOutcome>;
+  query(queryEnvelope: AgentQueryEnvelope, principal: AgentPrincipal): Promise<AgentQueryOutcome>;
+}
+```
+
+The caller supplies a validated, unforgeable `AgentPrincipal`, never a bearer token, signature, public key, or pairing secret. `AgentGateway` owns catalog lookup, runtime schema validation, descriptor-bounded policy/risk resolution, approval/change-set workflow routing, idempotency admission and replay, redaction/pagination, conversion to a trusted application `ExecutionContext`, audit admission/result records, and stable error outcomes. It calls the existing Command Bus or Query Bus exactly once per admitted operation. Preview, approval, apply, audit search, revoke, and policy inspection are workflow commands or queries in these two methods; they are not extra Gateway methods and do not create shallow pass-through Modules.
+
+`ClientAuthenticator` is a separate deep Module at the credential-to-principal seam:
+
+```ts
+interface ClientAuthenticator {
+  authenticate(credentials: RawClientCredentials): Promise<AgentPrincipal>;
+}
+```
+
+It consumes raw credentials, validates their transport-specific proof, checks enablement/revocation/session conditions, loads the client registry record, and issues an immutable principal containing `clientId`, display identity, granted scopes, trust profile, credential binding/fingerprint, and authentication time. The Gateway cannot construct a privileged principal and never consumes raw OAuth tokens or signatures. Phase B has a renderer Adapter (trusted first-party, no pairing/OAuth) and a test Adapter. Phase C adds HTTP OAuth and stdio public-key Adapters at this same seam without changing `AgentGateway`.
+
+The Renderer is a trusted first-party Adapter, not a second policy or persistence path. Once a domain is migrated, its Renderer writes and external writes enter the same Gateway with different principals; both share the catalog, schemas, idempotency, revision checks, risk decisions, recovery protocol, audit ledger, and error mapping. Renderer identity grants only local-first-party authority and does not imply that arbitrary renderer payloads can select a client, trust profile, or policy.
+
+The internal implementation may use local-substitutable seams for clock, canonical hashing, registry persistence, policy persistence, durable ledger storage, and event observation. Those are internal seams, not additional caller Interfaces. This gives callers leverage from two Gateway operations while keeping policy, authentication, and durability knowledge local.
+
+##### Execution receipt, revision, and audit protocol
+
+`DatabaseCoordinator` remains the single physical writer queue. Phase B adds two internal execution modes at its seam, neither callable by `AgentGateway`: `executeBusinessWrite` and `executeControlWrite`. Both take the same coordinator admission/serialization/transaction/atomic-publish path. `executeBusinessWrite` is the existing application-write mode: it may change domain rows and increments `dataRevision` exactly once only when the domain mutation reports a semantic change. `executeControlWrite` may change only control-plane rows and increments a distinct `controlRevision` exactly once when changed; it never changes `dataEpoch` or `dataRevision`, so policy, audit, idempotency, and query records cannot invalidate a caller's expected business version.
+
+`control_metadata` stores non-negative `control_revision` beside epoch/data revision. It is a diagnostic/control concurrency token, not a substitute for the caller-facing `DataVersion`. Internally, persistence validates a `DatabaseGeneration = { dataEpoch, dataRevision, controlRevision }`: same-epoch candidate recovery orders first by `dataRevision` and then by `controlRevision`, while cross-epoch selection still requires committed epoch-transition evidence. A control write increments only `controlRevision`; a Gateway business transaction that changes domain rows and atomically terminalizes a receipt increments `dataRevision` and `controlRevision` once each. An ordinary internal business write without control-plane changes increments only `dataRevision`. This makes a control-only publication, and a semantic business no-op with a terminal receipt, distinguishable from its admitted predecessor after a crash. Atomic publication, candidate inspection, expected-generation verification, and startup recovery all use the full internal generation.
+
+The coordinator owns both increment capabilities and rejects a business-mode operation that mutates only control tables or a control-mode operation that mutates domain tables. Both modes publish the complete `sql.js` image durably before returning. This is one queue and one physical database owner, not a second queue or a Gateway database path.
+
+`CommandBus` gains an internal `executeWithExecutionReceipt` seam used only by the Gateway implementation after control admission. Its caller Interface remains `execute`; the receipt seam is an implementation capability injected at composition and unavailable to Renderer adapters or transports. In the coordinator's *same SQL transaction*, after the handler's domain mutation and before `COMMIT`, the hook: validates the admitted receipt and any R4 reservation; increments `dataRevision` at most once; writes the immutable terminal execution receipt/idempotency outcome; consumes the R4 reservation when applicable; and appends the required terminal audit record/hash. The receipt hook failure rolls back the domain mutation and returns no success. The existing atomic publisher then makes that one image durable; only after verified live-file reopen may Command Bus publish domain events and Gateway return the outcome.
+
+Control admission is a separate, serialized `executeControlWrite`: it inserts or reads a canonical `{ clientId, requestId }` receipt, detects a different payload hash conflict, and records an `admitted` audit event. It creates a pending workflow or atomically reserves an R4 grant when required. It does not claim execution success. Queries and denials use `executeControlWrite` to append their auditable record and may return only after that write is durably published. If required audit materialization fails, a denial/query returns `AUDIT_UNAVAILABLE`; a business command rolls back before commit. There is no best-effort post-command audit gap.
+
+Crash recovery examines the Phase A selected live candidate before reopening external writes. A selected candidate containing a terminal receipt contains the matching domain result, R4 consumption, and terminal audit record by the same transaction. A selected candidate containing only `admitted`/`reserved` proves no business transaction committed in that candidate; recovery writes one control-mode `interrupted_precommit` receipt/audit record and releases its reservation. Candidate ambiguity remains a Phase A recovery fence; no retry or result is returned until it is resolved. A crash after durable publication but before the response is replayed from the terminal receipt, never re-executed. This replaces any outbox for required audit/receipt materialization; domain-event notification remains post-publish and is not a success condition.
 
 #### Transport Adapters
 
@@ -297,6 +340,8 @@ interface OperationDescriptor {
 }
 ```
 
+Catalog descriptors are code-defined, runtime-validated, and versioned with a canonical catalog hash. Persisted policy may select only behavior explicitly allowed by the descriptor (for example, a lower max page size or a confirmation requirement); it cannot add scopes, lower a resolved risk, remove required idempotency, remove a recovery requirement, or disable a safety invariant. Every R4 grant and approval records the catalog version/hash and is rejected when it no longer matches.
+
 风险由校验后的参数和实际解析出的资源共同决定，不能只按工具名静态判断。例如“删除记录但保留图片”和“同时物理删除图片”必须得到不同风险；“设置数据根目录但不迁移”和“跨卷迁移全部数据”也必须不同。catalog 必须覆盖数据根目录、物理删除、备份删除、导入资产删除、外部进程/OCR、网络模型调用、AI 配置和内容导出等现有权限类别。
 
 ### 5.2 能力域
@@ -408,6 +453,10 @@ audit.read
 
 R4 中的清空全部数据、恢复数据库和真实数据根目录迁移，默认要求 App 内用户可见确认。完全控制模式可以通过用户预先创建的限时授权窗口自动执行，但授权必须绑定具体操作、目标备份或目标目录、最大影响范围和有效次数；笼统的“允许所有 R4”不能永久绕过可见确认。删除单个备份、批次或物理文件可按 operation catalog、恢复资产和用户策略获得更细粒度的长期授权。
 
+Trusted paired Codex defaults to 完全控制: R0-R3 auto-execute after catalog and policy admission, while R4 never receives blanket or permanent approval. An R4 execution requires an operation-bound, single-use or time-limited grant tied to the descriptor, canonical payload/target, catalog version, maximum impact, and recovery conditions. A policy may demand a visible confirmation more often, but may never turn that grant into an unrestricted R4 bypass.
+
+An R4 grant is not consumed optimistically. During serialized control admission, Gateway's internal workflow implementation atomically changes an eligible grant from `active` to `reserved` and binds `clientId`, `requestId`, payload hash, affected-set hash, base epoch/revision, catalog hash, and reservation expiry. A unique active/reserved grant row and the single coordinator queue permit exactly one reservation. The receipt hook consumes that exact reservation only in the same business transaction that writes the terminal receipt and audit result. A definite pre-commit rollback finalizes a failed receipt/audit and releases the reservation in one later control write; an ambiguous publish never releases it and fences external writes. Restart reconciles only after candidate recovery: terminal receipt means consumed, admitted/reserved without a terminal receipt means interrupted-before-commit and can be released with an audit record. Concurrent callers receive `R4_GRANT_RESERVED` or `R4_GRANT_CONSUMED`, never a second execution.
+
 ### 6.4 安全不变量
 
 即使完全控制模式也必须满足：
@@ -447,6 +496,10 @@ R4 中的清空全部数据、恢复数据库和真实数据根目录迁移，�
 - 审计检索、导出和保留策略。
 - Codex、Claude 等客户端配置说明。
 - 隐私提示：哪些数据可能因外部模型调用而离开本机。
+
+Phase B treats this as a hard product gate, not a future settings placeholder: it must expose enable/status, clients and immediate revoke, scopes/trust, R4 grants, pending approvals/change sets, sessions and termination, audit search/export, active policy/catalog versions, and the external-data privacy disclosure. The Electron main process owns state mutation, preload exposes only typed control-center commands/queries, and the Renderer is a presentation Adapter over those Interfaces.
+
+When external control is disabled, every external principal is denied before business admission. The local Renderer management principal remains usable only for a narrow code-catalog allowlist: status, enable/disable, client recovery/revoke, session termination, audit verification/search/export, and policy/catalog/privacy inspection. It does not receive any question, review, task, focus, file, backup, or generic business operation merely by being Renderer. Catalog mismatch fences external business writes while retaining this narrow local recovery allowlist so the user can inspect evidence, revoke clients, or disable control; local recovery actions remain audited by control writes.
 
 配对由 App 内控制中心统一批准，但凭据协议按传输区分：stdio launcher 注册客户端签名公钥，直接 Streamable HTTP 客户端使用第 4.1 节的 OAuth 2.1 授权。一次性短码只能用于把待批准请求关联到当前 App UI，不能充当长期凭据或直接调用 MCP。
 
@@ -633,6 +686,8 @@ interface NavigateIntent {
 - 幂等记录具有明确 TTL，但关键批量命令保留更长时间。
 - 创建类命令可额外接受调用方稳定的 `externalRef`。
 
+Every Gateway write is durable idempotency keyed by `{ clientId, requestId, canonicalPayloadHash }`. The unique admission key is `{ clientId, requestId }`: the same hash replays only a terminal receipt; a different hash returns a stable request conflict. Admission writes `admitted` under `controlRevision`; a successful business transaction atomically writes `completed`, its result, and required audit record. A known pre-commit failure is terminalized by one control transaction with its failure audit. A receipt left non-terminal after a selected-candidate restart is reconciled as `interrupted_precommit`, never re-executed automatically. A publication that remains ambiguous is recorded as `indeterminate` only after candidate recovery makes that control write safe, while external writes stay fenced. Ordinary terminal records retain 30 days. R4 records, jobs, and change sets follow their audit lifecycle rather than the ordinary TTL. Candidate ambiguity never invents a success state.
+
 ### 12.4 数据 epoch 与 revision
 
 `dataRevision` 只在一个 `dataEpoch` 内单调递增，二者共同构成并发令牌：
@@ -668,6 +723,8 @@ interface DataVersion {
 - 支持轮转、保留期限和用户导出。
 - MCP stdio 的协议输出与日志严格分离。
 - 可从控制中心查看“AI 刚刚做了什么”和“为什么需要批准”。
+
+Audit is a local append-only, tamper-evident ledger. Each record commits its canonical record hash and the previous record hash within a numbered segment; verification detects deletion, reorder, or mutation. Clients have no delete Interface. Control-mode records cover authentication, admission, denial, query completion/failure, known business failure, grant reserve/release, client/policy/catalog changes, and restart reconciliation/indeterminate publication. Business-mode records cover a successful execution receipt and result in the same transaction. A business result is returned only after its terminal receipt/audit record and live database image verify; a query or denial is returned only after its control audit write verifies. If audit construction/storage fails before commit, the command rolls back; if durable publication is ambiguous, external writes fence and startup resolves the Phase A candidate before any replay or indeterminate control record. R0-R2 ordinary records retain at least 180 days; R3/R4, authentication, pairing, revocation, and policy/catalog events retain at least one year. App-controlled cleanup is itself R4, emits a final verifiable segment record, and begins a new segment with an explicit anchor to the prior segment. Search/export paginates by ledger sequence, applies principal-scoped redaction, and exports verification metadata rather than secrets.
 
 ## 14. 建议代码组织
 
@@ -868,9 +925,14 @@ tests/
 | --- | --- |
 | AI 形态 | 外部智能体，不在 App 内复制聊天产品 |
 | 控制边界 | Agent Gateway + Application Command/Query Bus |
+| Gateway Interface | 仅 `execute(commandEnvelope, principal)` 与 `query(queryEnvelope, principal)` |
+| 身份 Seam | ClientAuthenticator 签发不可伪造 AgentPrincipal；Gateway 不接收原始凭据 |
 | 数据所有权 | Electron 主进程唯一持有和写入数据库 |
 | 本地传输 | App 内 Streamable HTTP + stdio launcher |
 | 权限方向 | 完整能力面 + 用户可选高自治/完全控制 |
+| 可信 Codex 默认 | 完全控制；R0-R3 自动执行，R4 仅 operation-bound 一次性/限时授权 |
+| Catalog 与 policy | code-defined/versioned catalog；policy 只能在 descriptor bounds 内变化 |
+| Phase B 产品门槛 | 完整控制中心、耐久幂等、tamper-evident 审计及首两批领域 Gateway 迁移 |
 | 批量写入 | 持久变更集、策略审批、事务执行、可恢复设计 |
 | 长任务 | App 内持久作业，MCP Tasks 仅作可选映射 |
 | UI 联动 | 领域事件 + 结构化导航，不依赖模拟点击 |
