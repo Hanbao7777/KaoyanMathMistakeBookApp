@@ -1,4 +1,28 @@
+// This versions the control_metadata row shape only. Existing migrations remain
+// authoritative for application schema upgrades until a unified migrator lands.
+export const controlMetadataSchemaVersion = 1;
+
+export const controlMetadataSchemaSql = `
+CREATE TABLE IF NOT EXISTS control_metadata (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data_epoch TEXT NOT NULL CHECK (length(trim(data_epoch)) > 0),
+  data_revision INTEGER NOT NULL CHECK (
+    typeof(data_revision) = 'integer'
+    AND data_revision >= 0
+    AND data_revision <= 9007199254740991
+  ),
+  schema_version INTEGER NOT NULL CHECK (
+    typeof(schema_version) = 'integer'
+    AND schema_version >= 1
+    AND schema_version <= 9007199254740991
+  ),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0)
+);
+`;
+
 export const schemaSql = `
+${controlMetadataSchemaSql}
+
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,

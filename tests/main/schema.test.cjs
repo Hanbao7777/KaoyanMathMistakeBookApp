@@ -33,6 +33,7 @@ test('initializeDatabase creates critical application tables', async () => {
     'questions',
     'review_logs',
     'knowledge_points',
+    'control_metadata',
     'ticktick_lists',
     'ticktick_tasks',
     'ticktick_bridge'
@@ -41,6 +42,39 @@ test('initializeDatabase creates critical application tables', async () => {
   for (const table of tables) {
     assert.equal(tableExists(db, table), true, `${table} should exist`);
   }
+});
+
+test('control_metadata enforces singleton and safe metadata constraints', async () => {
+  const db = await databaseService.getDatabase();
+  const columns = tableColumns(db, 'control_metadata');
+  assert.deepEqual(columns, ['id', 'data_epoch', 'data_revision', 'schema_version', 'updated_at']);
+
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (2, 'epoch', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, '', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', -1, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 1.5, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 9007199254740992, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+
+  db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 0, 1, '2026-07-15T00:00:00.000Z')");
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'other', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    /UNIQUE constraint failed/
+  );
 });
 
 test('initializeDatabase creates critical TickTick task columns', async () => {

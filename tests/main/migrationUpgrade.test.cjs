@@ -11,6 +11,7 @@ const {
 } = require('./helpers/mainTestEnv.cjs');
 
 const pathService = requireMain('services/pathService.js');
+const { bootstrapControlMetadata } = requireMain('persistence/databaseBootstrap.js');
 
 const dataRoot = path.join(testRoot, 'migration-upgrade-data-root');
 
@@ -160,6 +161,10 @@ test.beforeEach(writeOldDatabaseSnapshot);
 test('initializeDatabase upgrades a minimal old mistake-book and TickTick database', async () => {
   await databaseService.initializeDatabase();
   const db = await databaseService.getDatabase();
+  const bootstrap = bootstrapControlMetadata(db, {
+    createEpoch: () => '00000000-0000-4000-8000-000000000001',
+    now: () => '2026-07-15T00:00:00.000Z'
+  });
 
   const questionColumns = tableColumns(db, 'questions');
   for (const column of ['consecutive_correct', 'next_review_at', 'subject']) {
@@ -171,6 +176,14 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_review_logs_reviewed_at'), true);
+  assert.equal(bootstrap.changed, true);
+  assert.deepEqual(one(db, 'SELECT * FROM control_metadata'), {
+    id: 1,
+    data_epoch: '00000000-0000-4000-8000-000000000001',
+    data_revision: 0,
+    schema_version: 1,
+    updated_at: '2026-07-15T00:00:00.000Z'
+  });
 
   const questionRow = one(db, 'SELECT * FROM questions WHERE id = ?', [101]);
   assert.equal(questionRow.title, '旧库极限错题');
