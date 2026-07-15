@@ -1,15 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { dialog } from 'electron';
 import AdmZip from 'adm-zip';
 import * as XLSX from 'xlsx';
-import { createQuestion, inferSubjectFromCategory, linkQuestionKnowledgePoints, normalizeSubject } from './databaseService';
+import { createInternalExecutionContext } from '../application/executionContext';
+import { getDatabaseCoordinator, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
 import { getPaths } from './pathService';
-import { createImportBatch, finalizeImportBatch, recordImportAsset, recordImportBatchItem } from './importBatchService';
-import { getDatabase, persistDatabase } from './databaseService';
 import type {
   Difficulty,
+  MathSubject,
   MasteryLevel,
+  Question,
   QuestionInput,
   StructuredImportKind,
   StructuredImportPreview,
@@ -37,6 +39,7 @@ const TEMPLATE_HEADERS = [
 
 const ALLOWED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const DIFFICULTY_VALUES = new Set(['简单', '中等', '困难', '压轴']);
+const SUBJECT_VALUES = new Set<MathSubject>(['高等数学', '线性代数', '概率论', '其他']);
 const MASTERY_MAP = new Map<string, MasteryLevel>([
   ['未掌握', '未掌握'],
   ['有点懂', '较弱'],
@@ -51,6 +54,28 @@ const MASTERY_MAP = new Map<string, MasteryLevel>([
 interface ImportSession {
   preview: StructuredImportPreview;
   tempDir?: string;
+}
+
+type RowStatus = 'pending' | 'invalid' | 'failed' | 'partial' | 'succeeded';
+
+interface DurableRowOutcome {
+  rowNumber: number;
+  title: string;
+  status: RowStatus;
+  questionId?: number;
+  imageStatus: 'not_requested' | 'pending' | 'committed' | 'failed';
+  knowledgeStatus: 'not_requested' | 'pending' | 'committed' | 'failed';
+  reason?: string;
+  warnings: string[];
+}
+
+interface StructuredBatchMetadata {
+  schemaVersion: 1;
+  kind: StructuredImportKind;
+  totalRows: number;
+  phase: 'processing' | 'completed' | 'cleanup_failed';
+  cleanup: 'pending' | 'completed' | 'failed';
+  rows: DurableRowOutcome[];
 }
 
 const sessions = new Map<string, ImportSession>();
@@ -83,6 +108,18 @@ function normalizeDifficulty(value: unknown): Difficulty {
 function normalizeMastery(value: unknown): MasteryLevel {
   const text = withDefault(value, '未掌握');
   return MASTERY_MAP.get(text) ?? '未掌握';
+}
+
+function inferSubjectFromCategory(category: unknown): MathSubject {
+  const text = asText(category);
+  if (text === '线性代数' || text === '行列式与矩阵' || text === '线性方程组与向量' || text === '特征值与二次型') return '线性代数';
+  if (text === '概率论') return '概率论';
+  return '高等数学';
+}
+
+function normalizeSubject(value: unknown, fallback: MathSubject): MathSubject {
+  const text = asText(value) as MathSubject;
+  return SUBJECT_VALUES.has(text) ? text : fallback;
 }
 
 function parseTags(value: unknown) {
@@ -286,6 +323,149 @@ function toQuestionInput(row: StructuredImportRow, batchId?: string): QuestionIn
   };
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function createBatchId() {
+  return `wrong_questions-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function commandContext(traceId: string) {
+  return createInternalExecutionContext({
+    concurrency: 'none',
+    requestId: crypto.randomUUID(),
+    traceId
+  });
+}
+
+function readMetadata(database: import('sql.js').Database, batchId: string): StructuredBatchMetadata {
+  const statement = database.prepare('SELECT metadata_json FROM import_batches WHERE id = ?');
+  try {
+    statement.bind([batchId]);
+    if (!statement.step()) throw new Error('结构化导入批次不存在');
+    const value = statement.getAsObject().metadata_json;
+    if (typeof value !== 'string') throw new Error('结构化导入批次元数据无效');
+    return JSON.parse(value) as StructuredBatchMetadata;
+  } finally {
+    statement.free();
+  }
+}
+
+async function createStructuredBatch(session: ImportSession) {
+  const coordinator = await getDatabaseCoordinator();
+  const batchId = createBatchId();
+  const metadata: StructuredBatchMetadata = {
+    schemaVersion: 1,
+    kind: session.preview.kind,
+    totalRows: session.preview.totalRows,
+    phase: 'processing',
+    cleanup: 'pending',
+    rows: session.preview.rows.map((row) => ({
+      rowNumber: row.rowNumber,
+      title: row.title,
+      status: 'pending',
+      imageStatus: row.hasImage ? 'pending' : 'not_requested',
+      knowledgeStatus: row.knowledge_points.length ? 'pending' : 'not_requested',
+      warnings: []
+    }))
+  };
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      database.run(
+        `INSERT INTO import_batches (
+          id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+        ) VALUES (?, 'wrong_questions', ?, ?, '', ?, 0, 0, 'active', ?, NULL)`,
+        [batchId, path.basename(session.preview.sourceFile), path.basename(session.preview.sourceFile), nowIso(), JSON.stringify(metadata)]
+      );
+      return { changed: true, value: batchId };
+    }
+  });
+  return batchId;
+}
+
+async function recordRowOutcome(batchId: string, outcome: DurableRowOutcome, question?: Question) {
+  const coordinator = await getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      const metadata = readMetadata(database, batchId);
+      const index = metadata.rows.findIndex((row) => row.rowNumber === outcome.rowNumber);
+      if (index < 0) throw new Error(`结构化导入行不存在：${outcome.rowNumber}`);
+      metadata.rows[index] = outcome;
+      if (question) {
+        database.run(
+          'INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, ?, ?, ?, ?)',
+          [batchId, 'questions', String(question.id), 'created', nowIso()]
+        );
+        for (const image of [...question.question_images, ...question.solution_images]) {
+          const absolutePath = path.join(getPaths().root, image.file_path.replaceAll('/', path.sep));
+          database.run(
+            'INSERT INTO import_assets (batch_id, asset_type, file_path, created_at, deleted_at) VALUES (?, ?, ?, ?, NULL)',
+            [batchId, 'question_image', absolutePath, nowIso()]
+          );
+        }
+      }
+      database.run('UPDATE import_batches SET metadata_json = ? WHERE id = ?', [JSON.stringify(metadata), batchId]);
+      return { changed: true, value: null };
+    }
+  });
+}
+
+async function resolveKnowledgePoints(values: readonly string[]) {
+  const database = await getReadOnlyDatabase();
+  const nodeIds: string[] = [];
+  const warnings: string[] = [];
+  for (const token of values) {
+    const byNodeId = database.select<{ node_id: string }>('SELECT node_id FROM knowledge_points WHERE node_id = ?', [token]);
+    const matches = byNodeId.length
+      ? byNodeId
+      : database.select<{ node_id: string }>('SELECT node_id FROM knowledge_points WHERE title = ? ORDER BY level ASC, sort_order ASC', [token]);
+    if (!matches.length) warnings.push(`未匹配到知识点：${token}`);
+    else {
+      if (!byNodeId.length && matches.length > 1) warnings.push(`知识点标题重复，已使用第一个匹配项：${token}`);
+      nodeIds.push(matches[0].node_id);
+    }
+  }
+  return { nodeIds, warnings };
+}
+
+async function finalizeStructuredBatch(batchId: string, result: StructuredImportResult, cleanup: 'completed' | 'failed') {
+  const coordinator = await getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      const metadata = readMetadata(database, batchId);
+      const unresolved = metadata.rows.filter((row) => row.status === 'pending').length;
+      metadata.cleanup = cleanup;
+      metadata.phase = cleanup === 'completed' && unresolved === 0 ? 'completed' : 'cleanup_failed';
+      const itemStatement = database.prepare('SELECT COUNT(*) AS count FROM import_batch_items WHERE batch_id = ?');
+      const assetStatement = database.prepare('SELECT COUNT(*) AS count FROM import_assets WHERE batch_id = ?');
+      try {
+        itemStatement.bind([batchId]);
+        assetStatement.bind([batchId]);
+        itemStatement.step();
+        assetStatement.step();
+        const itemCount = Number(itemStatement.getAsObject().count ?? 0);
+        const assetCount = Number(assetStatement.getAsObject().count ?? 0);
+        const status = result.successCount === 0 && result.failCount > 0 ? 'failed' : 'active';
+        database.run(
+          'UPDATE import_batches SET item_count = ?, asset_count = ?, status = ?, metadata_json = ? WHERE id = ?',
+          [itemCount, assetCount, status, JSON.stringify(metadata), batchId]
+        );
+      } finally {
+        itemStatement.free();
+        assetStatement.free();
+      }
+      return { changed: true, value: null };
+    }
+  });
+}
+
 export async function confirmStructuredImport(sessionId: string): Promise<StructuredImportResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('导入会话已失效，请重新选择文件');
@@ -297,48 +477,84 @@ export async function confirmStructuredImport(sessionId: string): Promise<Struct
     failures: [],
     warnings: []
   };
-  const batchId = await createImportBatch({
-    type: 'wrong_questions',
-    name: path.basename(session.preview.sourceFile),
-    sourceFileName: path.basename(session.preview.sourceFile),
-    metadata: { kind: session.preview.kind, totalRows: session.preview.totalRows }
-  });
-  const database = await getDatabase();
+  const traceId = crypto.randomUUID();
+  const batchId = await createStructuredBatch(session);
+  const application = await getQuestionsApplication();
 
-  try {
-    for (const row of session.preview.rows) {
-      if (!row.isValid) {
-        result.failCount += 1;
-        result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason: row.errors.join('；') });
-        continue;
-      }
-
-      try {
-        const saved = await createQuestion(toQuestionInput(row, batchId));
-        recordImportBatchItem(database, batchId, 'questions', saved.id);
-        if (row.resolved_image_path && row.hasImage) recordImportAsset(database, batchId, 'question_image', row.resolved_image_path);
-        if (row.knowledge_points.length) {
-          const warnings = await linkQuestionKnowledgePoints(saved.id, row.knowledge_points, 'gpt');
-          for (const message of warnings) {
-            result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message });
-          }
-        }
-        result.successCount += 1;
-        if (row.hasImage) result.imageCopiedCount += 1;
-      } catch (error) {
-        result.failCount += 1;
-        result.failures.push({
-          rowNumber: row.rowNumber,
-          title: row.title,
-          reason: error instanceof Error ? error.message : String(error)
-        });
-      }
+  for (const row of session.preview.rows) {
+    if (!row.isValid) {
+      const reason = row.errors.join('；');
+      result.failCount += 1;
+      result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
+      await recordRowOutcome(batchId, {
+        rowNumber: row.rowNumber,
+        title: row.title,
+        status: 'invalid',
+        imageStatus: row.hasImage ? 'failed' : 'not_requested',
+        knowledgeStatus: row.knowledge_points.length ? 'failed' : 'not_requested',
+        reason,
+        warnings: []
+      });
+      continue;
     }
-    finalizeImportBatch(database, batchId, result.failCount && !result.successCount ? 'failed' : 'active');
-    persistDatabase();
-  } finally {
-    cleanupStructuredImport(sessionId);
+
+    let saved: Question | undefined;
+    try {
+      const created = await application.execute(
+        { type: 'questions.create', payload: { input: toQuestionInput(row, batchId), externalRef: `${batchId}:${row.rowNumber}` } },
+        commandContext(traceId)
+      );
+      saved = created.value;
+      const resolved = await resolveKnowledgePoints(row.knowledge_points);
+      for (const message of resolved.warnings) {
+        result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message });
+      }
+      if (resolved.nodeIds.length) {
+        await application.execute({
+          type: 'questions.link_knowledge',
+          payload: { questionId: saved.id, knowledgeNodeIds: resolved.nodeIds, matchType: 'gpt' }
+        }, commandContext(traceId));
+      }
+      await recordRowOutcome(batchId, {
+        rowNumber: row.rowNumber,
+        title: row.title,
+        status: 'succeeded',
+        questionId: saved.id,
+        imageStatus: row.hasImage ? 'committed' : 'not_requested',
+        knowledgeStatus: row.knowledge_points.length ? 'committed' : 'not_requested',
+        warnings: resolved.warnings
+      }, saved);
+      result.successCount += 1;
+      if (row.hasImage) result.imageCopiedCount += 1;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      result.failCount += 1;
+      result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
+      await recordRowOutcome(batchId, {
+        rowNumber: row.rowNumber,
+        title: row.title,
+        status: saved ? 'partial' : 'failed',
+        questionId: saved?.id,
+        imageStatus: saved && row.hasImage ? 'committed' : row.hasImage ? 'failed' : 'not_requested',
+        knowledgeStatus: row.knowledge_points.length ? 'failed' : 'not_requested',
+        reason,
+        warnings: []
+      }, saved);
+    }
   }
+
+  let cleanup: 'completed' | 'failed' = 'completed';
+  try {
+    cleanupStructuredImport(sessionId);
+  } catch (error) {
+    cleanup = 'failed';
+    result.warnings?.push({
+      rowNumber: 0,
+      title: path.basename(session.preview.sourceFile),
+      message: `临时文件清理失败：${error instanceof Error ? error.message : String(error)}`
+    });
+  }
+  await finalizeStructuredBatch(batchId, result, cleanup);
 
   return result;
 }

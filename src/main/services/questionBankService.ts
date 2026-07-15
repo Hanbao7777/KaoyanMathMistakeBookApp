@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import crypto from 'node:crypto';
 import { dialog, shell } from 'electron';
 import AdmZip from 'adm-zip';
 import * as XLSX from 'xlsx';
+import type { Database, SqlValue } from 'sql.js';
+import { AgentError } from '../../shared/agent/errors';
 import { CATEGORIES, DIFFICULTIES, ERROR_REASONS, MASTERY_LEVELS, QUESTION_TYPES } from '../../shared/options';
 import type {
   AddExternalQuestionToMistakesResult,
@@ -23,26 +26,70 @@ import type {
 } from '../../shared/types';
 import {
   allSql,
-  createQuestion,
   getDatabase,
+  getDatabaseCoordinator,
   inferSubjectFromCategory,
-  lastInsertId,
-  linkQuestionKnowledgePoints,
   normalizeSubject,
   oneSql,
-  persistDatabase,
-  runSql
 } from './databaseService';
 import { getPaths } from './pathService';
 import {
-  createImportBatch,
-  finalizeImportBatch,
-  recordImportAsset,
-  recordImportBatchItem
-} from './importBatchService';
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
+  OperationManifestStore,
+  type OperationFile,
+  type OperationManifest,
+  type OperationManifestError
+} from '../persistence/operationJournal';
+import { assertDatabaseMutationScope, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
+import { QuestionRepository, type QuestionImageInsert } from '../application/questions/questionRepository';
+import { createManagedImagePath } from './fileService';
 
 const QUESTION_FORMATS = new Set<QuestionFormat>(['选择题', '填空题', '解答题']);
 const ATTEMPT_RESULTS = new Set<ExternalQuestionResult>(['correct', 'wrong', 'no_idea']);
+
+function mutateSql(database: Database, scope: DatabaseMutationScope, sql: string, params: readonly unknown[] = []) {
+  assertDatabaseMutationScope(scope, database);
+  const statement = database.prepare(sql);
+  try {
+    statement.bind([...params] as SqlValue[]);
+    statement.step();
+  } finally {
+    statement.free();
+  }
+}
+
+function currentVersion(database: Database) {
+  const row = oneSql<{ data_epoch: string; data_revision: number }>(database, 'SELECT data_epoch, data_revision FROM control_metadata WHERE id = 1');
+  if (!row) throw new Error('Question-bank mutation requires control metadata');
+  return { dataEpoch: row.data_epoch, dataRevision: row.data_revision };
+}
+
+function plannedVersion(database: Database) {
+  const version = currentVersion(database);
+  if (version.dataRevision === Number.MAX_SAFE_INTEGER) throw new Error('Question-bank revision overflow');
+  return { before: version, after: { dataEpoch: version.dataEpoch, dataRevision: version.dataRevision + 1 } };
+}
+
+function operationError(error: unknown, phase: string): OperationManifestError {
+  return {
+    code: typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code.slice(0, 200)
+      : 'question_bank_operation_failed',
+    phase,
+    message: error instanceof Error ? error.message.slice(0, 1_000) || 'Question-bank operation failed' : 'Question-bank operation failed'
+  };
+}
+
+function addToMistakesJournal() {
+  const root = path.normalize(path.join(getPaths().data, 'operation-journal'));
+  const store = new OperationManifestStore(root);
+  return {
+    store,
+    journal: new OperationJournal(store)
+  };
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -278,6 +325,63 @@ function duplicateWhere(row: ReturnType<typeof normalizeExternalRow>, fallbackSo
   };
 }
 
+function recordImportAssetMutation(
+  database: Database,
+  scope: DatabaseMutationScope,
+  batchId: string,
+  assetType: string,
+  filePath: string,
+  timestamp: string
+) {
+  if (!filePath) return;
+  mutateSql(
+    database,
+    scope,
+    'INSERT INTO import_assets (batch_id, asset_type, file_path, created_at, deleted_at) VALUES (?, ?, ?, ?, NULL)',
+    [batchId, assetType, filePath, timestamp]
+  );
+}
+
+function recordImportBatchItemMutation(
+  database: Database,
+  scope: DatabaseMutationScope,
+  batchId: string,
+  targetId: number,
+  timestamp: string
+) {
+  mutateSql(
+    database,
+    scope,
+    'INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, ?, ?, ?, ?)',
+    [batchId, 'external_questions', String(targetId), 'created', timestamp]
+  );
+}
+
+function finalizeImportBatchMutation(database: Database, scope: DatabaseMutationScope, batchId: string, status: 'active' | 'failed') {
+  const itemCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM import_batch_items WHERE batch_id = ?', [batchId])?.count ?? 0;
+  const assetCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM import_assets WHERE batch_id = ?', [batchId])?.count ?? 0;
+  mutateSql(database, scope, 'UPDATE import_batches SET item_count = ?, asset_count = ?, status = ? WHERE id = ?', [itemCount, assetCount, status, batchId]);
+}
+
+function createImportBatchMutation(
+  database: Database,
+  scope: DatabaseMutationScope,
+  input: { id: string; name: string; sourceFileName: string; source: string; metadata: unknown; status?: 'active' | 'failed' }
+) {
+  mutateSql(
+    database,
+    scope,
+    `INSERT INTO import_batches (
+      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'question_bank', ?, ?, ?, ?, 0, 0, ?, ?, NULL)`,
+    [input.id, input.name, input.sourceFileName, input.source, nowIso(), input.status ?? 'active', JSON.stringify(input.metadata)]
+  );
+}
+
+function lastInsertId(database: Database) {
+  return Number(oneSql<{ id: number }>(database, 'SELECT last_insert_rowid() AS id')?.id);
+}
+
 export async function importQuestionBankZipFromPath(filePath: string): Promise<QuestionBankImportResult> {
   const tempDir = path.join(getPaths().temp, `question-bank-${Date.now()}`);
   fs.mkdirSync(tempDir, { recursive: true });
@@ -298,15 +402,6 @@ export async function importQuestionBankZipFromPath(filePath: string): Promise<Q
     const rows = readExcelRows(excelPath);
     const copiedImageCount = copyQuestionBankImageAssets(tempDir, batchDir);
     const copiedPaperCount = copyQuestionBankPaperAssets(tempDir, batchDir);
-    const database = await getDatabase();
-    await createImportBatch({
-      id: batchId,
-      type: 'question_bank',
-      name: asText(metadata.name) || asText(metadata.title) || '未命名题库',
-      sourceFileName: path.basename(filePath),
-      source: asText(metadata.source),
-      metadata
-    });
     const result: QuestionBankImportResult = {
       bankName: asText(metadata.name) || asText(metadata.title) || '未命名题库',
       source: asText(metadata.source),
@@ -324,125 +419,147 @@ export async function importQuestionBankZipFromPath(filePath: string): Promise<Q
       failedCount: 0,
       failures: []
     };
-
-    database.run('BEGIN TRANSACTION');
+    const coordinator = await getDatabaseCoordinator();
     try {
-      const recordedAssets = new Set<string>();
-      const recordAssetOnce = (assetType: string, filePath: string) => {
-        const normalized = path.normalize(stripFragment(filePath || ''));
-        if (!normalized || recordedAssets.has(`${assetType}:${normalized}`)) return;
-        recordedAssets.add(`${assetType}:${normalized}`);
-        recordImportAsset(database, batchId, assetType, normalized);
-      };
-      if (copiedImageCount) {
-        for (const file of listFilesRecursive(path.join(batchDir, 'images'))) {
-          recordAssetOnce('question_bank_image', file);
-        }
-      }
-      if (copiedPaperCount) {
-        for (const file of listFilesRecursive(path.join(batchDir, 'papers'))) {
-          recordAssetOnce('question_bank_pdf', file);
-        }
-      }
-      for (const [index, raw] of rows.entries()) {
-        try {
-          const row = normalizeExternalRow(raw, tempDir, batchDir);
-          if (!row.title) throw new Error('title 不能为空');
-          if (!row.content) throw new Error('content 不能为空');
-
-          const imageRefs = [...extractMarkdownImageRefs(row.content), ...extractMarkdownImageRefs(row.solution)];
-          result.imageReferenceCount = (result.imageReferenceCount || 0) + imageRefs.length;
-          const missingImages = validateImageRefs({ id: 0, import_batch_id: batchId, asset_base_path: batchDir }, imageRefs);
-          if (missingImages.length) {
-            result.missingImageReferences = Array.from(new Set([...(result.missingImageReferences || []), ...missingImages]));
-          }
-          if (row.paper_pdf_path) {
-            result.paperPdfReferenceCount = (result.paperPdfReferenceCount || 0) + 1;
-            if (!pdfExists(row.paper_pdf_path)) result.missingPdfReferences = Array.from(new Set([...(result.missingPdfReferences || []), row.paper_pdf_path]));
-          }
-          if (row.solution_pdf_path) {
-            result.solutionPdfReferenceCount = (result.solutionPdfReferenceCount || 0) + 1;
-            if (!pdfExists(row.solution_pdf_path)) result.missingPdfReferences = Array.from(new Set([...(result.missingPdfReferences || []), row.solution_pdf_path]));
-          }
-
-          const rowSource = row.source || result.source;
-          const duplicate = duplicateWhere(row, result.source);
-          const exists = oneSql<{ id: number }>(database, `SELECT id FROM external_questions WHERE ${duplicate.sql} LIMIT 1`, duplicate.params);
-          if (exists) {
-            if (row.solution_pdf_path) {
-              runSql(
-                database,
-                "UPDATE external_questions SET solution_pdf_path = ?, updated_at = ? WHERE id = ? AND COALESCE(solution_pdf_path, '') = ''",
-                [row.solution_pdf_path, nowIso(), exists.id]
-              );
-            }
-            result.skippedCount += 1;
-            continue;
-          }
-
-          const now = nowIso();
-          runSql(
-            database,
-            `INSERT INTO external_questions (
-              title, content, options, answer, solution, subject, category, question_format, question_type,
-              difficulty, knowledge_points, source, year, exam_type, question_number, section, tags,
-              raw_file_path, paper_pdf_path, solution_pdf_path, import_batch_id, asset_base_path,
-              added_to_mistakes, created_question_id, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
-            [
-              row.title,
-              row.content,
-              row.options,
-              row.answer,
-              row.solution,
-              row.subject,
-              row.category,
-              row.question_format,
-              row.question_type,
-              row.difficulty,
-              row.knowledge_points,
-              rowSource,
-              row.year,
-              row.exam_type,
-              row.question_number,
-              row.section,
-              row.tags,
-              row.raw_file_path,
-              row.paper_pdf_path,
-              row.solution_pdf_path,
-              batchId,
-              batchDir,
-              now,
-              now
-            ]
-          );
-          const createdId = lastInsertId(database);
-          recordImportBatchItem(database, batchId, 'external_questions', createdId);
-          if (row.raw_file_path) recordAssetOnce('other', row.raw_file_path);
-          if (row.paper_pdf_path) recordAssetOnce('question_bank_pdf', row.paper_pdf_path);
-          if (row.solution_pdf_path) recordAssetOnce('question_bank_solution_pdf', row.solution_pdf_path);
-          result.addedCount += 1;
-        } catch (error) {
-          result.failedCount += 1;
-          result.failures.push({
-            rowNumber: index + 2,
-            title: asText(raw.title),
-            reason: error instanceof Error ? error.message : String(error)
+      await coordinator.executeWrite({
+        requestId: `question-bank-import-${crypto.randomUUID()}`,
+        concurrency: 'none',
+        execute(database, scope) {
+          createImportBatchMutation(database, scope, {
+            id: batchId,
+            name: result.bankName,
+            sourceFileName: path.basename(filePath),
+            source: result.source,
+            metadata
           });
-        }
-      }
+          const recordedAssets = new Set<string>();
+          const recordAssetOnce = (assetType: string, assetPath: string) => {
+            const normalized = path.normalize(stripFragment(assetPath || ''));
+            if (!normalized || recordedAssets.has(`${assetType}:${normalized}`)) return;
+            recordedAssets.add(`${assetType}:${normalized}`);
+            recordImportAssetMutation(database, scope, batchId, assetType, normalized, nowIso());
+          };
+          if (copiedImageCount) {
+            for (const file of listFilesRecursive(path.join(batchDir, 'images'))) {
+              recordAssetOnce('question_bank_image', file);
+            }
+          }
+          if (copiedPaperCount) {
+            for (const file of listFilesRecursive(path.join(batchDir, 'papers'))) {
+              recordAssetOnce('question_bank_pdf', file);
+            }
+          }
+          for (const [index, raw] of rows.entries()) {
+            try {
+              const row = normalizeExternalRow(raw, tempDir, batchDir);
+              if (!row.title) throw new Error('title 不能为空');
+              if (!row.content) throw new Error('content 不能为空');
 
-      finalizeImportBatch(database, batchId, 'active');
-      database.run('COMMIT');
-      persistDatabase();
+              const imageRefs = [...extractMarkdownImageRefs(row.content), ...extractMarkdownImageRefs(row.solution)];
+              result.imageReferenceCount = (result.imageReferenceCount || 0) + imageRefs.length;
+              const missingImages = validateImageRefs({ id: 0, import_batch_id: batchId, asset_base_path: batchDir }, imageRefs);
+              if (missingImages.length) {
+                result.missingImageReferences = Array.from(new Set([...(result.missingImageReferences || []), ...missingImages]));
+              }
+              if (row.paper_pdf_path) {
+                result.paperPdfReferenceCount = (result.paperPdfReferenceCount || 0) + 1;
+                if (!pdfExists(row.paper_pdf_path)) result.missingPdfReferences = Array.from(new Set([...(result.missingPdfReferences || []), row.paper_pdf_path]));
+              }
+              if (row.solution_pdf_path) {
+                result.solutionPdfReferenceCount = (result.solutionPdfReferenceCount || 0) + 1;
+                if (!pdfExists(row.solution_pdf_path)) result.missingPdfReferences = Array.from(new Set([...(result.missingPdfReferences || []), row.solution_pdf_path]));
+              }
+
+              const rowSource = row.source || result.source;
+              const duplicate = duplicateWhere(row, result.source);
+              const exists = oneSql<{ id: number }>(database, `SELECT id FROM external_questions WHERE ${duplicate.sql} LIMIT 1`, duplicate.params);
+              if (exists) {
+                if (row.solution_pdf_path) {
+                  mutateSql(
+                    database,
+                    scope,
+                    "UPDATE external_questions SET solution_pdf_path = ?, updated_at = ? WHERE id = ? AND COALESCE(solution_pdf_path, '') = ''",
+                    [row.solution_pdf_path, nowIso(), exists.id]
+                  );
+                }
+                result.skippedCount += 1;
+                continue;
+              }
+
+              const timestamp = nowIso();
+              mutateSql(
+                database,
+                scope,
+                `INSERT INTO external_questions (
+                  title, content, options, answer, solution, subject, category, question_format, question_type,
+                  difficulty, knowledge_points, source, year, exam_type, question_number, section, tags,
+                  raw_file_path, paper_pdf_path, solution_pdf_path, import_batch_id, asset_base_path,
+                  added_to_mistakes, created_question_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`,
+                [
+                  row.title,
+                  row.content,
+                  row.options,
+                  row.answer,
+                  row.solution,
+                  row.subject,
+                  row.category,
+                  row.question_format,
+                  row.question_type,
+                  row.difficulty,
+                  row.knowledge_points,
+                  rowSource,
+                  row.year,
+                  row.exam_type,
+                  row.question_number,
+                  row.section,
+                  row.tags,
+                  row.raw_file_path,
+                  row.paper_pdf_path,
+                  row.solution_pdf_path,
+                  batchId,
+                  batchDir,
+                  timestamp,
+                  timestamp
+                ]
+              );
+              const createdId = lastInsertId(database);
+              recordImportBatchItemMutation(database, scope, batchId, createdId, timestamp);
+              if (row.raw_file_path) recordAssetOnce('other', row.raw_file_path);
+              if (row.paper_pdf_path) recordAssetOnce('question_bank_pdf', row.paper_pdf_path);
+              if (row.solution_pdf_path) recordAssetOnce('question_bank_solution_pdf', row.solution_pdf_path);
+              result.addedCount += 1;
+            } catch (error) {
+              result.failedCount += 1;
+              result.failures.push({
+                rowNumber: index + 2,
+                title: asText(raw.title),
+                reason: error instanceof Error ? error.message : String(error)
+              });
+            }
+          }
+
+          finalizeImportBatchMutation(database, scope, batchId, 'active');
+          return { changed: true, value: null };
+        }
+      });
     } catch (error) {
-      database.run('ROLLBACK');
-      try {
-        const failDb = await getDatabase();
-        finalizeImportBatch(failDb, batchId, 'failed');
-        persistDatabase();
-      } catch {
-        // 保留原始导入错误。
+      if (coordinator.state === 'writable') {
+        await coordinator.executeWrite({
+          requestId: `question-bank-import-failed-${crypto.randomUUID()}`,
+          concurrency: 'none',
+          execute(database, scope) {
+            createImportBatchMutation(database, scope, {
+              id: batchId,
+              name: result.bankName,
+              sourceFileName: path.basename(filePath),
+              source: result.source,
+              metadata,
+              status: 'failed'
+            });
+            return { changed: true, value: null };
+          }
+        }).catch(() => undefined);
       }
       throw error;
     }
@@ -679,25 +796,31 @@ export async function getExternalQuestionStats(): Promise<ExternalQuestionStats>
 }
 
 export async function recordExternalQuestionAttempt(input: ExternalQuestionAttemptInput): Promise<ExternalQuestionAttempt> {
-  const database = await getDatabase();
   if (!ATTEMPT_RESULTS.has(input.result)) throw new Error('训练结果不合法');
-  const question = oneSql<{ id: number; added_to_mistakes: number; created_question_id: number | null }>(database, 'SELECT id, added_to_mistakes, created_question_id FROM external_questions WHERE id = ?', [input.externalQuestionId]);
-  if (!question) throw new Error('外部题目不存在');
-  if (question.added_to_mistakes && question.created_question_id) {
-    throw new Error('这道题已经加入错题本');
-  }
-  const now = nowIso();
-  runSql(
-    database,
-    `INSERT INTO external_question_attempts (
-      external_question_id, result, attempted_at, note, added_to_mistakes, created_question_id
-    ) VALUES (?, ?, ?, ?, 0, NULL)`,
-    [input.externalQuestionId, input.result, now, input.note || '']
-  );
-  persistDatabase();
-  const attempt = oneSql<ExternalQuestionAttempt>(database, 'SELECT * FROM external_question_attempts WHERE external_question_id = ? ORDER BY id DESC LIMIT 1', [input.externalQuestionId]);
-  if (!attempt) throw new Error('训练记录保存后读取失败');
-  return attempt;
+  const coordinator = await getDatabaseCoordinator();
+  const result = await coordinator.executeWrite({
+    requestId: `question-bank-attempt-${crypto.randomUUID()}`,
+    concurrency: 'none',
+    execute(database, scope) {
+      const question = oneSql<{ id: number; added_to_mistakes: number; created_question_id: number | null }>(database, 'SELECT id, added_to_mistakes, created_question_id FROM external_questions WHERE id = ?', [input.externalQuestionId]);
+      if (!question) throw new Error('外部题目不存在');
+      if (question.added_to_mistakes && question.created_question_id) {
+        throw new Error('这道题已经加入错题本');
+      }
+      mutateSql(
+        database,
+        scope,
+        `INSERT INTO external_question_attempts (
+          external_question_id, result, attempted_at, note, added_to_mistakes, created_question_id
+        ) VALUES (?, ?, ?, ?, 0, NULL)`,
+        [input.externalQuestionId, input.result, nowIso(), input.note || '']
+      );
+      const attempt = oneSql<ExternalQuestionAttempt>(database, 'SELECT * FROM external_question_attempts WHERE id = last_insert_rowid()');
+      if (!attempt) throw new Error('训练记录保存后读取失败');
+      return { changed: true, value: attempt };
+    }
+  });
+  return result.value;
 }
 
 function splitTokens(value: string) {
@@ -737,65 +860,190 @@ function masteryFromAttempt(latest: ExternalQuestionAttempt | null): MasteryLeve
   return '一般';
 }
 
-export async function addExternalQuestionToMistakes(id: number): Promise<AddExternalQuestionToMistakesResult> {
-  const database = await getDatabase();
-  const question = await getExternalQuestion(id);
-  if (!question) throw new Error('外部题目不存在');
-  const latest = oneSql<ExternalQuestionAttempt>(
-    database,
-    'SELECT * FROM external_question_attempts WHERE external_question_id = ? ORDER BY id DESC LIMIT 1',
-    [id]
-  );
-  if ((question.added_to_mistakes && question.created_question_id) || (latest?.added_to_mistakes && latest.created_question_id)) {
-    throw new Error('这道题已经加入错题本');
-  }
-
-  const category = normalizeCategory(question.category);
-  const questionType = normalizeQuestionType(question.question_type);
-  const mastery = masteryFromAttempt(latest);
-  const errorReason = ERROR_REASONS.includes('方法没想到') ? '方法没想到' : '其他';
-  const questionImageSources = resolveExistingMarkdownImages(question, question.content);
-  const solutionImageSources = resolveExistingMarkdownImages(question, question.solution);
-  const input: QuestionInput = {
-    title: question.title,
-    content: stripMarkdownImageRefs(question.content) || question.title,
-    wrong_thinking: buildWrongThinking(question, latest),
-    wrong_solution: buildWrongThinking(question, latest),
-    correct_solution: stripMarkdownImageRefs(question.solution),
-    answer: question.answer,
-    subject: normalizeSubject(question.subject),
-    category,
-    question_type: questionType,
-    error_reason: errorReason,
-    source: `外部题库：${question.source || '未命名题库'}`,
-    difficulty: normalizeDifficulty(question.difficulty),
-    mastery_level: (MASTERY_LEVELS as readonly string[]).includes(mastery) ? mastery : '一般',
-    note: [
-      question.exam_type ? `考试类型：${question.exam_type}` : '',
-      question.year ? `年份：${question.year}` : '',
-      question.question_number ? `题号：${question.question_number}` : ''
-    ].filter(Boolean).join('；'),
-    tags: splitTokens(question.tags),
-    questionImageSources,
-    solutionImageSources
+async function prepareAddToMistakesImages(
+  database: Database,
+  requestId: string,
+  externalQuestionId: number,
+  questionId: number,
+  input: QuestionInput,
+  setManifest: (manifest: OperationManifest) => void
+): Promise<readonly QuestionImageInsert[]> {
+  const files: OperationFile[] = [];
+  const images: QuestionImageInsert[] = [];
+  const sourceRoots = new Set<string>();
+  const operationRoot = path.normalize(path.join(getPaths().images, '.question-bank-operations'));
+  const append = (sourcePath: string, imageType: 'original' | 'solution', index: number) => {
+    const absoluteSource = path.normalize(path.resolve(sourcePath));
+    const fileId = `${imageType}-${index + 1}`;
+    const destination = createManagedImagePath(questionId, imageType, absoluteSource, `${requestId}-${fileId}`);
+    sourceRoots.add(path.dirname(absoluteSource));
+    files.push({
+      fileId,
+      kind: 'create',
+      sourcePath: absoluteSource,
+      targetPath: destination.absolutePath,
+      stagingPath: path.normalize(path.join(operationRoot, 'staging', `${requestId}-${fileId}.stage`)),
+      content: evidenceForBytes(fs.readFileSync(absoluteSource)),
+      status: 'pending'
+    });
+    images.push({ imageType, filePath: destination.storedPath });
   };
+  input.questionImageSources.forEach((sourcePath, index) => append(sourcePath, 'original', index));
+  input.solutionImageSources.forEach((sourcePath, index) => append(sourcePath, 'solution', index));
+  if (!files.length) return images;
 
-  const created = await createQuestion(input);
-  const knowledgeTokens = splitTokens(question.knowledge_points);
-  if (knowledgeTokens.length) await linkQuestionKnowledgePoints(created.id, knowledgeTokens, 'manual');
+  const paths = getPaths();
+  fs.mkdirSync(operationRoot, { recursive: true });
+  fs.mkdirSync(path.join(paths.data, 'operation-journal'), { recursive: true });
+  const version = plannedVersion(database);
+  const manifest = createOperationManifest({
+    operationId: requestId,
+    requestId,
+    commandType: 'questionBank.addToMistakes',
+    source: 'internal',
+    clientId: 'question-bank-service',
+    traceId: requestId,
+    inputHash: crypto.createHash('sha256').update(JSON.stringify({ externalQuestionId })).digest('hex'),
+    storage: 'data_root',
+    versionBefore: version.before,
+    versionAfter: version.after,
+    affectedEntities: [
+      { entityType: 'external_question', entityId: String(externalQuestionId) },
+      { entityType: 'question', entityId: String(questionId) }
+    ],
+    roots: {
+      manifestRoot: path.normalize(path.join(paths.data, 'operation-journal')),
+      managedRoots: [path.normalize(paths.root)],
+      sourceRoots: [...sourceRoots]
+    },
+    files,
+    createdAt: nowIso()
+  });
+  const { journal } = addToMistakesJournal();
+  const prepared = await journal.prepare(manifest);
+  setManifest(prepared);
+  const staged = await journal.stage(prepared);
+  setManifest(staged);
+  return images;
+}
 
-  runSql(
-    database,
-    'UPDATE external_question_attempts SET added_to_mistakes = 1, created_question_id = ? WHERE external_question_id = ?',
-    [created.id, id]
-  );
-  runSql(
-    database,
-    'UPDATE external_questions SET added_to_mistakes = 1, created_question_id = ?, updated_at = ? WHERE id = ?',
-    [created.id, nowIso(), id]
-  );
-  persistDatabase();
-  return { question: created, attempt: latest };
+async function failAddToMistakesOperation(
+  coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>,
+  manifest: OperationManifest,
+  error: unknown
+) {
+  const { store, journal } = addToMistakesJournal();
+  const latest = await store.read(manifest.operationId) ?? manifest;
+  try {
+    if (coordinator.state === 'writable') {
+      await journal.compensate(latest, operationError(error, 'database_command'));
+      return;
+    }
+    await journal.needsRecovery(latest, operationError(error, 'database_command'));
+  } catch (recoveryError) {
+    const current = await store.read(manifest.operationId) ?? latest;
+    await journal.needsRecovery(current, operationError(recoveryError, 'compensation')).catch(() => undefined);
+    if (coordinator.state === 'writable') {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+    }
+    throw new AgentError('RECOVERY_FENCE');
+  }
+}
+
+async function completeAddToMistakesOperation(
+  coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>,
+  manifest: OperationManifest
+) {
+  const { store, journal } = addToMistakesJournal();
+  try {
+    const latest = await store.read(manifest.operationId) ?? manifest;
+    await journal.commitFiles(await journal.markDatabaseCommitted(latest));
+  } catch (error) {
+    const latest = await store.read(manifest.operationId) ?? manifest;
+    await journal.needsRecovery(latest, operationError(error, 'file_finalization')).catch(() => undefined);
+    if (coordinator.state === 'writable') {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+    }
+    throw new AgentError('RECOVERY_FENCE');
+  }
+}
+
+export async function addExternalQuestionToMistakes(id: number): Promise<AddExternalQuestionToMistakesResult> {
+  const coordinator = await getDatabaseCoordinator();
+  const requestId = `question-bank-add-${id}-${crypto.randomUUID()}`;
+  let manifest: OperationManifest | null = null;
+  let result;
+  try {
+    result = await coordinator.executeWrite({
+      requestId,
+      concurrency: 'none',
+      async execute(database, scope) {
+        const external = oneSql<ExternalQuestion>(database, 'SELECT * FROM external_questions WHERE id = ?', [id]);
+        if (!external) throw new Error('外部题目不存在');
+        const question = hydrateExternalQuestionPdfFallback(external);
+        const latest = oneSql<ExternalQuestionAttempt>(
+          database,
+          'SELECT * FROM external_question_attempts WHERE external_question_id = ? ORDER BY id DESC LIMIT 1',
+          [id]
+        );
+        if ((question.added_to_mistakes && question.created_question_id) || (latest?.added_to_mistakes && latest.created_question_id)) {
+          throw new Error('这道题已经加入错题本');
+        }
+
+        const mastery = masteryFromAttempt(latest);
+        const wrongThinking = buildWrongThinking(question, latest);
+        const input: QuestionInput = {
+          title: question.title,
+          content: stripMarkdownImageRefs(question.content) || question.title,
+          wrong_thinking: wrongThinking,
+          wrong_solution: wrongThinking,
+          correct_solution: stripMarkdownImageRefs(question.solution),
+          answer: question.answer,
+          subject: normalizeSubject(question.subject),
+          category: normalizeCategory(question.category),
+          question_type: normalizeQuestionType(question.question_type),
+          error_reason: ERROR_REASONS.includes('方法没想到') ? '方法没想到' : '其他',
+          source: `外部题库：${question.source || '未命名题库'}`,
+          difficulty: normalizeDifficulty(question.difficulty),
+          mastery_level: (MASTERY_LEVELS as readonly string[]).includes(mastery) ? mastery : '一般',
+          note: [
+            question.exam_type ? `考试类型：${question.exam_type}` : '',
+            question.year ? `年份：${question.year}` : '',
+            question.question_number ? `题号：${question.question_number}` : ''
+          ].filter(Boolean).join('；'),
+          tags: splitTokens(question.tags),
+          questionImageSources: resolveExistingMarkdownImages(question, question.content),
+          solutionImageSources: resolveExistingMarkdownImages(question, question.solution)
+        };
+        const repository = new QuestionRepository(database, scope);
+        let created = repository.create({ ...input, questionImageSources: [], solutionImageSources: [] });
+        const images = await prepareAddToMistakesImages(database, requestId, id, created.id, input, (next) => { manifest = next; });
+        if (images.length) created = repository.update(created.id, input, images).question;
+        repository.linkKnowledgePoints(created.id, splitTokens(question.knowledge_points), 'manual');
+        mutateSql(
+          database,
+          scope,
+          'UPDATE external_question_attempts SET added_to_mistakes = 1, created_question_id = ? WHERE external_question_id = ?',
+          [created.id, id]
+        );
+        mutateSql(
+          database,
+          scope,
+          'UPDATE external_questions SET added_to_mistakes = 1, created_question_id = ?, updated_at = ? WHERE id = ?',
+          [created.id, nowIso(), id]
+        );
+        return { changed: true, value: { question: created, attempt: latest } };
+      }
+    });
+  } catch (error) {
+    const storedManifest = manifest ?? await addToMistakesJournal().store.read(requestId);
+    if (storedManifest) await failAddToMistakesOperation(coordinator, storedManifest, error);
+    throw error;
+  }
+  if (manifest) await completeAddToMistakesOperation(coordinator, manifest);
+  return result.value;
 }
 
 export async function openExternalQuestionPaper(id: number) {
@@ -821,28 +1069,29 @@ export async function openExternalQuestionSolutionPdf(id: number) {
 export async function deleteExternalQuestionBatch(batchId: string): Promise<DeleteExternalQuestionBatchResult> {
   const cleanBatchId = safeRelativePath(batchId);
   if (!cleanBatchId || cleanBatchId !== batchId) throw new Error('题库批次 ID 不合法');
-  const database = await getDatabase();
-  const questionCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM external_questions WHERE import_batch_id = ?', [batchId])?.count ?? 0;
-  const attemptCount = oneSql<{ count: number }>(
-    database,
-    'SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (SELECT id FROM external_questions WHERE import_batch_id = ?)',
-    [batchId]
-  )?.count ?? 0;
-
-  database.run('BEGIN TRANSACTION');
-  try {
-    runSql(
-      database,
-      'DELETE FROM external_question_attempts WHERE external_question_id IN (SELECT id FROM external_questions WHERE import_batch_id = ?)',
-      [batchId]
-    );
-    runSql(database, 'DELETE FROM external_questions WHERE import_batch_id = ?', [batchId]);
-    database.run('COMMIT');
-    persistDatabase();
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
-  }
+  const coordinator = await getDatabaseCoordinator();
+  const deletion = await coordinator.executeWrite({
+    requestId: `question-bank-delete-${crypto.randomUUID()}`,
+    concurrency: 'none',
+    execute(database, scope) {
+      const questionCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM external_questions WHERE import_batch_id = ?', [batchId])?.count ?? 0;
+      const attemptCount = oneSql<{ count: number }>(
+        database,
+        'SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (SELECT id FROM external_questions WHERE import_batch_id = ?)',
+        [batchId]
+      )?.count ?? 0;
+      if (attemptCount) {
+        mutateSql(
+          database,
+          scope,
+          'DELETE FROM external_question_attempts WHERE external_question_id IN (SELECT id FROM external_questions WHERE import_batch_id = ?)',
+          [batchId]
+        );
+      }
+      if (questionCount) mutateSql(database, scope, 'DELETE FROM external_questions WHERE import_batch_id = ?', [batchId]);
+      return { changed: questionCount > 0 || attemptCount > 0, value: { questionCount, attemptCount } };
+    }
+  });
 
   const batchDir = path.join(getPaths().root, 'assets', 'question_bank', batchId);
   let movedAssetPath = '';
@@ -854,8 +1103,8 @@ export async function deleteExternalQuestionBatch(batchId: string): Promise<Dele
   }
 
   return {
-    deletedQuestions: questionCount,
-    deletedAttempts: attemptCount,
+    deletedQuestions: deletion.value.questionCount,
+    deletedAttempts: deletion.value.attemptCount,
     movedAssetPath
   };
 }

@@ -2,26 +2,29 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import {
-  addReviewLog,
   clearAllData,
-  createQuestion,
-  deleteQuestion,
   exportData,
   getCurrentPaths,
   getDashboard,
-  getQuestion,
   getReviewBuckets,
   getStats,
   importData,
   initializeDatabase,
-  listQuestions,
-  listReviewLogs,
-  markMastery,
-  removeImage,
   resetDatabaseConnection,
-  submitReviewResult,
-  updateQuestion
 } from '../services/databaseService';
+import {
+  addReviewFromRenderer,
+  createQuestionFromRenderer,
+  deleteQuestionFromRenderer,
+  getQuestionFromRenderer,
+  getReviewBucketsFromRenderer,
+  listQuestionsFromRenderer,
+  listReviewLogsFromRenderer,
+  markMasteryFromRenderer,
+  removeImageFromRenderer,
+  submitReviewResultFromRenderer,
+  updateQuestionFromRenderer
+} from './adapters/questionsIpc';
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
@@ -279,22 +282,22 @@ function focusMainWindow() {
 
 export function registerIpc() {
   handle('dashboard:get', () => getDashboard());
-  handle('questions:list', (filters: QuestionFilters) => listQuestions(filters));
-  handle('questions:get', (id: number) => getQuestion(id));
-  handle('questions:create', (input: QuestionInput) => createQuestion(input));
-  handle('questions:update', (id: number, input: QuestionInput) => updateQuestion(id, input));
-  handle('questions:delete', (id: number, deleteImages: boolean) => deleteQuestion(id, deleteImages));
-  handle('questions:markMastery', (id: number, mastery: MasteryLevel) => markMastery(id, mastery));
-  handle('images:remove', (id: number, deleteFile: boolean) => removeImage(id, deleteFile));
+  handle('questions:list', (filters: QuestionFilters) => listQuestionsFromRenderer(filters));
+  handle('questions:get', (id: number) => getQuestionFromRenderer(id));
+  handle('questions:create', (input: QuestionInput) => createQuestionFromRenderer(input));
+  handle('questions:update', (id: number, input: QuestionInput) => updateQuestionFromRenderer(id, input));
+  handle('questions:delete', (id: number, deleteImages: boolean) => deleteQuestionFromRenderer(id, deleteImages));
+  handle('questions:markMastery', (id: number, mastery: MasteryLevel) => markMasteryFromRenderer(id, mastery));
+  handle('images:remove', (id: number, deleteFile: boolean) => removeImageFromRenderer(id, deleteFile));
   handle('images:choose', () => chooseImages());
   handle('images:getUrl', (imagePath: string) => getImageUrl(imagePath));
   handle('images:exists', (imagePath: string) => checkImageExists(imagePath));
   handle('images:open', (imagePath: string) => openImage(imagePath));
   handle('images:reveal', (imagePath: string) => revealImageInFolder(imagePath));
-  handle('reviews:list', (questionId: number) => listReviewLogs(questionId));
-  handle('reviews:add', (input: ReviewInput) => addReviewLog(input));
-  handle('reviews:submitResult', (input: ReviewSubmitInput) => submitReviewResult(input));
-  handle('review:buckets', () => getReviewBuckets());
+  handle('reviews:list', (questionId: number) => listReviewLogsFromRenderer(questionId));
+  handle('reviews:add', (input: ReviewInput) => addReviewFromRenderer(input));
+  handle('reviews:submitResult', (input: ReviewSubmitInput) => submitReviewResultFromRenderer(input));
+  handle('review:buckets', () => getReviewBucketsFromRenderer());
   handle('stats:get', () => getStats());
   handle('paths:get', () => getCurrentPaths());
   handle('settings:export', () => exportData());

@@ -13,6 +13,7 @@ const {
 
 const electron = require('electron');
 const structuredImportService = requireMain('services/structuredImportService.js');
+const importBatchService = requireMain('services/importBatchService.js');
 
 test.after(cleanupTestRoot);
 
@@ -132,6 +133,39 @@ test('prepareJsonImport happy path creates valid preview and confirms import', a
   const titles = questions.map((q) => q.title).sort();
   assert.deepEqual(titles, ['题一', '题二']);
 
+  const batches = await importBatchService.listImportBatches();
+  const detail = await importBatchService.getImportBatchDetail(batches[0].id);
+  const metadata = JSON.parse(detail.batch.metadata_json);
+  assert.equal(detail.batch.item_count, 2);
+  assert.equal(metadata.phase, 'completed');
+  assert.equal(metadata.cleanup, 'completed');
+  assert.deepEqual(metadata.rows.map((row) => row.status), ['succeeded', 'succeeded']);
+
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test('confirmStructuredImport records invalid and successful rows independently', async () => {
+  const tempDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'imp-mixed-'));
+  const jsonPath = path.join(tempDir, 'mixed.json');
+  fs.writeFileSync(jsonPath, JSON.stringify([
+    { ...VALID_ROW, title: '有效题' },
+    { ...VALID_ROW, title: '无效图片题', image_path: 'missing.png' }
+  ]));
+  setDialogFile(jsonPath);
+
+  const preview = await structuredImportService.prepareJsonImport();
+  const result = await structuredImportService.confirmStructuredImport(preview.sessionId);
+  assert.equal(result.successCount, 1);
+  assert.equal(result.failCount, 1);
+
+  const batches = await importBatchService.listImportBatches();
+  const detail = await importBatchService.getImportBatchDetail(batches[0].id);
+  const metadata = JSON.parse(detail.batch.metadata_json);
+  assert.equal(detail.batch.status, 'active');
+  assert.equal(detail.batch.item_count, 1);
+  assert.deepEqual(metadata.rows.map((row) => row.status), ['succeeded', 'invalid']);
+  assert.match(metadata.rows[1].reason, /图片文件不存在/);
+
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -162,6 +196,40 @@ test('prepareZipImport happy path extracts and previews valid zip', async () => 
   const questions = await databaseService.listQuestions({});
   assert.equal(questions.length, 1);
   assert.equal(questions[0].title, 'ZIP 题目');
+
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+test('confirmStructuredImport records cleanup failure and leaves cleanup retryable', async () => {
+  const tempDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'imp-cleanup-'));
+  const zipPath = path.join(tempDir, 'cleanup.zip');
+  const sheet = XLSX.utils.json_to_sheet([{ ...VALID_ROW, title: '清理状态题' }]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'import');
+  writeZip(zipPath, { 'import.xlsx': XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }) });
+  setDialogFile(zipPath);
+
+  const preview = await structuredImportService.prepareZipImport();
+  const originalRmSync = fs.rmSync;
+  fs.rmSync = (target, options) => {
+    if (path.basename(String(target)).startsWith('import-')) throw new Error('cleanup blocked');
+    return originalRmSync(target, options);
+  };
+  let result;
+  try {
+    result = await structuredImportService.confirmStructuredImport(preview.sessionId);
+  } finally {
+    fs.rmSync = originalRmSync;
+  }
+
+  assert.equal(result.successCount, 1);
+  assert.match(result.warnings[0].message, /cleanup blocked/);
+  const batches = await importBatchService.listImportBatches();
+  const detail = await importBatchService.getImportBatchDetail(batches[0].id);
+  const metadata = JSON.parse(detail.batch.metadata_json);
+  assert.equal(metadata.phase, 'cleanup_failed');
+  assert.equal(metadata.cleanup, 'failed');
+  assert.equal(structuredImportService.cleanupStructuredImport(preview.sessionId), true);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });

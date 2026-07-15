@@ -89,3 +89,21 @@ test('contract scan detects intentional mismatch', () => {
   const missing = [...fakeChannels].filter((c) => !registeredChannels.has(c));
   assert.deepEqual(missing, ['nonexistent:channel']);
 });
+
+test('question IPC channels retain their public registrations', () => {
+  for (const channel of [
+    'questions:list', 'questions:get', 'questions:create', 'questions:update', 'questions:delete',
+    'questions:markMastery', 'images:remove', 'reviews:list', 'reviews:add', 'reviews:submitResult', 'review:buckets'
+  ]) {
+    assert.equal(registeredChannels.has(channel), true, `missing question channel: ${channel}`);
+  }
+});
+
+test('question IPC registrations use the adapter boundary', () => {
+  const adapterPath = path.join(projectRoot, 'src/main/ipc/adapters/questionsIpc.ts');
+  const adapterSource = readSource(adapterPath);
+  assert.match(registerIpcSource, /from '\.\/adapters\/questionsIpc'/);
+  assert.match(adapterSource, /getQuestionsApplication/);
+  assert.match(adapterSource, /createRendererExecutionContext/);
+  assert.doesNotMatch(registerIpcSource, /handle\('questions:(create|update|delete|markMastery)'[^\n]*(?<!FromRenderer)(createQuestion|updateQuestion|deleteQuestion|markMastery)\(/);
+});
