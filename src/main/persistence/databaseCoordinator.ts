@@ -71,8 +71,8 @@ export interface DatabaseTerminalHookContext<T> {
   readonly generationAfterDataMutation: DatabaseGeneration;
 }
 
-export interface DatabaseTerminalHook {
-  execute<T>(
+export interface DatabaseTerminalHook<T = unknown> {
+  execute(
     database: Database,
     scope: DatabaseMutationScope,
     context: DatabaseTerminalHookContext<T>
@@ -87,8 +87,11 @@ export interface DatabaseWriteRequest<T> {
   execute(database: Database, scope: DatabaseMutationScope): DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>;
 }
 
-export interface DatabaseBusinessWriteRequest<T> extends DatabaseWriteRequest<T> {
-  readonly terminalHook?: DatabaseTerminalHook;
+export interface DatabaseBusinessWriteRequest<T, FinalValue = T> extends DatabaseWriteRequest<T> {
+  readonly finalizeValue?: (
+    context: DatabaseTerminalHookContext<T>
+  ) => FinalValue | Promise<FinalValue>;
+  readonly terminalHook?: DatabaseTerminalHook<FinalValue>;
 }
 
 export interface DatabaseControlWriteRequest<T> {
@@ -297,12 +300,12 @@ export class DatabaseCoordinator {
     return this.admitWrite('legacy', request);
   }
 
-  async executeBusinessWrite<T>(
+  async executeBusinessWrite<T, FinalValue = T>(
     capability: DatabaseCoordinatorCapability,
-    request: DatabaseBusinessWriteRequest<T>
-  ): Promise<DatabaseWriteResult<T>> {
+    request: DatabaseBusinessWriteRequest<T, FinalValue>
+  ): Promise<DatabaseWriteResult<FinalValue>> {
     this.assertCapability(capability, 'business');
-    return this.admitWrite('business', request);
+    return this.admitWrite<T, FinalValue>('business', request);
   }
 
   async executeControlWrite<T>(
@@ -320,10 +323,10 @@ export class DatabaseCoordinator {
     }
   }
 
-  private async admitWrite<T>(
+  private async admitWrite<T, FinalValue = T>(
     mode: WriteMode,
-    request: DatabaseBusinessWriteRequest<T> | DatabaseControlWriteRequest<T>
-  ): Promise<DatabaseWriteResult<T>> {
+    request: DatabaseBusinessWriteRequest<T, FinalValue> | DatabaseControlWriteRequest<T>
+  ): Promise<DatabaseWriteResult<FinalValue>> {
     if (activeCoordinator.getStore() === this) {
       throw new Error('Nested or reentrant database coordinator writes are forbidden');
     }
@@ -335,7 +338,7 @@ export class DatabaseCoordinator {
     this.pendingAdmissionIds.add(admissionId);
     const run = this.queueTail.then(() => activeCoordinator.run(
       this,
-      () => this.executeAdmittedWrite(mode, request)
+      () => this.executeAdmittedWrite<T, FinalValue>(mode, request)
     ));
     this.queueTail = run.then(
       () => { this.settleAdmission(admissionId, false); },
@@ -410,10 +413,10 @@ export class DatabaseCoordinator {
     }
   }
 
-  private async executeAdmittedWrite<T>(
+  private async executeAdmittedWrite<T, FinalValue = T>(
     mode: WriteMode,
-    request: DatabaseBusinessWriteRequest<T> | DatabaseControlWriteRequest<T>
-  ): Promise<DatabaseWriteResult<T>> {
+    request: DatabaseBusinessWriteRequest<T, FinalValue> | DatabaseControlWriteRequest<T>
+  ): Promise<DatabaseWriteResult<FinalValue>> {
     this.runtimeState.assertAdmittedWriteMayStart();
     const database = this.database;
     const store = new RevisionStore(database, this.now);
@@ -425,6 +428,7 @@ export class DatabaseCoordinator {
     let versionAfter = versionBefore;
     let generationAfter = generationBefore;
     let mutationResult: DatabaseMutationResult<T>;
+    let finalValue: FinalValue;
     let controlChanged = false;
     const scope = Object.freeze({ kind: 'database-mutation-scope' as const });
     const scopeState: MutationScopeState = { coordinator: this, database, active: true };
@@ -468,14 +472,25 @@ export class DatabaseCoordinator {
           generationAfter = store.readCurrentGeneration();
         }
 
-        const terminalHook = mode === 'business'
-          ? (request as DatabaseBusinessWriteRequest<T>).terminalHook
+        const businessRequest = mode === 'business'
+          ? request as DatabaseBusinessWriteRequest<T, FinalValue>
           : undefined;
+        finalValue = businessRequest?.finalizeValue
+          ? await businessRequest.finalizeValue({
+              value: mutationResult.value,
+              semanticChanged: mutationResult.changed,
+              versionBefore,
+              versionAfter,
+              generationBefore,
+              generationAfterDataMutation: generationAfter
+            })
+          : mutationResult.value as unknown as FinalValue;
+        const terminalHook = businessRequest?.terminalHook;
         if (terminalHook) {
           clearMutationTracker(database);
           const hookChangesBefore = totalChanges(database);
           const hookResult = await terminalHook.execute(database, scope, {
-            value: mutationResult.value,
+            value: finalValue,
             semanticChanged: mutationResult.changed,
             versionBefore,
             versionAfter,
@@ -498,6 +513,7 @@ export class DatabaseCoordinator {
           }
         }
       }
+      if (mode === 'control') finalValue = mutationResult.value as unknown as FinalValue;
       database.run('COMMIT');
       transactionStarted = false;
     } catch (error) {
@@ -521,7 +537,7 @@ export class DatabaseCoordinator {
     }
 
     if (!mutationResult.changed && !controlChanged) {
-      return { ...mutationResult, versionBefore, versionAfter, generationBefore, generationAfter };
+      return { changed: mutationResult.changed, value: finalValue!, versionBefore, versionAfter, generationBefore, generationAfter };
     }
 
     let bytes: Uint8Array;
@@ -554,7 +570,7 @@ export class DatabaseCoordinator {
         this.runtimeState.enterRecovery(error);
         throw new AgentError('PERSISTENCE_INDETERMINATE');
       }
-      return { ...mutationResult, versionBefore, versionAfter, generationBefore, generationAfter };
+      return { changed: mutationResult.changed, value: finalValue!, versionBefore, versionAfter, generationBefore, generationAfter };
     }
 
     if (publication.status === 'failed') {

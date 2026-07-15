@@ -35,7 +35,7 @@ function createDatabase() {
       updated_at TEXT NOT NULL
     );
     CREATE TABLE entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE agent_receipts (id TEXT PRIMARY KEY, status TEXT NOT NULL);
+    CREATE TABLE agent_receipts (id TEXT PRIMARY KEY, status TEXT NOT NULL, terminal_json TEXT);
   `);
   database.run('INSERT INTO control_metadata VALUES (1, ?, 0, 0, 1, ?)', [epoch, timestamp]);
   return database;
@@ -104,7 +104,15 @@ test.after(() => environment.cleanupControlPlaneRoot());
 
 test('commits semantic domain data and terminal receipt in one durable generation', async () => {
   const coordinator = createCoordinator();
-  const eventBus = new application.DomainEventBus({ randomUUID: uuid, now: () => timestamp });
+  let eventUuidCalls = 0;
+  let eventClockCalls = 0;
+  const eventBus = new application.DomainEventBus({
+    randomUUID() { eventUuidCalls += 1; return uuid(); },
+    now() { eventClockCalls += 1; return timestamp; }
+  });
+  let hookResult;
+  const deliveries = [];
+  eventBus.subscribe((event) => deliveries.push({ event, receipts: diskRows('SELECT id, status FROM agent_receipts') }));
   const commandBus = new application.CommandBus(coordinator, eventBus);
   const receiptCapability = application.createCommandBusExecutionReceiptCapability(commandBus);
   commandBus.register('questions.mark_mastery', {
@@ -119,15 +127,44 @@ test('commits semantic domain data and terminal receipt in one durable generatio
       coordinatorModule.assertDatabaseMutationScope(scope, database);
       assert.equal(context.semanticChanged, true);
       assert.deepEqual(context.versionAfter, { dataEpoch: epoch, dataRevision: 1 });
-      database.run("INSERT INTO agent_receipts VALUES ('receipt-1', 'completed')");
+      assert.equal(eventUuidCalls, 1);
+      assert.equal(eventClockCalls, 1);
+      assert.equal(Object.isFrozen(context.value), true);
+      assert.equal(Object.isFrozen(context.value.events), true);
+      assert.deepEqual(context.value, {
+        changed: true,
+        value: 'domain',
+        events: [{
+          apiVersion: 1,
+          eventId: '00000000-0000-4000-8000-000000000003',
+          type: 'entry.changed',
+          occurredAt: timestamp,
+          requestId: '00000000-0000-4000-8000-000000000001',
+          traceId: '00000000-0000-4000-8000-000000000002',
+          source: 'internal',
+          payload: { id: 1 },
+          versionBefore: { dataEpoch: epoch, dataRevision: 0 },
+          versionAfter: { dataEpoch: epoch, dataRevision: 1 }
+        }],
+        dataVersion: { dataEpoch: epoch, dataRevision: 1 }
+      });
+      hookResult = context.value;
+      database.run("INSERT INTO agent_receipts (id, status, terminal_json) VALUES ('receipt-1', 'completed', ?)", [JSON.stringify(context.value)]);
       return { changed: true, value: undefined };
     }
   });
 
+  assert.strictEqual(result, hookResult);
+  assert.strictEqual(result.events[0], hookResult.events[0]);
+  assert.equal(eventUuidCalls, 1);
+  assert.equal(eventClockCalls, 1);
   assert.deepEqual(result.dataVersion, { dataEpoch: epoch, dataRevision: 1 });
   assert.deepEqual(coordinator.currentGeneration(), { dataEpoch: epoch, dataRevision: 1, controlRevision: 1 });
   assert.deepEqual(diskRows('SELECT id, value FROM entries'), [[1, 'domain']]);
   assert.deepEqual(diskRows('SELECT id, status FROM agent_receipts'), [['receipt-1', 'completed']]);
+  assert.equal(deliveries.length, 1);
+  assert.strictEqual(deliveries[0].event, result.events[0]);
+  assert.deepEqual(deliveries[0].receipts, [['receipt-1', 'completed']]);
   assert.deepEqual(diskRows('SELECT data_revision, control_revision FROM control_metadata'), [[1, 1]]);
 });
 
@@ -138,8 +175,14 @@ test('receipt-only semantic no-op preserves the public version and advances cont
   commandBus.register('questions.mark_mastery', { handler: () => ({ changed: false, value: 'same' }) });
 
   const result = await commandBus.executeWithExecutionReceipt(receiptCapability, envelope(), {
-    execute(database) {
-      database.run("INSERT INTO agent_receipts VALUES ('receipt-noop', 'completed')");
+    execute(database, _scope, context) {
+      assert.deepEqual(context.value, {
+        changed: false,
+        value: 'same',
+        events: [],
+        dataVersion: { dataEpoch: epoch, dataRevision: 0 }
+      });
+      database.run("INSERT INTO agent_receipts (id, status) VALUES ('receipt-noop', 'completed')");
       return { changed: true, value: undefined };
     }
   });
@@ -181,7 +224,7 @@ test('capability modes reject table-family violations and nested writes', async 
   await assert.rejects(coordinator.executeBusinessWrite(business, {
     requestId: 'business-control-row', concurrency: 'none',
     execute(database) {
-      database.run("INSERT INTO agent_receipts VALUES ('forbidden', 'completed')");
+      database.run("INSERT INTO agent_receipts (id, status) VALUES ('forbidden', 'completed')");
       return { changed: true, value: null };
     }
   }), /Business handlers may mutate only domain tables/);
@@ -198,7 +241,7 @@ test('capability modes reject table-family violations and nested writes', async 
       await assert.rejects(coordinator.executeControlWrite(control, {
         requestId: 'nested-control-inner', execute: () => ({ changed: false, value: null })
       }), /Nested or reentrant/);
-      database.run("INSERT INTO agent_receipts VALUES ('control-only', 'completed')");
+      database.run("INSERT INTO agent_receipts (id, status) VALUES ('control-only', 'completed')");
       return { changed: true, value: null };
     }
   });
@@ -248,8 +291,8 @@ test('definite post-commit publication failure restores the prior domain and rec
   });
 
   await assert.rejects(commandBus.executeWithExecutionReceipt(receiptCapability, envelope(), {
-    execute(database) {
-      database.run("INSERT INTO agent_receipts VALUES ('receipt-definite', 'completed')");
+    execute(database, _scope, context) {
+      database.run("INSERT INTO agent_receipts (id, status, terminal_json) VALUES ('receipt-definite', 'completed', ?)", [JSON.stringify(context.value)]);
       return { changed: true, value: undefined };
     }
   }), (error) => error.code === 'INTERNAL_ERROR');
@@ -263,18 +306,21 @@ test('post-publication indeterminacy retains the complete receipt image and fenc
     persistDependencies: { hook(context) { if (context.stage === 'afterLivePublish') throw new Error('response lost'); } }
   });
   let handlerCalls = 0;
-  const commandBus = new application.CommandBus(coordinator, new application.DomainEventBus());
+  const delivered = [];
+  const eventBus = new application.DomainEventBus({ randomUUID: uuid, now: () => timestamp });
+  eventBus.subscribe((event) => delivered.push(event));
+  const commandBus = new application.CommandBus(coordinator, eventBus);
   const receiptCapability = application.createCommandBusExecutionReceiptCapability(commandBus);
   commandBus.register('questions.mark_mastery', {
     handler(_command, _context, database) {
       handlerCalls += 1;
       database.run("INSERT INTO entries VALUES (1, 'published')");
-      return { changed: true, value: true };
+      return { changed: true, value: true, events: [{ type: 'entry.changed', payload: { id: 1 } }] };
     }
   });
   const receipt = {
-    execute(database) {
-      database.run("INSERT INTO agent_receipts VALUES ('receipt-indeterminate', 'completed')");
+    execute(database, _scope, context) {
+      database.run("INSERT INTO agent_receipts (id, status, terminal_json) VALUES ('receipt-indeterminate', 'completed', ?)", [JSON.stringify(context.value)]);
       return { changed: true, value: undefined };
     }
   };
@@ -283,11 +329,31 @@ test('post-publication indeterminacy retains the complete receipt image and fenc
     (error) => error.code === 'PERSISTENCE_INDETERMINATE');
   assert.equal(coordinator.state, 'needs_recovery');
   assert.equal(handlerCalls, 1);
+  assert.deepEqual(delivered, []);
   assert.deepEqual(diskRows('SELECT id, value FROM entries'), [[1, 'published']]);
   assert.deepEqual(diskRows('SELECT id, status FROM agent_receipts'), [['receipt-indeterminate', 'completed']]);
+  const terminalResult = JSON.parse(diskRows('SELECT terminal_json FROM agent_receipts')[0][0]);
+  assert.deepEqual(terminalResult, {
+    changed: true,
+    value: true,
+    events: [{
+      apiVersion: 1,
+      eventId: '00000000-0000-4000-8000-000000000003',
+      type: 'entry.changed',
+      occurredAt: timestamp,
+      requestId: '00000000-0000-4000-8000-000000000001',
+      traceId: '00000000-0000-4000-8000-000000000002',
+      source: 'internal',
+      payload: { id: 1 },
+      versionBefore: { dataEpoch: epoch, dataRevision: 0 },
+      versionAfter: { dataEpoch: epoch, dataRevision: 1 }
+    }],
+    dataVersion: { dataEpoch: epoch, dataRevision: 1 }
+  });
   const candidate = await candidates.inspectDatabaseFile(livePath, 'live', opener);
   assert.deepEqual(candidate.generation, { dataEpoch: epoch, dataRevision: 1, controlRevision: 1 });
   await assert.rejects(commandBus.executeWithExecutionReceipt(receiptCapability, envelope(), receipt),
     (error) => error.code === 'RECOVERY_FENCE');
   assert.equal(handlerCalls, 1);
+  assert.deepEqual(delivered, []);
 });

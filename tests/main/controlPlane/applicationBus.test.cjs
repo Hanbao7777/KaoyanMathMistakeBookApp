@@ -377,6 +377,8 @@ test('does not call event UUID or clock dependencies after durable publication s
   let publicationStarted = false;
   let uuidCalls = 0;
   let clockCalls = 0;
+  let finalizeCalls = 0;
+  let finalizedEvents;
   const { coordinator } = createCoordinator({
     publisher(options) {
       publicationStarted = true;
@@ -395,6 +397,13 @@ test('does not call event UUID or clock dependencies after durable publication s
       return fixedTime;
     }
   });
+  const finalizeEvents = eventBus.finalizeEvents.bind(eventBus);
+  eventBus.finalizeEvents = (preparedEvents, versions) => {
+    assert.equal(publicationStarted, false);
+    finalizeCalls += 1;
+    finalizedEvents = finalizeEvents(preparedEvents, versions);
+    return finalizedEvents;
+  };
   const commandBus = new application.CommandBus(coordinator, eventBus);
   commandBus.register('questions.mark_mastery', {
     handler(command, _context, database) {
@@ -407,6 +416,9 @@ test('does not call event UUID or clock dependencies after durable publication s
   assert.equal(publicationStarted, true);
   assert.equal(uuidCalls, 1);
   assert.equal(clockCalls, 1);
+  assert.equal(finalizeCalls, 1);
+  assert.strictEqual(result.events, finalizedEvents);
+  assert.equal(Object.isFrozen(result), true);
   assert.deepEqual(result.events[0].versionBefore, { dataEpoch: epoch, dataRevision: 0 });
   assert.deepEqual(result.events[0].versionAfter, { dataEpoch: epoch, dataRevision: 1 });
   assert.deepEqual(diskRows(), [[1, 'durable']]);

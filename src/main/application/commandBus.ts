@@ -109,17 +109,17 @@ export class CommandBus {
   executeWithExecutionReceipt<C extends AppCommand>(
     capability: CommandBusExecutionReceiptCapability,
     envelope: CommandEnvelope<C>,
-    terminalHook: DatabaseTerminalHook
+    terminalHook: DatabaseTerminalHook<CommandResult<CommandValue<C>>>
   ): Promise<CommandResult<CommandValue<C>>>;
   executeWithExecutionReceipt(
     capability: CommandBusExecutionReceiptCapability,
     envelope: unknown,
-    terminalHook: DatabaseTerminalHook
+    terminalHook: DatabaseTerminalHook<CommandResult>
   ): Promise<CommandResult>;
   executeWithExecutionReceipt(
     capability: CommandBusExecutionReceiptCapability,
     envelope: unknown,
-    terminalHook: DatabaseTerminalHook
+    terminalHook: DatabaseTerminalHook<CommandResult>
   ): Promise<CommandResult> {
     if (receiptCapabilities.get(capability as object) !== this) {
       return Promise.reject(applicationError(new Error('A valid execution receipt capability is required')));
@@ -139,7 +139,7 @@ export class CommandBus {
 
   private async executeValidated(
     envelope: CommandEnvelope,
-    terminalHook?: DatabaseTerminalHook
+    terminalHook?: DatabaseTerminalHook<CommandResult>
   ): Promise<CommandResult> {
     const context = trustedContext(envelope);
     const registration = this.registrations.get(envelope.command.type);
@@ -153,6 +153,20 @@ export class CommandBus {
         expectedVersion: context.expectedVersion,
         conflicts: registration.conflicts?.(envelope.command),
         terminalHook,
+        finalizeValue: (terminalContext) => {
+          const events = terminalContext.semanticChanged
+            ? this.eventBus.finalizeEvents(preparedEvents, {
+                versionBefore: terminalContext.versionBefore,
+                versionAfter: terminalContext.versionAfter
+              })
+            : Object.freeze([]);
+          return Object.freeze({
+            changed: terminalContext.semanticChanged,
+            value: terminalContext.value,
+            events,
+            dataVersion: Object.freeze({ ...terminalContext.versionAfter })
+          });
+        },
         execute: async (database, scope) => {
           const handlerResult = await registration.handler(envelope.command, context, database, scope);
           if (!handlerResult || typeof handlerResult.changed !== 'boolean') {
@@ -169,19 +183,8 @@ export class CommandBus {
         }
       });
 
-      const events = writeResult.changed
-        ? this.eventBus.finalizeEvents(preparedEvents, {
-            versionBefore: writeResult.versionBefore,
-            versionAfter: writeResult.versionAfter
-          })
-        : Object.freeze([]);
-      await this.eventBus.publish(events);
-      return {
-        changed: writeResult.changed,
-        value: writeResult.value,
-        events,
-        dataVersion: Object.freeze({ ...writeResult.versionAfter })
-      };
+      await this.eventBus.publish(writeResult.value.events);
+      return writeResult.value;
     } catch (error) {
       throw applicationError(error);
     }
