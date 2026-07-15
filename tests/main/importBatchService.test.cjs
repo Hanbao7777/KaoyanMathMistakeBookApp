@@ -67,6 +67,13 @@ async function createAssetForBatch(batchId) {
   return assetPath;
 }
 
+function operationManifests() {
+  const root = path.join(pathService.getPaths().data, 'operation-journal');
+  return fs.existsSync(root)
+    ? fs.readdirSync(root).filter((name) => name.endsWith('.operation.json')).map((name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8')))
+    : [];
+}
+
 test('deleteImportBatch creates before_delete_import backup and deletes wrong_questions rows', async () => {
   const { batchId, question } = await createWrongQuestionsBatchWithQuestion();
 
@@ -92,6 +99,8 @@ test('deleteImportBatch moves recorded assets to import trash when asset deletio
   const assetPath = await createAssetForBatch(batchId);
   const paths = pathService.getPaths();
   const expectedTrashPath = path.join(paths.root, 'trash', 'imports', batchId, 'images', 'sample.txt');
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
 
   const result = await importBatchService.deleteImportBatch(batchId);
 
@@ -102,4 +111,23 @@ test('deleteImportBatch moves recorded assets to import trash when asset deletio
 
   const detail = await importBatchService.getImportBatchDetail(batchId);
   assert.ok(detail.assets[0].deleted_at);
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
+  const manifest = operationManifests().at(-1);
+  assert.equal(manifest.state, 'completed');
+  assert.equal(manifest.commandType, 'importBatches.delete');
+  assert.equal(manifest.versionBefore.dataRevision, versionBefore.dataRevision);
+  assert.equal(manifest.versionAfter.dataRevision, versionBefore.dataRevision + 1);
+});
+
+test('deleteImportBatch owns no raw question transaction or persistence path', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../../src/main/services/importBatchService.ts'), 'utf8');
+  const start = source.indexOf('export async function deleteImportBatch');
+  const end = source.indexOf('\nexport async function listLegacyExternalQuestionGroups', start);
+  const body = source.slice(start, end);
+  assert.notEqual(start, -1);
+  assert.match(body, /coordinator\.executeWrite\(/);
+  assert.match(body, /new QuestionRepository\(database, scope\)/);
+  assert.doesNotMatch(body, /\b(?:persistDatabase|runSql|getDatabase)\b/);
+  assert.doesNotMatch(body, /database\.run\(['"](?:BEGIN|COMMIT|ROLLBACK)/);
+  assert.doesNotMatch(body, /(?:INSERT INTO|UPDATE|DELETE FROM)\s+(?:questions|question_images|tags|question_tags|review_logs|question_knowledge_points)\b/i);
 });

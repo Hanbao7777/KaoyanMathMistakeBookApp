@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { shell } from 'electron';
+import type { Database, SqlValue } from 'sql.js';
+import { AgentError } from '../../shared/agent/errors';
 import {
   allSql,
   getDatabase,
+  getDatabaseCoordinator,
   oneSql,
   persistDatabase,
   runSql
@@ -20,6 +24,17 @@ import type {
   ImportBatchType,
   LegacyExternalQuestionGroup
 } from '../../shared/types';
+import {
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
+  OperationManifestStore,
+  type OperationFile,
+  type OperationManifest,
+  type OperationManifestError
+} from '../persistence/operationJournal';
+import { assertDatabaseMutationScope, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
+import { QuestionRepository } from '../application/questions/questionRepository';
 
 function nowIso() {
   return new Date().toISOString();
@@ -116,55 +131,144 @@ function uniqueTargetPath(targetPath: string) {
   return next;
 }
 
-function safeMoveAsset(filePath: string, batchId: string) {
-  const cleanBatch = batchId.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
-  const trashRoot = path.join(getPaths().root, 'trash', 'imports', cleanBatch);
-  const normalized = path.normalize(filePath.split('#')[0]);
-  if (!normalized || !fs.existsSync(normalized)) return { moved: false, failed: '' };
-  const batchRoot = path.normalize(path.join(getPaths().root, 'assets', 'question_bank', batchId));
-  const relativeToBatch = path.relative(batchRoot, normalized);
-  const safeRelative = relativeToBatch && !relativeToBatch.startsWith('..') && !path.isAbsolute(relativeToBatch)
-    ? relativeToBatch
-    : path.basename(normalized);
-  const target = uniqueTargetPath(path.join(trashRoot, safeRelative));
-  fs.mkdirSync(path.dirname(target), { recursive: true });
+function mutateSql(database: Database, scope: DatabaseMutationScope, sql: string, params: readonly unknown[] = []) {
+  assertDatabaseMutationScope(scope, database);
+  const statement = database.prepare(sql);
   try {
-    fs.renameSync(normalized, target);
-    return { moved: true, failed: '' };
-  } catch {
-    try {
-      fs.copyFileSync(normalized, target);
-      fs.unlinkSync(normalized);
-      return { moved: true, failed: '' };
-    } catch (error) {
-      return { moved: false, failed: `${normalized}: ${error instanceof Error ? error.message : String(error)}` };
-    }
+    statement.bind([...params] as SqlValue[]);
+    statement.step();
+  } finally {
+    statement.free();
   }
 }
 
-function moveAssets(database: Awaited<ReturnType<typeof getDatabase>>, batchId: string, assets: ImportAsset[]) {
-  let moved = 0;
+function currentVersion(database: Database) {
+  const row = oneSql<{ data_epoch: string; data_revision: number }>(database, 'SELECT data_epoch, data_revision FROM control_metadata WHERE id = 1');
+  if (!row) throw new Error('Import-batch deletion requires control metadata');
+  return { dataEpoch: row.data_epoch, dataRevision: row.data_revision };
+}
+
+function operationError(error: unknown, phase: string): OperationManifestError {
+  return {
+    code: typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code.slice(0, 200)
+      : 'import_batch_delete_failed',
+    phase,
+    message: error instanceof Error ? error.message.slice(0, 1_000) || 'Import-batch deletion failed' : 'Import-batch deletion failed'
+  };
+}
+
+function deletionJournal() {
+  const store = new OperationManifestStore(path.normalize(path.join(getPaths().data, 'operation-journal')));
+  return { store, journal: new OperationJournal(store) };
+}
+
+function isInside(candidate: string, root: string) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function deletionFiles(batchId: string, assets: ImportAsset[]) {
+  const paths = getPaths();
+  const root = path.normalize(paths.root);
+  const cleanBatch = batchId.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_');
+  const trashRoot = path.normalize(path.join(root, 'trash', 'imports', cleanBatch));
+  const batchRoot = path.normalize(path.join(root, 'assets', 'question_bank', batchId));
+  const grouped = new Map<string, number[]>();
   const failed: string[] = [];
   for (const asset of assets) {
-    const result = safeMoveAsset(asset.file_path, batchId);
-    if (result.moved) {
-      moved += 1;
-      runSql(database, 'UPDATE import_assets SET deleted_at = ? WHERE id = ?', [nowIso(), asset.id]);
+    const targetPath = path.normalize(asset.file_path.split('#')[0]);
+    if (!targetPath || !fs.existsSync(targetPath)) continue;
+    if (!isInside(targetPath, root)) {
+      failed.push(`已保留资源：文件不在受管数据目录中：${targetPath}`);
+      continue;
     }
-    if (result.failed) failed.push(result.failed);
+    const ids = grouped.get(targetPath) ?? [];
+    ids.push(asset.id);
+    grouped.set(targetPath, ids);
   }
-  return { moved, failed };
+
+  const files: OperationFile[] = [];
+  const assetIds: number[] = [];
+  for (const [targetPath, ids] of grouped) {
+    const relativeToBatch = path.relative(batchRoot, targetPath);
+    const safeRelative = relativeToBatch && !relativeToBatch.startsWith('..') && !path.isAbsolute(relativeToBatch)
+      ? relativeToBatch
+      : path.basename(targetPath);
+    files.push({
+      fileId: `asset-${ids[0]}`,
+      kind: 'quarantine_delete',
+      targetPath,
+      quarantinePath: path.normalize(uniqueTargetPath(path.join(trashRoot, safeRelative))),
+      content: evidenceForBytes(fs.readFileSync(targetPath)),
+      status: 'pending'
+    });
+    assetIds.push(...ids);
+  }
+  return { files, assetIds, failed };
+}
+
+function createDeletionBackup() {
+  const paths = getPaths();
+  fs.mkdirSync(paths.backups, { recursive: true });
+  if (!fs.existsSync(paths.database)) throw new Error(`数据库文件不存在：${paths.database}`);
+  const date = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const timestamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  const filePath = path.join(paths.backups, `mistakes_before_delete_import_${timestamp}.db`);
+  fs.copyFileSync(paths.database, filePath);
+  return filePath;
+}
+
+async function compensateDeletion(
+  coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>,
+  manifest: OperationManifest,
+  error: unknown
+) {
+  const { store, journal } = deletionJournal();
+  const latest = await store.read(manifest.operationId) ?? manifest;
+  try {
+    if (coordinator.state === 'writable') {
+      await journal.compensate(latest, operationError(error, 'database_command'));
+      return;
+    }
+    await journal.needsRecovery(latest, operationError(error, 'database_command'));
+  } catch (recoveryError) {
+    const current = await store.read(manifest.operationId) ?? latest;
+    await journal.needsRecovery(current, operationError(recoveryError, 'compensation')).catch(() => undefined);
+    if (coordinator.state === 'writable') {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+    }
+    throw new AgentError('RECOVERY_FENCE');
+  }
+}
+
+async function completeDeletion(
+  coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>,
+  manifest: OperationManifest
+) {
+  const { store, journal } = deletionJournal();
+  try {
+    const latest = await store.read(manifest.operationId) ?? manifest;
+    await journal.commitFiles(await journal.markDatabaseCommitted(latest));
+  } catch (error) {
+    const latest = await store.read(manifest.operationId) ?? manifest;
+    await journal.needsRecovery(latest, operationError(error, 'file_finalization')).catch(() => undefined);
+    if (coordinator.state === 'writable') {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+    }
+    throw new AgentError('RECOVERY_FENCE');
+  }
 }
 
 export async function deleteImportBatch(batchId: string, options: DeleteImportBatchOptions = {}): Promise<DeleteImportBatchResult> {
-  const database = await getDatabase();
-  const detail = await getImportBatchDetail(batchId);
-  if (!detail) throw new Error('导入批次不存在');
-  if (detail.batch.status === 'deleted') throw new Error('该导入批次已经删除');
-
-  const backup = createDatabaseBackup('before_delete_import');
+  const coordinator = await getDatabaseCoordinator();
+  const requestId = `import-batch-delete-${crypto.randomUUID()}`;
+  let manifest: OperationManifest | null = null;
   const result: DeleteImportBatchResult = {
-    backupPath: backup.filePath,
+    backupPath: '',
     deletedQuestions: 0,
     deletedExternalQuestions: 0,
     deletedAttempts: 0,
@@ -172,68 +276,107 @@ export async function deleteImportBatch(batchId: string, options: DeleteImportBa
     movedAssets: 0,
     failedAssets: []
   };
-
-  const externalIds = detail.items.filter((item) => item.target_table === 'external_questions').map((item) => item.target_id);
-  const questionIds = detail.items.filter((item) => item.target_table === 'questions').map((item) => item.target_id);
-  const knowledgeIds = detail.items.filter((item) => item.target_table === 'knowledge_points').map((item) => item.target_id);
-  const linkedQuestionIds = externalIds.length
-    ? (() => {
-      const ph = externalIds.map(() => '?').join(', ');
-      return allSql<{ question_id: number }>(
-        database,
-        `SELECT DISTINCT created_question_id AS question_id FROM external_questions
-         WHERE id IN (${ph}) AND created_question_id IS NOT NULL
-         UNION
-         SELECT DISTINCT created_question_id AS question_id FROM external_question_attempts
-         WHERE external_question_id IN (${ph}) AND created_question_id IS NOT NULL`,
-        [...externalIds, ...externalIds]
-      ).map((row) => String(row.question_id));
-    })()
-    : [];
-
-  database.run('BEGIN TRANSACTION');
   try {
-    if (externalIds.length) {
-      const ph = externalIds.map(() => '?').join(', ');
-      result.deletedAttempts = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (${ph})`, externalIds)?.count ?? 0;
-      runSql(database, `DELETE FROM external_question_attempts WHERE external_question_id IN (${ph})`, externalIds);
-      result.deletedExternalQuestions = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM external_questions WHERE id IN (${ph})`, externalIds)?.count ?? 0;
-      runSql(database, `DELETE FROM external_questions WHERE id IN (${ph})`, externalIds);
-    }
+    await coordinator.executeWrite({
+      requestId,
+      concurrency: 'none',
+      async execute(database, scope) {
+        const batch = oneSql<ImportBatch>(database, 'SELECT * FROM import_batches WHERE id = ?', [batchId]);
+        if (!batch) throw new Error('导入批次不存在');
+        if (batch.status === 'deleted') throw new Error('该导入批次已经删除');
+        const items = allSql<ImportBatchDetail['items'][number]>(database, 'SELECT * FROM import_batch_items WHERE batch_id = ? ORDER BY id ASC', [batchId]);
+        const assets = allSql<ImportAsset>(database, 'SELECT * FROM import_assets WHERE batch_id = ? ORDER BY id ASC', [batchId]);
+        const externalIds = items.filter((item) => item.target_table === 'external_questions').map((item) => item.target_id);
+        const questionIds = items.filter((item) => item.target_table === 'questions').map((item) => item.target_id);
+        const knowledgeIds = items.filter((item) => item.target_table === 'knowledge_points').map((item) => item.target_id);
+        const linkedQuestionIds = externalIds.length
+          ? (() => {
+            const placeholders = externalIds.map(() => '?').join(', ');
+            return allSql<{ question_id: number }>(database, `SELECT DISTINCT created_question_id AS question_id FROM external_questions
+              WHERE id IN (${placeholders}) AND created_question_id IS NOT NULL
+              UNION
+              SELECT DISTINCT created_question_id AS question_id FROM external_question_attempts
+              WHERE external_question_id IN (${placeholders}) AND created_question_id IS NOT NULL`, [...externalIds, ...externalIds])
+              .map((row) => String(row.question_id));
+          })()
+          : [];
+        const questionsToDelete = new Set(batch.type === 'wrong_questions' ? questionIds : []);
+        if (options.deleteLinkedQuestions) linkedQuestionIds.forEach((id) => questionsToDelete.add(id));
 
-    if (questionIds.length && detail.batch.type === 'wrong_questions') {
-      const ph = questionIds.map(() => '?').join(', ');
-      result.deletedQuestions = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM questions WHERE id IN (${ph})`, questionIds)?.count ?? 0;
-      runSql(database, `DELETE FROM questions WHERE id IN (${ph})`, questionIds);
-    }
+        result.backupPath = createDeletionBackup();
+        if (linkedQuestionIds.length && !options.deleteLinkedQuestions && options.deleteAssets !== false) {
+          result.failedAssets.push(`已保留资源：该题库已有 ${linkedQuestionIds.length} 道题加入错题本，移动资源可能导致错题图片丢失。`);
+        } else if (options.deleteAssets !== false) {
+          const deletion = deletionFiles(batchId, assets);
+          result.failedAssets.push(...deletion.failed);
+          if (deletion.files.length) {
+            const versionBefore = currentVersion(database);
+            if (versionBefore.dataRevision === Number.MAX_SAFE_INTEGER) throw new Error('Import-batch deletion revision overflow');
+            const paths = getPaths();
+            fs.mkdirSync(path.join(paths.data, 'operation-journal'), { recursive: true });
+            const created = createOperationManifest({
+              operationId: requestId,
+              requestId,
+              commandType: 'importBatches.delete',
+              source: 'internal',
+              clientId: 'import-batch-service',
+              traceId: requestId,
+              inputHash: crypto.createHash('sha256').update(JSON.stringify({ batchId, options })).digest('hex'),
+              storage: 'data_root',
+              versionBefore,
+              versionAfter: { dataEpoch: versionBefore.dataEpoch, dataRevision: versionBefore.dataRevision + 1 },
+              affectedEntities: [
+                { entityType: 'import_batch', entityId: batchId },
+                ...[...questionsToDelete].map((id) => ({ entityType: 'question', entityId: id }))
+              ],
+              roots: {
+                manifestRoot: path.normalize(path.join(paths.data, 'operation-journal')),
+                managedRoots: [path.normalize(paths.root)],
+                sourceRoots: [path.normalize(paths.root)]
+              },
+              files: deletion.files,
+              createdAt: nowIso()
+            });
+            const operationJournal = deletionJournal().journal;
+            manifest = await operationJournal.prepare(created);
+            manifest = await operationJournal.stage(manifest);
+            result.movedAssets = deletion.files.length;
+            for (const assetId of deletion.assetIds) {
+              mutateSql(database, scope, 'UPDATE import_assets SET deleted_at = ? WHERE id = ?', [nowIso(), assetId]);
+            }
+          }
+        }
 
-    if (options.deleteLinkedQuestions && linkedQuestionIds.length) {
-      const linkedPh = linkedQuestionIds.map(() => '?').join(', ');
-      result.deletedQuestions += oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM questions WHERE id IN (${linkedPh})`, linkedQuestionIds)?.count ?? 0;
-      runSql(database, `DELETE FROM questions WHERE id IN (${linkedPh})`, linkedQuestionIds);
-    } else if (linkedQuestionIds.length && options.deleteAssets !== false) {
-      result.failedAssets.push(`已保留资源：该题库已有 ${linkedQuestionIds.length} 道题加入错题本，移动资源可能导致错题图片丢失。`);
-    }
+        if (externalIds.length) {
+          const placeholders = externalIds.map(() => '?').join(', ');
+          result.deletedAttempts = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (${placeholders})`, externalIds)?.count ?? 0;
+          mutateSql(database, scope, `DELETE FROM external_question_attempts WHERE external_question_id IN (${placeholders})`, externalIds);
+          result.deletedExternalQuestions = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM external_questions WHERE id IN (${placeholders})`, externalIds)?.count ?? 0;
+          mutateSql(database, scope, `DELETE FROM external_questions WHERE id IN (${placeholders})`, externalIds);
+        }
 
-    if (options.deleteAssets !== false && (!linkedQuestionIds.length || options.deleteLinkedQuestions)) {
-      const moved = moveAssets(database, batchId, detail.assets);
-      result.movedAssets = moved.moved;
-      result.failedAssets = [...result.failedAssets, ...moved.failed];
-    }
+        const repository = new QuestionRepository(database, scope);
+        for (const questionId of questionsToDelete) {
+          if (repository.delete(Number(questionId))) result.deletedQuestions += 1;
+        }
 
-    if (knowledgeIds.length) {
-      const ph = knowledgeIds.map(() => '?').join(', ');
-      result.softDeletedKnowledgePoints = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM knowledge_points WHERE node_id IN (${ph})`, knowledgeIds)?.count ?? 0;
-      runSql(database, `UPDATE knowledge_points SET deleted_at = ? WHERE node_id IN (${ph})`, [nowIso(), ...knowledgeIds]);
-    }
+        if (knowledgeIds.length) {
+          const placeholders = knowledgeIds.map(() => '?').join(', ');
+          result.softDeletedKnowledgePoints = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM knowledge_points WHERE node_id IN (${placeholders})`, knowledgeIds)?.count ?? 0;
+          mutateSql(database, scope, `UPDATE knowledge_points SET deleted_at = ? WHERE node_id IN (${placeholders})`, [nowIso(), ...knowledgeIds]);
+        }
 
-    runSql(database, "UPDATE import_batches SET status = 'deleted', deleted_at = ? WHERE id = ?", [nowIso(), batchId]);
-    database.run('COMMIT');
-    persistDatabase();
+        mutateSql(database, scope, "UPDATE import_batches SET status = 'deleted', deleted_at = ? WHERE id = ?", [nowIso(), batchId]);
+        return { changed: true, value: null };
+      }
+    });
   } catch (error) {
-    database.run('ROLLBACK');
+    const storedManifest = manifest ?? await deletionJournal().store.read(requestId);
+    if (storedManifest) await compensateDeletion(coordinator, storedManifest, error);
     throw error;
   }
+
+  if (manifest) await completeDeletion(coordinator, manifest);
 
   return result;
 }
