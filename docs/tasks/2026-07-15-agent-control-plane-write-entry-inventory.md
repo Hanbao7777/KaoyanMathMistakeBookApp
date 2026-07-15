@@ -380,3 +380,26 @@ Run this checklist whenever an IPC channel, exported service function, schema ta
 14. Verify local references: every backticked repository path must exist; every cited line must still contain the claimed operation.
 
 `rg` was unavailable in the current shell during this documentation task, so equivalent repository searches used the provided Grep tool (which is ripgrep-backed) and `git grep` for count reconciliation. Future environments with `rg` should run the commands exactly as written above.
+
+## Phase A completion reconciliation (2026-07-15)
+
+This section records the implemented disposition of the write surfaces above. The earlier inventory remains as historical baseline evidence; this reconciliation is authoritative for the A12 gate.
+
+| Surface | Final disposition | Mechanical evidence |
+| --- | --- | --- |
+| Renderer question CRUD, review, mastery, and image removal | `migrated` through the question Command/Query Bus | `questions-command-adapter.test.cjs`, `questionsEndToEnd.test.cjs`, `questionWriterGate.test.cjs` |
+| Startup seed import, category migration, and knowledge rematch | `migrated` through bounded internal commands before IPC admission | `startupQuestionCommands.test.cjs`, question legacy-call gate |
+| Structured import, question-bank conversion, import-batch deletion, knowledge linking, and bridge review sync | `migrated`; cross-resource work is journaled and coordinator-owned | focused A10 recovery/migration suites plus question writer gate |
+| Study supervisor, TickTick/focus/habit/settings, DeepSeek settings, AI-import metadata, and white-noise settings | `coordinator-contained` deferred domains | A10g containment suites plus global database writer gate |
+| JSON import, clear-all, restore, root switch, backup creation/deletion, and legacy external-group deletion | `coordinator-wrapped global operation` behind maintenance/recovery boundaries | A11 replacement/root/backup suites plus global database writer gate |
+| Schema creation and legacy migration | evidence-backed `bootstrap` exception | exact schema/bootstrap classifications in both static gates |
+| Runtime query surfaces | evidence-backed `read-only` | acquisition-body proof and SQL-call validation in `databaseWriterGate.test.cjs` |
+| `persistDatabase` and legacy import helper definitions | unreachable compatibility definitions with exact reference counts; no production callers | persistence/helper assertions in `databaseWriterGate.test.cjs` |
+
+The final question SQL snapshot contains 37 classified mutations: 18 capability-scoped repository mutations, 4 coordinator-fenced global replacements, 9 legacy migration statements, and 6 schema DDL statements. Six legacy question-writer call forms remain, all confined to application/repository adapters. Every production `QuestionRepository` construction supplies a coordinator mutation scope.
+
+The global writer snapshot covers `.run`, `.exec`, `.prepare`, transaction tokens, `persistDatabase`, mutable `getDatabase`, `runSql`, and `mutateSql`. Its exact SQL-call classifications are: 6 candidate/bootstrap validations, 2 capability-scoped repository prepares, 2 bridge-helper calls, 1 study-bootstrap call, 29 coordinator invocation calls, 13 coordinator/revision primitives, 16 fenced identity-replacement calls, 34 database bootstrap/migration calls, 3 scope-asserting mutation-helper prepares, 1 validated query-facade prepare, and 11 verified read-only SQL calls. New files, new calls, or changed counts fail until directly inspected and reconciled here.
+
+The behavioral acceptance path exercises Renderer IPC -> application command -> coordinator -> durable reopen -> immutable event for create, update, review, image removal, and delete. It also proves a duplicate update is revision-neutral, a stale version is rejected without an event, image staging/quarantine completes, restart preserves the final version, and the deleted question/image remain absent. A coordinator regression additionally proves that every reopened SQL.js handle re-enables foreign keys, so later deletes retain cascade semantics after durable publication.
+
+**Hard future gate:** no MCP question-write tool may be registered unless both `questionWriterGate.test.cjs` and `databaseWriterGate.test.cjs` remain green on that branch and the behavioral questions end-to-end test still passes.

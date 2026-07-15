@@ -4,6 +4,7 @@ const path = require('node:path');
 const test = require('node:test');
 const {
   cleanupControlPlaneRoot,
+  databaseService,
   getControlPlanePaths,
   requireMain,
   resetControlPlaneEnvironment
@@ -79,4 +80,30 @@ test('listed renderer writers dispatch through the question application', () => 
 test('adapter does not accept renderer identity or source fields', () => {
   assert.doesNotMatch(adapterSource, /event\.sender|source\s*:/);
   assert.match(adapterSource, /createRendererExecutionContext/);
+});
+
+test('renderer payload cannot inject execution identity or concurrency metadata', async () => {
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const before = coordinator.currentVersion();
+  await assert.rejects(
+    adapter.createQuestionFromRenderer(input({
+      trust: 'caller',
+      client: { clientId: 'attacker', clientName: 'attacker' },
+      expectedVersion: { dataEpoch: 'attacker', dataRevision: 999 },
+      traceId: '00000000-0000-4000-8000-000000000000'
+    })),
+    (error) => error?.code === 'VALIDATION_ERROR'
+  );
+  assert.deepEqual(coordinator.currentVersion(), before);
+});
+
+test('renderer writes emit renderer-attributed events from fixed trusted context', async () => {
+  const application = await databaseService.getQuestionsApplication();
+  const events = [];
+  application.eventBus.subscribe((event) => events.push(event));
+  await adapter.createQuestionFromRenderer(input({ title: 'Renderer identity event' }));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].source, 'renderer');
+  assert.match(events[0].requestId, /^[0-9a-f-]{36}$/i);
+  assert.match(events[0].traceId, /^[0-9a-f-]{36}$/i);
 });
