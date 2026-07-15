@@ -460,3 +460,59 @@ test('maintenance, read-only, shutdown, and drain transitions are deterministic'
   assert.equal(coordinator.state, 'shutdown');
   await assert.rejects(coordinator.executeWrite(write('after-shutdown', () => ({ changed: false, value: null }))), (error) => error.code === 'MAINTENANCE_FENCE');
 });
+
+test('shutdown drains admitted failures, fences late admissions, and rejects after reaching shutdown', async () => {
+  const coordinator = createCoordinator();
+  const entered = deferred();
+  const release = deferred();
+  const failedWrite = coordinator.executeWrite(write('shutdown-failure', async () => {
+    entered.resolve();
+    await release.promise;
+    throw new Error('pending shutdown failure');
+  }));
+  await entered.promise;
+
+  const shutdown = coordinator.shutdown();
+  await assert.rejects(
+    coordinator.executeWrite(write('shutdown-late-admission', () => ({ changed: false, value: null }))),
+    (error) => error.code === 'MAINTENANCE_FENCE'
+  );
+  release.resolve();
+  await assert.rejects(failedWrite, /pending shutdown failure/);
+  await assert.rejects(shutdown, /pending shutdown failure/);
+  assert.equal(coordinator.state, 'shutdown');
+});
+
+test('a failure fully settled before shutdown does not poison a later shutdown', async () => {
+  const coordinator = createCoordinator();
+  await assert.rejects(coordinator.executeWrite(write('settled-before-shutdown', () => {
+    throw new Error('settled failure');
+  })), /settled failure/);
+
+  await coordinator.shutdown();
+  assert.equal(coordinator.state, 'shutdown');
+});
+
+test('shutdown preserves primitive drain failures without confusing them with the empty sentinel', async () => {
+  const coordinator = createCoordinator();
+  const entered = deferred();
+  const release = deferred();
+  const failedWrite = coordinator.executeWrite(write('shutdown-undefined-failure', async () => {
+    entered.resolve();
+    await release.promise;
+    throw undefined;
+  }));
+  await entered.promise;
+
+  const shutdown = coordinator.shutdown();
+  release.resolve();
+  await failedWrite.then(
+    () => assert.fail('write should reject'),
+    (error) => assert.equal(error, undefined)
+  );
+  await shutdown.then(
+    () => assert.fail('shutdown should reject'),
+    (error) => assert.equal(error, undefined)
+  );
+  assert.equal(coordinator.state, 'shutdown');
+});

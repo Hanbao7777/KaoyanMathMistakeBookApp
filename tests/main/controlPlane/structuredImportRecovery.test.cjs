@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const XLSX = require('xlsx');
+const AdmZip = require('adm-zip');
 const {
   cleanupControlPlaneRoot,
   databaseService,
@@ -46,6 +48,29 @@ async function prepareJson(row) {
   fs.writeFileSync(jsonPath, JSON.stringify([row]));
   electron.dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [jsonPath] });
   return structuredImportService.prepareJsonImport();
+}
+
+async function prepareZip(entries) {
+  const sourceRoot = getControlPlanePaths().testRoot;
+  const zipPath = path.join(sourceRoot, `structured-${Date.now()}-${Math.random()}.zip`);
+  const sheet = XLSX.utils.json_to_sheet([validRow('images/nested.png')]);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, sheet, 'import');
+  const zip = new AdmZip();
+  zip.addFile('import.xlsx', XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' }));
+  for (const [name, bytes] of Object.entries(entries)) zip.addFile(name, Buffer.from(bytes));
+  zip.writeZip(zipPath);
+  electron.dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [zipPath] });
+  return { preview: await structuredImportService.prepareZipImport(), zipPath };
+}
+
+function manifests() {
+  const journalRoot = path.join(getControlPlanePaths().dataRoot, 'data', 'operation-journal');
+  return fs.existsSync(journalRoot)
+    ? fs.readdirSync(journalRoot)
+      .filter((name) => name.endsWith('.operation.json'))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(journalRoot, name), 'utf8')))
+    : [];
 }
 
 async function reopenExistingDatabase() {
@@ -127,4 +152,64 @@ test('journaled image commit and explainable finalization survive restart', asyn
   assert.equal(metadata.rows[0].status, 'succeeded');
   assert.equal(metadata.rows[0].imageStatus, 'committed');
   assert.equal(fs.existsSync(detail.assets[0].file_path), true);
+});
+
+test('zip cleanup journals every nested extraction file without touching the caller zip', async () => {
+  const { preview, zipPath } = await prepareZip({
+    'images/nested.png': 'nested-image',
+    'notes/deeper/readme.txt': 'temporary-note'
+  });
+  const extractionRoot = path.join(getControlPlanePaths().dataRoot, 'temp', preview.sessionId);
+
+  const result = await structuredImportService.confirmStructuredImport(preview.sessionId);
+  assert.equal(result.successCount, 1);
+  assert.equal(fs.existsSync(zipPath), true);
+  assert.equal(fs.existsSync(extractionRoot), false);
+
+  const cleanup = manifests().find((manifest) => manifest.commandType === 'structuredImport.cleanupTemporaryExtraction');
+  assert.ok(cleanup);
+  assert.equal(cleanup.state, 'completed');
+  assert.deepEqual(
+    cleanup.files.map((file) => path.relative(extractionRoot, file.targetPath)).sort(),
+    [path.join('images', 'nested.png'), 'import.xlsx', path.join('notes', 'deeper', 'readme.txt')]
+  );
+  assert.ok(cleanup.files.every((file) => /^[a-f0-9]{64}$/.test(file.content.sha256)));
+  assert.ok(cleanup.files.every((file) => file.status === 'committed'));
+  assert.ok(cleanup.files.every((file) => fs.existsSync(file.quarantinePath)));
+  assert.ok(cleanup.files.every((file) => file.targetPath.startsWith(extractionRoot + path.sep)));
+  assert.ok(cleanup.files.every((file) => file.targetPath !== zipPath && file.quarantinePath !== zipPath));
+});
+
+test('startup completes an interrupted committed zip cleanup from the data-root journal', async () => {
+  const { preview } = await prepareZip({ 'images/nested.png': 'restart-image' });
+  const originalRename = fs.promises.rename;
+  fs.promises.rename = async (source, target) => {
+    if (String(source).endsWith('.tmp') && String(source).includes('operation-journal')) {
+      const value = JSON.parse(fs.readFileSync(source, 'utf8'));
+      if (value.commandType === 'structuredImport.cleanupTemporaryExtraction' && ['db_committed', 'needs_recovery'].includes(value.state)) {
+        throw new Error('simulated process interruption');
+      }
+    }
+    return originalRename.call(fs.promises, source, target);
+  };
+  try {
+    await assert.rejects(
+      structuredImportService.cleanupStructuredImport(preview.sessionId),
+      /simulated process interruption/
+    );
+  } finally {
+    fs.promises.rename = originalRename;
+  }
+
+  const interrupted = manifests().find((manifest) => manifest.commandType === 'structuredImport.cleanupTemporaryExtraction');
+  assert.equal(interrupted.state, 'files_staged');
+  assert.ok(interrupted.files.every((file) => fs.existsSync(file.quarantinePath)));
+  assert.ok(interrupted.files.every((file) => !fs.existsSync(file.targetPath)));
+
+  databaseService.resetDatabaseConnection();
+  const restart = await databaseService.initializeDatabase();
+  assert.equal(restart.state, 'writable');
+  const recovered = manifests().find((manifest) => manifest.operationId === interrupted.operationId);
+  assert.equal(recovered.state, 'completed');
+  assert.ok(recovered.files.every((file) => file.status === 'committed'));
 });

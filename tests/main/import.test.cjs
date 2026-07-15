@@ -91,7 +91,10 @@ test('prepareExcelImport reports invalid row for nonexistent image', async () =>
   assert.equal(preview.rows[1].isValid, false);
   assert.match(preview.rows[1].errors[0], /图片文件不存在/);
 
-  structuredImportService.cleanupStructuredImport(preview.sessionId);
+  const versionBeforeCleanup = (await databaseService.getDatabaseCoordinator()).currentVersion();
+  await structuredImportService.cleanupStructuredImport(preview.sessionId);
+  assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), versionBeforeCleanup);
+  assert.equal(fs.existsSync(excelPath), true);
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
@@ -210,16 +213,20 @@ test('confirmStructuredImport records cleanup failure and leaves cleanup retryab
   setDialogFile(zipPath);
 
   const preview = await structuredImportService.prepareZipImport();
-  const originalRmSync = fs.rmSync;
-  fs.rmSync = (target, options) => {
-    if (path.basename(String(target)).startsWith('import-')) throw new Error('cleanup blocked');
-    return originalRmSync(target, options);
+  const originalRename = fs.promises.rename;
+  let blocked = true;
+  fs.promises.rename = async (source, target) => {
+    if (blocked && String(source).includes(`${path.sep}import-`) && String(target).includes('.structured-import-quarantine')) {
+      blocked = false;
+      throw new Error('cleanup blocked');
+    }
+    return originalRename.call(fs.promises, source, target);
   };
   let result;
   try {
     result = await structuredImportService.confirmStructuredImport(preview.sessionId);
   } finally {
-    fs.rmSync = originalRmSync;
+    fs.promises.rename = originalRename;
   }
 
   assert.equal(result.successCount, 1);
@@ -229,7 +236,13 @@ test('confirmStructuredImport records cleanup failure and leaves cleanup retryab
   const metadata = JSON.parse(detail.batch.metadata_json);
   assert.equal(metadata.phase, 'cleanup_failed');
   assert.equal(metadata.cleanup, 'failed');
-  assert.equal(structuredImportService.cleanupStructuredImport(preview.sessionId), true);
+  const journalRoot = path.join(requireMain('services/pathService.js').getPaths().data, 'operation-journal');
+  const failedCleanup = fs.readdirSync(journalRoot)
+    .filter((name) => name.endsWith('.operation.json'))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(journalRoot, name), 'utf8')))
+    .find((manifest) => manifest.commandType === 'structuredImport.cleanupTemporaryExtraction');
+  assert.equal(failedCleanup.state, 'compensated');
+  assert.equal(await structuredImportService.cleanupStructuredImport(preview.sessionId), true);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });

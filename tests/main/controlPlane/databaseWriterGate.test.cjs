@@ -251,7 +251,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 221,
+    line: 224,
     classification: 'unused compatibility export definition'
   }]);
 });

@@ -37,7 +37,10 @@ async function insertQuestion(title, imagePath = null) {
 }
 
 test('restore validates first, publishes a new epoch at revision zero, and invalidates old versions', async () => {
-  await insertQuestion('before backup');
+  const paths = pathService.getPaths();
+  const imagePath = path.join(paths.images, 'restore-relative.png');
+  fs.writeFileSync(imagePath, Buffer.from('restore-image'));
+  await insertQuestion('before backup', 'images/restore-relative.png');
   const backup = await backupService.createDatabaseBackupMaintained('manual');
   await insertQuestion('after backup');
   const oldVersion = (await databaseService.getDatabaseCoordinator()).currentVersion();
@@ -51,6 +54,7 @@ test('restore validates first, publishes a new epoch at revision zero, and inval
   const coordinator = await databaseService.getDatabaseCoordinator();
   assert.deepEqual(coordinator.currentVersion(), { dataEpoch: 'restored-epoch', dataRevision: 0 });
   assert.equal((await databaseService.listQuestions()).length, 1);
+  assert.equal((await databaseService.listQuestions())[0].question_images[0].file_path, 'images/restore-relative.png');
   await assert.rejects(
     coordinator.executeWrite({
       requestId: 'stale-after-restore',
@@ -88,7 +92,7 @@ test('clear-all quarantines managed images and retains a verified consistency pa
   const paths = pathService.getPaths();
   const imagePath = path.join(paths.images, 'clear-me.png');
   fs.writeFileSync(imagePath, Buffer.from('image-bytes'));
-  await insertQuestion('with image', imagePath);
+  await insertQuestion('with image', 'images/clear-me.png');
   const before = (await databaseService.getDatabaseCoordinator()).currentVersion();
 
   await databaseService.clearAllData(true, { createEpoch: () => 'clear-epoch' });
@@ -129,7 +133,9 @@ test('restart reconciliation completes a replacement journal interrupted after d
 });
 
 test('global JSON import replaces identity through the same recovery kernel', async () => {
-  await insertQuestion('exported question');
+  const paths = pathService.getPaths();
+  fs.writeFileSync(path.join(paths.images, 'import-relative.png'), Buffer.from('import-image'));
+  await insertQuestion('exported question', 'images/import-relative.png');
   const exported = await databaseService.exportData();
   await insertQuestion('later question');
   const before = (await databaseService.getDatabaseCoordinator()).currentVersion();
@@ -142,6 +148,7 @@ test('global JSON import replaces identity through the same recovery kernel', as
   assert.notEqual(after.dataEpoch, before.dataEpoch);
   assert.equal(after.dataRevision, 0);
   assert.deepEqual((await databaseService.listQuestions()).map((question) => question.title), ['exported question']);
+  assert.equal((await databaseService.listQuestions())[0].question_images[0].file_path, 'images/import-relative.png');
 });
 
 test('global JSON import rejects unsafe or missing managed image references before epoch publication', async () => {

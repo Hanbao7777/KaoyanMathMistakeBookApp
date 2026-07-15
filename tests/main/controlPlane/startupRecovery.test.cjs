@@ -10,6 +10,7 @@ const pathService = environment.requireMain('services/pathService.js');
 const schema = environment.requireMain('database/schema.js');
 const bootstrap = environment.requireMain('persistence/databaseBootstrap.js');
 const candidates = environment.requireMain('persistence/databaseCandidate.js');
+const epochTransitions = environment.requireMain('persistence/epochTransitionStore.js');
 const operationJournal = environment.requireMain('persistence/operationJournal/index.js');
 
 let SQL;
@@ -201,6 +202,111 @@ test('corrupt and cross-epoch ambiguous candidates never trigger blank initializ
   assert.deepEqual(readCandidateVersion(tempPath), { dataEpoch: 'epoch-b', dataRevision: 0 });
 });
 
+test('startup consumes only validated durable transition evidence for the authorized target epoch', async () => {
+  const paths = currentPaths();
+  fs.writeFileSync(paths.database, createDatabaseBytes('opaque-old-epoch', 9));
+  const operationId = 'replacement-operation';
+  const targetPath = path.join(pathsDir(), `.mistakes.db.${operationId}.target.tmp`);
+  fs.writeFileSync(targetPath, createDatabaseBytes('opaque-target-epoch', 0));
+  const transitionRoot = path.join(environment.recoveryRoot, 'epoch-transitions');
+  const store = new epochTransitions.EpochTransitionStore(transitionRoot, { randomId: () => 'publish-nonce' });
+  await store.publish(epochTransitions.createEpochTransitionEvidence({
+    instanceId: 'source-instance',
+    operationId,
+    livePath: paths.database,
+    fromVersion: { dataEpoch: 'opaque-old-epoch', dataRevision: 9 },
+    toVersion: { dataEpoch: 'opaque-target-epoch', dataRevision: 0 },
+    createdAt: '2026-07-15T00:00:00.000Z'
+  }));
+
+  const { result } = await initializeWithTrace();
+
+  assert.equal(result.state, 'writable');
+  assert.equal(result.databaseRecovery.decision.status, 'selected_by_transition');
+  assert.deepEqual(readDiskVersion(), { dataEpoch: 'opaque-target-epoch', dataRevision: 0 });
+  assert.equal(fs.existsSync(path.join(transitionRoot, `${operationId}.transition.json`)), false);
+});
+
+test('write-ahead transition evidence is harmless when the target candidate was never published', async () => {
+  const paths = currentPaths();
+  fs.writeFileSync(paths.database, createDatabaseBytes('still-authoritative', 6));
+  const transitionRoot = path.join(environment.recoveryRoot, 'epoch-transitions');
+  const store = new epochTransitions.EpochTransitionStore(transitionRoot, { randomId: () => 'publish-nonce' });
+  await store.publish(epochTransitions.createEpochTransitionEvidence({
+    instanceId: 'source-instance',
+    operationId: 'never-published-operation',
+    livePath: paths.database,
+    fromVersion: { dataEpoch: 'still-authoritative', dataRevision: 6 },
+    toVersion: { dataEpoch: 'absent-target', dataRevision: 0 },
+    createdAt: '2026-07-15T00:00:00.000Z'
+  }));
+
+  const { result } = await initializeWithTrace();
+
+  assert.equal(result.state, 'writable');
+  assert.deepEqual(readDiskVersion(), { dataEpoch: 'still-authoritative', dataRevision: 6 });
+});
+
+test('startup rejects malformed or candidate-mismatched transition evidence', async () => {
+  const transitionRoot = path.join(environment.recoveryRoot, 'epoch-transitions');
+  fs.mkdirSync(transitionRoot, { recursive: true });
+  fs.writeFileSync(path.join(transitionRoot, 'broken.transition.json'), '{broken', 'utf8');
+  await assert.rejects(initializeWithTrace(), /Database transition recovery failed/);
+
+  await resetRoots();
+  const paths = currentPaths();
+  fs.writeFileSync(paths.database, createDatabaseBytes('actual-source', 9));
+  fs.writeFileSync(path.join(pathsDir(), '.mistakes.db.mismatched.target.tmp'), createDatabaseBytes('target-epoch', 0));
+  const store = new epochTransitions.EpochTransitionStore(transitionRoot, { randomId: () => 'publish-nonce' });
+  await store.publish(epochTransitions.createEpochTransitionEvidence({
+    instanceId: 'source-instance',
+    operationId: 'mismatched-transition',
+    livePath: paths.database,
+    fromVersion: { dataEpoch: 'actual-source', dataRevision: 8 },
+    toVersion: { dataEpoch: 'target-epoch', dataRevision: 0 },
+    createdAt: '2026-07-15T00:00:00.000Z'
+  }));
+  await assert.rejects(initializeWithTrace(), /does not match on-disk candidates/);
+
+  await resetRoots();
+  fs.mkdirSync(transitionRoot, { recursive: true });
+  fs.writeFileSync(path.join(transitionRoot, 'unknown-field.transition.json'), JSON.stringify({
+    schemaVersion: 1,
+    instanceId: 'source-instance',
+    operationId: 'unknown-field',
+    livePath: currentPaths().database,
+    fromVersion: { dataEpoch: 'source-epoch', dataRevision: 1 },
+    toVersion: { dataEpoch: 'target-epoch', dataRevision: 0 },
+    fromEpoch: 'source-epoch',
+    toEpoch: 'target-epoch',
+    createdAt: '2026-07-15T00:00:00.000Z',
+    ignored: true
+  }), 'utf8');
+  await assert.rejects(initializeWithTrace(), /unknown fields/);
+});
+
+test('transition evidence consumption surfaces a failed directory flush after deletion', async () => {
+  const transitionRoot = path.join(environment.recoveryRoot, 'epoch-transitions');
+  const operationId = 'consume-flush-failure';
+  const store = new epochTransitions.EpochTransitionStore(transitionRoot, { randomId: () => 'publish-nonce' });
+  await store.publish(epochTransitions.createEpochTransitionEvidence({
+    instanceId: 'source-instance',
+    operationId,
+    livePath: currentPaths().database,
+    fromVersion: { dataEpoch: 'source-epoch', dataRevision: 1 },
+    toVersion: { dataEpoch: 'target-epoch', dataRevision: 0 },
+    createdAt: '2026-07-15T00:00:00.000Z'
+  }));
+  const failingStore = new epochTransitions.EpochTransitionStore(transitionRoot, {
+    directoryDurability: {
+      openDirectory: async () => { throw Object.assign(new Error('directory flush failed'), { code: 'EIO' }); }
+    }
+  });
+
+  await assert.rejects(failingStore.consume(operationId), /directory flush failed/);
+  assert.equal(fs.existsSync(path.join(transitionRoot, `${operationId}.transition.json`)), false);
+});
+
 test('malformed manifests fence the verified database before runtime IPC admission', async () => {
   await initializeWithTrace();
   databaseService.resetDatabaseConnection();
@@ -239,7 +345,7 @@ test('coordinator handle replacement keeps service reads coherent and closes the
   assert.throws(() => readOnly.select("UPDATE a7_handle_test SET value = 'bad'"), (error) => error.code === 'VALIDATION_ERROR');
 });
 
-test('shutdown performs one verified final publication and repeated calls share the same drain', async () => {
+test('shutdown fences immediately, drains pending work, preserves revision, and shares observed completion', async () => {
   await initializeWithTrace();
   const coordinator = await databaseService.getDatabaseCoordinator();
   const before = coordinator.currentVersion();
@@ -276,12 +382,34 @@ test('shutdown performs one verified final publication and repeated calls share 
   await Promise.all([first, second]);
 
   assert.equal(coordinator.state, 'shutdown');
-  assert.deepEqual(readDiskVersion(), { dataEpoch: before.dataEpoch, dataRevision: before.dataRevision + 1 });
+  assert.deepEqual(readDiskVersion(), before);
   assert.equal(databaseService.shutdownDatabase(), first);
   await assert.rejects(
     coordinator.executeWrite({ requestId: 'after-shutdown', concurrency: 'none', execute: () => ({ changed: false, value: null }) }),
     (error) => error.code === 'MAINTENANCE_FENCE'
   );
+});
+
+test('shutdown surfaces a failed admitted write after draining it', async () => {
+  await initializeWithTrace();
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const entered = deferred();
+  const release = deferred();
+  const failedWrite = coordinator.executeWrite({
+    requestId: 'shutdown-failing-write',
+    concurrency: 'none',
+    async execute() {
+      entered.resolve();
+      await release.promise;
+      throw new Error('injected shutdown drain failure');
+    }
+  });
+  await entered.promise;
+  const shutdown = databaseService.shutdownDatabase();
+  release.resolve();
+  await assert.rejects(failedWrite, /injected shutdown drain failure/);
+  await assert.rejects(shutdown, /injected shutdown drain failure/);
+  assert.equal(coordinator.state, 'shutdown');
 });
 
 test('main startup seam registers runtime IPC only after recovery and compatibility startup', async () => {

@@ -12,9 +12,12 @@ import {
   bootstrapControlMetadata,
   createSqlJsCandidateOpener,
   DatabaseCoordinator,
+  EpochTransitionStore,
+  createEpochTransitionEvidence,
   defaultAtomicFileDependencies,
   createRevisionMutationCapability,
   inspectDatabaseBytes,
+  scanDatabaseCandidates,
   recoverStartupDatabase,
   RevisionStore,
   type DatabaseWriteRequest,
@@ -284,6 +287,47 @@ function isSameOrDescendant(candidate: string, root: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function resolveManagedImagePath(reference: string, phase: string, errorCode: string): string {
+  const paths = getPaths();
+  const resolved = path.normalize(path.isAbsolute(reference) ? reference : path.resolve(paths.root, reference));
+  if (!isSameOrDescendant(resolved, paths.images) || !fs.existsSync(resolved)) {
+    throw new MaintenanceOperationError(errorCode, phase, 'Referenced managed image file is unavailable');
+  }
+  const canonical = fs.realpathSync(resolved);
+  if (!isSameOrDescendant(canonical, fs.realpathSync(paths.images))) {
+    throw new MaintenanceOperationError(errorCode, phase, 'Referenced managed image file escapes the managed image root');
+  }
+  return resolved;
+}
+
+async function validateApplicableEpochTransitions(
+  livePath: string,
+  opener: import('../persistence').CandidateOpener,
+  transitions: Awaited<ReturnType<EpochTransitionStore['transitionsFor']>>
+): Promise<void> {
+  const scan = await scanDatabaseCandidates({ livePath, opener });
+  if (scan.status !== 'scanned') return;
+  const candidates = scan.candidates.filter((candidate): candidate is import('../persistence').VersionedDatabaseCandidate =>
+    candidate.status === 'valid' && candidate.metadata === 'present'
+  );
+  for (const transition of transitions) {
+    const targetExists = candidates.some((candidate) => candidate.version.dataEpoch === transition.toVersion.dataEpoch);
+    if (!targetExists) continue;
+    const targetMatches = candidates.some((candidate) =>
+      candidate.version.dataEpoch === transition.toVersion.dataEpoch &&
+      candidate.version.dataRevision === transition.toVersion.dataRevision
+    );
+    const sourceCandidates = candidates.filter((candidate) => candidate.version.dataEpoch === transition.fromVersion.dataEpoch);
+    const sourceMatches = sourceCandidates.some((candidate) =>
+      candidate.version.dataEpoch === transition.fromVersion.dataEpoch &&
+      candidate.version.dataRevision === transition.fromVersion.dataRevision
+    );
+    if (!targetMatches || (sourceCandidates.length > 0 && !sourceMatches)) {
+      throw new Error(`Database transition evidence does not match on-disk candidates: ${transition.operationId}`);
+    }
+  }
+}
+
 function durableWriteNew(filePath: string, bytes: Uint8Array): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const handle = fs.openSync(filePath, 'wx');
@@ -383,11 +427,7 @@ async function prepareReplacementManifest(
     ? request.quarantinePaths(db!)
     : request.quarantinePaths ?? [];
   for (const [index, candidate] of quarantinePaths.entries()) {
-    const targetPath = path.normalize(path.resolve(candidate));
-    if (!isSameOrDescendant(targetPath, paths.images)) {
-      throw new MaintenanceOperationError('UNSAFE_MANAGED_FILE', 'recovery_package', `Refusing to quarantine an image outside the managed image root: ${targetPath}`);
-    }
-    if (!fs.existsSync(targetPath)) continue;
+    const targetPath = resolveManagedImagePath(candidate, 'recovery_package', 'UNSAFE_MANAGED_FILE');
     files.push({
       fileId: `managed-image-${index}`,
       kind: 'quarantine_delete',
@@ -468,6 +508,15 @@ async function replaceDatabaseIdentity<T>(request: ReplacementRequest<T>): Promi
     journal = prepared.journal;
     staged = await journal.stage(await journal.prepare(prepared.manifest));
     await request.dependencies?.onStage?.('recovery_package_staged');
+    const transitionStore = new EpochTransitionStore(path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'epoch-transitions')));
+    await transitionStore.publish(createEpochTransitionEvidence({
+      instanceId: safeLifecycleId((request.dependencies?.randomId ?? randomUUID)()),
+      operationId,
+      livePath: path.normalize(getPaths().database),
+      fromVersion: versionBefore,
+      toVersion: versionAfter,
+      createdAt: (request.dependencies?.now ?? (() => new Date().toISOString()))()
+    }));
 
     const publication = await atomicPersist({
       livePath: getPaths().database,
@@ -569,11 +618,20 @@ async function initializeDatabaseOnce(
   const opener = createSqlJsCandidateOpener(SQL);
   const paths = getPaths();
   fs.mkdirSync(path.dirname(paths.database), { recursive: true });
+  const transitionStore = new EpochTransitionStore(path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'epoch-transitions')));
+  let transitions;
+  try {
+    transitions = await transitionStore.transitionsFor(paths.database);
+    await validateApplicableEpochTransitions(paths.database, opener, transitions);
+  } catch (error) {
+    throw new Error(`Database transition recovery failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   onStage('candidate_recovery_started');
   const recovered = await recoverStartupDatabase({
     livePath: paths.database,
     opener,
+    transitions,
     randomId: () => safeLifecycleId(randomId())
   });
   const noCandidates = recovered.status === 'needs_recovery' &&
@@ -582,6 +640,13 @@ async function initializeDatabaseOnce(
   if (recovered.status === 'needs_recovery' && !noCandidates) {
     onStage('needs_recovery');
     throw new Error(`Database candidate recovery failed: ${recovered.reason}`);
+  }
+  if (recovered.status === 'ready') {
+    const selectedTransitions = transitions.filter((transition) =>
+      transition.toVersion.dataEpoch === recovered.version.dataEpoch &&
+      transition.toVersion.dataRevision === recovered.version.dataRevision
+    );
+    await Promise.all(selectedTransitions.map((transition) => transitionStore.consume(transition.operationId)));
   }
   onStage('candidate_recovery_completed');
 
@@ -1282,10 +1347,7 @@ export async function importData(filePath: string) {
         if (typeof image.file_path !== 'string' || image.file_path.trim().length === 0) {
           throw new MaintenanceOperationError('IMPORT_MANAGED_FILE_INVALID', 'import_validation', 'Imported image path is missing or invalid');
         }
-        const imagePath = path.normalize(path.resolve(image.file_path));
-        if (!isSameOrDescendant(imagePath, getPaths().images) || !fs.existsSync(imagePath)) {
-          throw new MaintenanceOperationError('IMPORT_MANAGED_FILE_MISSING', 'import_validation', 'Import references an unavailable managed image file');
-        }
+        resolveManagedImagePath(image.file_path, 'import_validation', 'IMPORT_MANAGED_FILE_MISSING');
       }
       database.run('BEGIN TRANSACTION');
       try {
@@ -1813,10 +1875,7 @@ export async function restoreDatabaseFromFile(
       throw new MaintenanceOperationError('BACKUP_INCOMPATIBLE', 'restore_validation', 'Backup does not contain the required question schema');
     }
     for (const row of all<{ file_path: string }>(validationDatabase, 'SELECT file_path FROM question_images')) {
-      const imagePath = path.normalize(path.resolve(row.file_path));
-      if (!isSameOrDescendant(imagePath, getPaths().images) || !fs.existsSync(imagePath)) {
-        throw new MaintenanceOperationError('BACKUP_MANAGED_FILES_MISSING', 'restore_validation', 'Backup references managed image files that are not available');
-      }
+      resolveManagedImagePath(row.file_path, 'restore_validation', 'BACKUP_MANAGED_FILES_MISSING');
     }
   } finally {
     validationDatabase.close();
@@ -1969,21 +2028,7 @@ export function shutdownDatabase(): Promise<void> {
 async function shutdownDatabaseOnce(): Promise<void> {
   const coordinator = databaseCoordinator;
   if (!coordinator) return;
-  let finalPersistence: Promise<unknown> | null = null;
-  if (coordinator.state === 'writable') {
-    finalPersistence = coordinator.executeWrite({
-      requestId: 'shutdown-final-persist',
-      concurrency: 'none',
-      execute: () => ({ changed: true, value: undefined })
-    });
-  }
-  const drain = coordinator.shutdown();
-  const [persistenceResult, shutdownResult] = await Promise.allSettled([
-    finalPersistence ?? Promise.resolve(),
-    drain
-  ]);
-  if (persistenceResult.status === 'rejected') throw persistenceResult.reason;
-  if (shutdownResult.status === 'rejected') throw shutdownResult.reason;
+  await coordinator.shutdown();
 }
 
 export function getCurrentPaths(): AppPaths {

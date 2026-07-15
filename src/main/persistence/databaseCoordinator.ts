@@ -107,6 +107,11 @@ export class DatabaseCoordinator {
   private readonly runtimeState: DatabaseRuntimeStateController;
   private queueTail: Promise<void> = Promise.resolve();
   private admittedWrites = 0;
+  private nextAdmissionId = 0;
+  private readonly pendingAdmissionIds = new Set<number>();
+  private shutdownPendingAdmissionIds: Set<number> | null = null;
+  private shutdownDrainFailureRecorded = false;
+  private shutdownDrainFailure: unknown;
 
   constructor(options: DatabaseCoordinatorOptions) {
     this.database = options.database;
@@ -143,10 +148,12 @@ export class DatabaseCoordinator {
     this.runtimeState.assertWriteAdmission();
     this.validateConcurrencyRequest(request);
     this.admittedWrites += 1;
+    const admissionId = ++this.nextAdmissionId;
+    this.pendingAdmissionIds.add(admissionId);
     const run = this.queueTail.then(() => activeCoordinator.run(this, () => this.executeAdmittedWrite(request)));
     this.queueTail = run.then(
-      () => { this.admittedWrites -= 1; },
-      () => { this.admittedWrites -= 1; }
+      () => { this.settleAdmission(admissionId, false); },
+      (error) => { this.settleAdmission(admissionId, true, error); }
     ).then(() => undefined);
     return run;
   }
@@ -172,8 +179,21 @@ export class DatabaseCoordinator {
 
   async shutdown(): Promise<void> {
     this.runtimeState.beginShutdown();
+    if (!this.shutdownPendingAdmissionIds) {
+      this.shutdownPendingAdmissionIds = new Set(this.pendingAdmissionIds);
+    }
     await this.queueTail;
     this.runtimeState.finishShutdown();
+    if (this.shutdownDrainFailureRecorded) throw this.shutdownDrainFailure;
+  }
+
+  private settleAdmission(admissionId: number, failed: boolean, error?: unknown): void {
+    if (failed && !this.shutdownDrainFailureRecorded && this.shutdownPendingAdmissionIds?.has(admissionId)) {
+      this.shutdownDrainFailureRecorded = true;
+      this.shutdownDrainFailure = error;
+    }
+    this.pendingAdmissionIds.delete(admissionId);
+    this.admittedWrites -= 1;
   }
 
   private validateConcurrencyRequest(request: DatabaseWriteRequest<unknown>): void {

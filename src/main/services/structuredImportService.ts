@@ -5,6 +5,15 @@ import { dialog } from 'electron';
 import AdmZip from 'adm-zip';
 import * as XLSX from 'xlsx';
 import { createInternalExecutionContext } from '../application/executionContext';
+import {
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
+  OperationManifestStore,
+  sameDataVersion,
+  type OperationManifest,
+  type OperationManifestError
+} from '../persistence/operationJournal';
 import { getDatabaseCoordinator, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
 import { getPaths } from './pathService';
 import type {
@@ -54,6 +63,12 @@ const MASTERY_MAP = new Map<string, MasteryLevel>([
 interface ImportSession {
   preview: StructuredImportPreview;
   tempDir?: string;
+}
+
+interface TemporaryFile {
+  absolutePath: string;
+  relativePath: string;
+  content: ReturnType<typeof evidenceForBytes>;
 }
 
 type RowStatus = 'pending' | 'invalid' | 'failed' | 'partial' | 'succeeded';
@@ -295,7 +310,7 @@ export async function prepareZipImport() {
     sessions.set(sessionId, { preview, tempDir });
     return preview;
   } catch (error) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await cleanupTemporaryDirectory(sessionId, tempDir);
     throw error;
   }
 }
@@ -325,6 +340,167 @@ function toQuestionInput(row: StructuredImportRow, batchId?: string): QuestionIn
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function operationError(error: unknown, phase: string): OperationManifestError {
+  return {
+    code: typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code.slice(0, 200)
+      : 'structured_import_cleanup_failed',
+    phase,
+    message: error instanceof Error ? error.message.slice(0, 1_000) || 'Structured import cleanup failed' : 'Structured import cleanup failed'
+  };
+}
+
+function listTemporaryFiles(tempDir: string): TemporaryFile[] {
+  const files: TemporaryFile[] = [];
+  const visit = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = path.normalize(path.join(directory, entry.name));
+      if (entry.isSymbolicLink()) throw new Error(`临时导入目录包含不安全的符号链接：${absolutePath}`);
+      if (entry.isDirectory()) visit(absolutePath);
+      else if (entry.isFile()) {
+        files.push({
+          absolutePath,
+          relativePath: path.relative(tempDir, absolutePath),
+          content: evidenceForBytes(fs.readFileSync(absolutePath))
+        });
+      } else {
+        throw new Error(`临时导入目录包含不支持的文件类型：${absolutePath}`);
+      }
+    }
+  };
+  visit(tempDir);
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+function removeEmptyDirectories(directory: string) {
+  if (!fs.existsSync(directory)) return;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) removeEmptyDirectories(path.join(directory, entry.name));
+  }
+  try {
+    fs.rmdirSync(directory);
+  } catch {
+    // Preserve non-empty directories so untracked content cannot be lost.
+  }
+}
+
+function cleanupJournal() {
+  const manifestRoot = path.normalize(path.join(getPaths().data, 'operation-journal'));
+  const store = new OperationManifestStore(manifestRoot);
+  return { manifestRoot, store, journal: new OperationJournal(store) };
+}
+
+async function fenceCleanupRecovery(coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>) {
+  if (coordinator.state !== 'writable') return;
+  const lease = await coordinator.beginMaintenance();
+  coordinator.finishMaintenance(lease, 'needs_recovery');
+}
+
+async function finishCommittedCleanup(journal: OperationJournal, manifest: OperationManifest) {
+  const committed = manifest.state === 'files_staged'
+    ? await journal.markDatabaseCommitted(manifest)
+    : manifest;
+  return journal.commitFiles(committed);
+}
+
+async function cleanupTemporaryDirectory(sessionId: string, tempDir: string) {
+  const normalizedTempDir = path.normalize(tempDir);
+  if (!fs.existsSync(normalizedTempDir)) return;
+  const temporaryFiles = listTemporaryFiles(normalizedTempDir);
+  if (!temporaryFiles.length) {
+    removeEmptyDirectories(normalizedTempDir);
+    return;
+  }
+
+  const paths = getPaths();
+  const normalizedTempRoot = path.normalize(paths.temp);
+  const relativeTempDir = path.relative(normalizedTempRoot, normalizedTempDir);
+  if (!relativeTempDir || relativeTempDir.startsWith('..') || path.isAbsolute(relativeTempDir)) {
+    throw new Error('临时导入目录不在受管临时目录中');
+  }
+
+  const coordinator = await getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
+  if (versionBefore.dataRevision === Number.MAX_SAFE_INTEGER) throw new Error('Structured import cleanup revision overflow');
+  const requestId = `structured-import-cleanup-${crypto.randomUUID()}`;
+  const quarantineRoot = path.normalize(path.join(normalizedTempRoot, '.structured-import-quarantine', requestId));
+  const { manifestRoot, store, journal } = cleanupJournal();
+  const created = createOperationManifest({
+    operationId: requestId,
+    requestId,
+    commandType: 'structuredImport.cleanupTemporaryExtraction',
+    source: 'internal',
+    clientId: 'structured-import-service',
+    traceId: requestId,
+    inputHash: crypto.createHash('sha256').update(JSON.stringify({
+      sessionId,
+      files: temporaryFiles.map((file) => ({ relativePath: file.relativePath, content: file.content }))
+    })).digest('hex'),
+    storage: 'data_root',
+    versionBefore,
+    versionAfter: { dataEpoch: versionBefore.dataEpoch, dataRevision: versionBefore.dataRevision + 1 },
+    affectedEntities: [{ entityType: 'structured_import_session', entityId: sessionId }],
+    roots: {
+      manifestRoot,
+      managedRoots: [path.normalize(paths.root)],
+      sourceRoots: [normalizedTempRoot]
+    },
+    files: temporaryFiles.map((file, index) => ({
+      fileId: `temporary-file-${index + 1}`,
+      kind: 'quarantine_delete' as const,
+      targetPath: file.absolutePath,
+      quarantinePath: path.normalize(path.join(quarantineRoot, `${file.relativePath}.quarantine`)),
+      content: file.content,
+      status: 'pending' as const
+    })),
+    createdAt: nowIso()
+  });
+
+  let manifest: OperationManifest = created;
+  let databaseCommitted = false;
+  try {
+    manifest = await journal.prepare(manifest);
+    manifest = await journal.stage(manifest);
+    const write = await coordinator.executeWrite({
+      requestId,
+      concurrency: 'strict',
+      expectedVersion: versionBefore,
+      conflicts: [{ entityType: 'structured_import_session', entityId: sessionId }],
+      execute() {
+        return { changed: true, value: null };
+      }
+    });
+    if (!sameDataVersion(write.versionAfter, created.versionAfter)) throw new Error('Structured import cleanup committed an unexpected data version');
+    databaseCommitted = true;
+    await finishCommittedCleanup(journal, manifest);
+    removeEmptyDirectories(normalizedTempDir);
+  } catch (error) {
+    const latest = await store.read(requestId).catch(() => null) ?? manifest;
+    const currentVersion = coordinator.currentVersion();
+    if (databaseCommitted || sameDataVersion(currentVersion, created.versionAfter)) {
+      try {
+        await finishCommittedCleanup(journal, latest);
+        removeEmptyDirectories(normalizedTempDir);
+        return;
+      } catch (recoveryError) {
+        const current = await store.read(requestId).catch(() => null) ?? latest;
+        await journal.needsRecovery(current, operationError(recoveryError, 'file_finalization')).catch(() => undefined);
+        await fenceCleanupRecovery(coordinator);
+        throw recoveryError;
+      }
+    }
+    try {
+      await journal.compensate(latest, operationError(error, 'cleanup_prepare'));
+    } catch (compensationError) {
+      const current = await store.read(requestId).catch(() => null) ?? latest;
+      await journal.needsRecovery(current, operationError(compensationError, 'compensation')).catch(() => undefined);
+      await fenceCleanupRecovery(coordinator);
+      throw compensationError;
+    }
+    throw error;
+  }
 }
 
 function createBatchId() {
@@ -545,7 +721,7 @@ export async function confirmStructuredImport(sessionId: string): Promise<Struct
 
   let cleanup: 'completed' | 'failed' = 'completed';
   try {
-    cleanupStructuredImport(sessionId);
+    await cleanupStructuredImport(sessionId);
   } catch (error) {
     cleanup = 'failed';
     result.warnings?.push({
@@ -559,11 +735,11 @@ export async function confirmStructuredImport(sessionId: string): Promise<Struct
   return result;
 }
 
-export function cleanupStructuredImport(sessionId: string) {
+export async function cleanupStructuredImport(sessionId: string) {
   const session = sessions.get(sessionId);
   if (!session) return true;
   if (session.tempDir) {
-    fs.rmSync(session.tempDir, { recursive: true, force: true });
+    await cleanupTemporaryDirectory(sessionId, session.tempDir);
   }
   sessions.delete(sessionId);
   return true;
