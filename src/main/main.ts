@@ -5,18 +5,24 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
 import {
   assertDatabaseReadyForRuntimeIpc,
-  getDatabase,
+  getQuestionsApplication,
+  getReadOnlyDatabase,
   initializeDatabase,
-  migrateCategoryValues,
   resetDatabaseConnection,
   shutdownDatabase,
   type DatabaseInitializationResult
 } from './services/databaseService';
+import { createInternalExecutionContext } from './application/executionContext';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
-import { seedImportKnowledgeMap, rematchKnowledgePoints } from './services/knowledgeMapService';
+import { seedImportKnowledgeMap } from './services/knowledgeMapService';
+import { initializeStudySupervisor } from './services/studySupervisorService';
 import { ensureDailyAutoBackup } from './services/backupService';
+import type {
+  QuestionCategoryMigrationCommand,
+  QuestionRematchCommand
+} from '../shared/agent/v1/contracts';
 
 const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
 let mainWindow: BrowserWindow | null = null;
@@ -134,35 +140,105 @@ function reportStartupError(error: unknown) {
   dialog.showErrorBox('考研数学错题本启动失败', `${error instanceof Error ? error.message : String(error)}\n\n错误日志：${logPath}`);
 }
 
-async function runCompatibilityStartupWriters() {
+const STARTUP_QUESTION_BATCH_SIZE = 500;
+
+type StartupQuestionCommand = QuestionCategoryMigrationCommand | QuestionRematchCommand;
+
+export interface StartupQuestionCommandDependencies {
+  countKnowledgePoints(): Promise<number>;
+  listQuestionIds(): Promise<number[]>;
+  seedKnowledgeMap(): Promise<{ importedCount: number; failedCount: number }>;
+  executeQuestionCommand(command: StartupQuestionCommand): Promise<{ value: unknown }>;
+  assertWritesSafe(): void;
+  warn(label: string, error: unknown): void;
+}
+
+const defaultStartupQuestionCommandDependencies: StartupQuestionCommandDependencies = {
+  async countKnowledgePoints() {
+    const database = await getReadOnlyDatabase();
+    return database.select<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = ""'
+    )[0]?.count ?? 0;
+  },
+  async listQuestionIds() {
+    const database = await getReadOnlyDatabase();
+    return database.select<{ id: number }>('SELECT id FROM questions ORDER BY id ASC').map((row) => row.id);
+  },
+  seedKnowledgeMap: seedImportKnowledgeMap,
+  async executeQuestionCommand(command) {
+    const application = await getQuestionsApplication();
+    return application.execute(command, createInternalExecutionContext({ concurrency: 'none' }));
+  },
+  assertWritesSafe: assertDatabaseReadyForRuntimeIpc,
+  warn: (label, error) => console.warn(label, error)
+};
+
+async function runNonfatalStartupOperation(
+  label: string,
+  operation: () => Promise<void>,
+  dependencies: StartupQuestionCommandDependencies
+): Promise<void> {
   try {
-    const database = await getDatabase();
-    const countResult = database.exec('SELECT COUNT(*) as c FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = ""');
-    const count = countResult.length && countResult[0].values.length ? Number(countResult[0].values[0][0]) : 0;
-
-    if (count === 0) {
-      console.log('[Seed] knowledge_points table empty, importing bundled exam points...');
-      const seedResult = await seedImportKnowledgeMap();
-      console.log(`[Seed] Imported ${seedResult.importedCount} exam points, ${seedResult.failedCount} failed`);
-    }
-
-    console.log('[Migration] Migrating old category values...');
-    const migrateResult = await migrateCategoryValues();
-    console.log(`[Migration] Processed ${migrateResult.migrated} category mappings`);
-
-    console.log('[Rematch] Re-matching questions to exam points...');
-    const rematchResult = await rematchKnowledgePoints();
-    console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
+    await operation();
   } catch (error) {
-    console.warn('[StartupSeed]', error);
+    dependencies.assertWritesSafe();
+    dependencies.warn(label, error);
   }
+}
+
+export async function runStartupQuestionCommands(
+  dependencies: StartupQuestionCommandDependencies = defaultStartupQuestionCommandDependencies
+): Promise<void> {
+  await runNonfatalStartupOperation('[StartupSeed]', async () => {
+    if (await dependencies.countKnowledgePoints() !== 0) return;
+    console.log('[Seed] knowledge_points table empty, importing bundled exam points...');
+    const result = await dependencies.seedKnowledgeMap();
+    console.log(`[Seed] Imported ${result.importedCount} exam points, ${result.failedCount} failed`);
+  }, dependencies);
+
+  await runNonfatalStartupOperation('[StartupCategoryMigration]', async () => {
+    console.log('[Migration] Migrating old category values...');
+    let migrated = 0;
+    while (true) {
+      const result = await dependencies.executeQuestionCommand({
+        type: 'questions.migrate_categories',
+        payload: { limit: STARTUP_QUESTION_BATCH_SIZE }
+      });
+      const batchMigrated = (result.value as { migrated: number }).migrated;
+      migrated += batchMigrated;
+      if (batchMigrated < STARTUP_QUESTION_BATCH_SIZE) break;
+    }
+    console.log(`[Migration] Processed ${migrated} category mappings`);
+  }, dependencies);
+
+  await runNonfatalStartupOperation('[StartupKnowledgeRematch]', async () => {
+    console.log('[Rematch] Re-matching questions to exam points...');
+    const questionIds = await dependencies.listQuestionIds();
+    let scannedQuestions = 0;
+    let insertedCount = 0;
+    for (let offset = 0; offset < questionIds.length; offset += STARTUP_QUESTION_BATCH_SIZE) {
+      const result = await dependencies.executeQuestionCommand({
+        type: 'questions.rematch_knowledge',
+        payload: {
+          limit: STARTUP_QUESTION_BATCH_SIZE,
+          questionIds: questionIds.slice(offset, offset + STARTUP_QUESTION_BATCH_SIZE)
+        }
+      });
+      const batch = result.value as { scannedQuestions: number; insertedCount: number };
+      scannedQuestions += batch.scannedQuestions;
+      insertedCount += batch.insertedCount;
+    }
+    console.log(`[Rematch] Scanned ${scannedQuestions} questions, ${insertedCount} new links`);
+  }, dependencies);
 }
 
 export interface MainStartupDependencies {
   initializePaths(): unknown;
   initializeDatabase(): Promise<DatabaseInitializationResult>;
   assertDatabaseReadyForRuntimeIpc(): void;
-  runCompatibilityStartupWriters(): Promise<void>;
+  runStartupQuestionCommands?: () => Promise<void>;
+  runCompatibilityStartupWriters?: () => Promise<void>;
+  initializeStudySupervisor?: () => Promise<void>;
   ensureDailyAutoBackup(): void;
   registerImageProtocol(): void;
   registerWindowStateIpc(): void;
@@ -174,7 +250,8 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
   initializePaths,
   initializeDatabase,
   assertDatabaseReadyForRuntimeIpc,
-  runCompatibilityStartupWriters,
+  runStartupQuestionCommands,
+  initializeStudySupervisor,
   ensureDailyAutoBackup,
   registerImageProtocol,
   registerWindowStateIpc() {
@@ -189,9 +266,20 @@ export async function runMainStartup(
   dependencies: MainStartupDependencies = defaultMainStartupDependencies
 ): Promise<void> {
   dependencies.initializePaths();
-  await dependencies.initializeDatabase();
-  dependencies.assertDatabaseReadyForRuntimeIpc();
-  await dependencies.runCompatibilityStartupWriters();
+  const initialization = await dependencies.initializeDatabase();
+  if (initialization.state === 'needs_recovery') dependencies.assertDatabaseReadyForRuntimeIpc();
+  const runQuestionCommands = dependencies.runStartupQuestionCommands ?? dependencies.runCompatibilityStartupWriters;
+  if (!runQuestionCommands) throw new Error('Startup question command adapter is unavailable');
+  const usesCompatibilitySeam = !dependencies.runStartupQuestionCommands;
+  if (usesCompatibilitySeam) dependencies.assertDatabaseReadyForRuntimeIpc();
+  await runQuestionCommands();
+  if (usesCompatibilitySeam) {
+    await dependencies.initializeStudySupervisor?.();
+  } else {
+    if (!dependencies.initializeStudySupervisor) throw new Error('Study supervisor startup initializer is unavailable');
+    await dependencies.initializeStudySupervisor();
+    dependencies.assertDatabaseReadyForRuntimeIpc();
+  }
   try {
     dependencies.ensureDailyAutoBackup();
   } catch (error) {
