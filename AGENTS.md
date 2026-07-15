@@ -53,3 +53,17 @@ Before starting work:
 ## Completion standard
 
 Work is complete only after the Worker self-reviews its files and evidence and the coordinator directly performs final acceptance. Scope must be satisfied, relevant validation must have run, evidence must be reported, risks must be explicit, and modified files must be listed.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default Matt Pocock triage label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
