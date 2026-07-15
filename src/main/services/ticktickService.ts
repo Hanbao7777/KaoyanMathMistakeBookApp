@@ -1,8 +1,13 @@
+import { randomUUID } from 'node:crypto';
+import type { Database, SqlValue } from 'sql.js';
+import type { ReadOnlyDatabaseFacade } from '../application/queryBus';
+import type { DatabaseMutationResult } from '../persistence';
 import {
   allSql,
-  getDatabase,
+  getDatabaseCoordinator,
+  getQuestionsApplication,
+  getReadOnlyDatabase,
   oneSql,
-  persistDatabase,
   runSql
 } from './databaseService';
 import type {
@@ -41,8 +46,42 @@ function localDate(date: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
-function ensureAppSettings(db: import('sql.js').Database) {
-  db.run('CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+type TickTickReadDatabase = Database | ReadOnlyDatabaseFacade;
+
+function readAll<T>(database: TickTickReadDatabase, sql: string, params: readonly SqlValue[] = []): T[] {
+  if ('kind' in database) return [...database.select(sql, params)] as T[];
+  return allSql<T>(database, sql, [...params]);
+}
+
+function readOne<T>(database: TickTickReadDatabase, sql: string, params: readonly SqlValue[] = []): T | null {
+  if ('kind' in database) return (database.select(sql, params)[0] as T | undefined) ?? null;
+  return oneSql<T>(database, sql, [...params]);
+}
+
+function runMutation(database: Database, sql: string, params: readonly SqlValue[] = []): boolean {
+  runSql(database, sql, [...params]);
+  return database.getRowsModified() > 0;
+}
+
+async function executeLegacyMutation<T>(
+  operation: string,
+  execute: (database: Database) => DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>
+): Promise<T> {
+  const coordinator = await getDatabaseCoordinator();
+  const application = await getQuestionsApplication();
+  const requestId = randomUUID();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation } }],
+    { requestId, traceId: randomUUID(), source: 'internal' }
+  );
+  const result = await coordinator.executeWrite({ requestId, concurrency: 'none', execute });
+  if (result.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: result.versionBefore,
+      versionAfter: result.versionAfter
+    }));
+  }
+  return result.value;
 }
 
 // ── ID Generator ──
@@ -50,69 +89,54 @@ function ensureAppSettings(db: import('sql.js').Database) {
 // ── Lists CRUD ──
 
 export async function listTickTickLists(): Promise<TickTickList[]> {
-  const db = await getDatabase();
-  const rows = allSql<TickTickList & { task_count: number }>(
-    db,
+  const database = await getReadOnlyDatabase();
+  return readAll<TickTickList & { task_count: number }>(
+    database,
     `SELECT l.*, (SELECT COUNT(*) FROM ticktick_tasks t WHERE t.list_id = l.id) AS task_count
      FROM ticktick_lists l
      ORDER BY l.sort_order ASC, l.created_at ASC`
   );
-  return rows;
 }
 
 export async function getTickTickList(listId: string): Promise<TickTickList | null> {
-  const db = await getDatabase();
-  const row = oneSql<TickTickList & { task_count: number }>(
-    db,
+  return getTickTickListFrom(await getReadOnlyDatabase(), listId);
+}
+
+function getTickTickListFrom(database: TickTickReadDatabase, listId: string): TickTickList | null {
+  return readOne<TickTickList & { task_count: number }>(
+    database,
     `SELECT l.*, (SELECT COUNT(*) FROM ticktick_tasks t WHERE t.list_id = l.id) AS task_count
      FROM ticktick_lists l WHERE l.id = ?`,
     [listId]
   );
-  return row ?? null;
 }
 
 export async function createTickTickList(input: TickTickListInput): Promise<TickTickList> {
   const name = input.name.trim();
   if (!name) throw new Error('清单名称不能为空');
 
-  const db = await getDatabase();
-  const listId = id('list');
-  const timestamp = nowIso();
-
-  // Compute next sort_order
-  const maxOrder = oneSql<{ m: number }>(
-    db,
-    'SELECT MAX(sort_order) AS m FROM ticktick_lists'
-  );
-  const sortOrder = (maxOrder?.m ?? -1) + 1;
-
-  runSql(
-    db,
-    `INSERT INTO ticktick_lists (id, name, color, icon, sort_order, is_folder, parent_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      listId,
-      name,
-      input.color || '#4a90d9',
-      input.icon || 'list',
-      sortOrder,
-      input.is_folder ?? 0,
-      input.parent_id ?? null,
-      timestamp,
-      timestamp
-    ]
-  );
-  persistDatabase();
-  return (await getTickTickList(listId))!;
+  return executeLegacyMutation('ticktick-list-create', (database) => {
+    const listId = id('list');
+    const timestamp = nowIso();
+    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_lists');
+    const sortOrder = (maxOrder?.m ?? -1) + 1;
+    const changed = runMutation(
+      database,
+      `INSERT INTO ticktick_lists (id, name, color, icon, sort_order, is_folder, parent_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [listId, name, input.color || '#4a90d9', input.icon || 'list', sortOrder, input.is_folder ?? 0,
+        input.parent_id ?? null, timestamp, timestamp]
+    );
+    return { changed, value: getTickTickListFrom(database, listId)! };
+  });
 }
 
 export async function updateTickTickList(listId: string, input: TickTickListInput): Promise<TickTickList | null> {
-  const db = await getDatabase();
-  const current = await getTickTickList(listId);
-  if (!current) return null;
-
-  runSql(
-    db,
+  return executeLegacyMutation('ticktick-list-update', (database) => {
+    const current = getTickTickListFrom(database, listId);
+    if (!current) return { changed: false, value: null };
+    const changed = runMutation(
+      database,
     `UPDATE ticktick_lists SET
        name = COALESCE(?, name),
        color = COALESCE(?, color),
@@ -130,70 +154,35 @@ export async function updateTickTickList(listId: string, input: TickTickListInpu
       nowIso(),
       listId
     ]
-  );
-  persistDatabase();
-  return getTickTickList(listId);
+    );
+    return { changed, value: getTickTickListFrom(database, listId) };
+  });
 }
 
 export async function deleteTickTickList(listId: string): Promise<boolean> {
-  const db = await getDatabase();
-  runSql(db, 'BEGIN');
-  try {
-    // FK CASCADE handles task deletion, but manual bridge cleanup as safety net for existing DBs
-    runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE list_id = ?)', [listId]);
-    runSql(db, 'DELETE FROM ticktick_lists WHERE id = ?', [listId]);
-    runSql(db, 'COMMIT');
-    persistDatabase();
-    return true;
-  } catch (e) {
-    runSql(db, 'ROLLBACK');
-    throw e;
-  }
+  return executeLegacyMutation('ticktick-list-delete', (database) => {
+    let changed = runMutation(database, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id IN (SELECT id FROM ticktick_tasks WHERE list_id = ?)', [listId]);
+    changed = runMutation(database, 'DELETE FROM ticktick_lists WHERE id = ?', [listId]) || changed;
+    return { changed, value: true };
+  });
 }
 
 export async function reorderTickTickLists(ids: string[]): Promise<void> {
-  const db = await getDatabase();
-  const stmt = db.prepare('UPDATE ticktick_lists SET sort_order = ?, updated_at = ? WHERE id = ?');
-  const ts = nowIso();
-  try {
-    for (let i = 0; i < ids.length; i++) {
-      stmt.bind([i, ts, ids[i]]);
-      stmt.step();
-      stmt.reset();
+  return executeLegacyMutation('ticktick-list-reorder', (database) => {
+    let changed = false;
+    const timestamp = nowIso();
+    for (let index = 0; index < ids.length; index += 1) {
+      changed = runMutation(
+        database,
+        'UPDATE ticktick_lists SET sort_order = ?, updated_at = ? WHERE id = ? AND sort_order != ?',
+        [index, timestamp, ids[index], index]
+      ) || changed;
     }
-  } finally {
-    stmt.free();
-  }
-  persistDatabase();
+    return { changed, value: undefined };
+  });
 }
 
 // ── Tasks CRUD ──
-
-function mapTask(row: any[]): TickTickTask {
-  return {
-    id: row[0],
-    list_id: row[1],
-    title: row[2],
-    note: row[3],
-    due_date: row[4],
-    due_time: row[5],
-    priority: row[6] as TickTickTask['priority'],
-    is_completed: row[7],
-    completed_at: row[8],
-    parent_id: row[9],
-    sort_order: row[10],
-    tags: row[11],
-    recurrence_rule: row[12],
-    estimated_minutes: row[13],
-    actual_minutes: row[14],
-    pomodoro_sessions: row[15],
-    source: row[16] as TickTickTask['source'],
-    created_at: row[17],
-    updated_at: row[18],
-    list_name: row[19] || undefined,
-    list_color: row[20] || undefined,
-  };
-}
 
 const TASK_SELECT = `SELECT t.*, l.name as list_name, l.color as list_color FROM ticktick_tasks t LEFT JOIN ticktick_lists l ON t.list_id = l.id`;
 
@@ -207,23 +196,26 @@ function parseTags(raw: string): string[] {
   }
 }
 
-async function hydrateTask(db: import('sql.js').Database, task: TickTickTask): Promise<TickTickTask> {
-  task.tags_list = parseTags(task.tags);
+function hydrateTask(database: TickTickReadDatabase, task: TickTickTask): TickTickTask {
+  const hydrated = { ...task, tags_list: parseTags(task.tags) };
 
   // Sub-task counts
-  const subStats = oneSql<{ total: number; completed: number }>(
-    db,
+  const subStats = readOne<{ total: number; completed: number }>(
+    database,
     'SELECT COUNT(*) AS total, COALESCE(SUM(is_completed), 0) AS completed FROM ticktick_tasks WHERE parent_id = ?',
-    [task.id]
+    [hydrated.id]
   );
-  task.subtask_count = subStats?.total ?? 0;
-  task.subtask_completed = subStats?.completed ?? 0;
-
-  return task;
+  hydrated.subtask_count = subStats?.total ?? 0;
+  hydrated.subtask_completed = subStats?.completed ?? 0;
+  return hydrated;
 }
 
 export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Promise<TickTickTask[]> {
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
+  return listTickTickTasksFrom(database, filters);
+}
+
+function listTickTickTasksFrom(database: TickTickReadDatabase, filters: TickTickTaskFilters = {}): TickTickTask[] {
   const where: string[] = ['t.parent_id IS NULL'];
   const params: unknown[] = [];
 
@@ -269,22 +261,15 @@ export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Prom
 
   const sql = `${TASK_SELECT} WHERE ${where.join(' AND ')} ORDER BY t.due_time ASC, t.sort_order ASC, t.created_at ASC`;
 
-  const rawRows = db.exec(sql, params as import('sql.js').SqlValue[]);
-  const rows: TickTickTask[] = [];
-  if (rawRows.length > 0) {
-    const vals = rawRows[0].values;
-    for (const row of vals) {
-      rows.push(mapTask(row));
-    }
-  }
+  const rows = readAll<TickTickTask>(database, sql, params as SqlValue[]);
 
   // Batch-hydrate subtask counts to avoid N+1 queries
   const taskIds = rows.map((t) => t.id);
   const subStatsMap = new Map<string, { total: number; completed: number }>();
   if (taskIds.length > 0) {
     const placeholders = taskIds.map(() => '?').join(',');
-    const subRows = allSql<{ parent_id: string; total: number; completed: number }>(
-      db,
+    const subRows = readAll<{ parent_id: string; total: number; completed: number }>(
+      database,
       `SELECT parent_id, COUNT(*) AS total, COALESCE(SUM(is_completed), 0) AS completed
        FROM ticktick_tasks WHERE parent_id IN (${placeholders}) GROUP BY parent_id`,
       taskIds
@@ -296,95 +281,66 @@ export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Prom
 
   const result: TickTickTask[] = [];
   for (const task of rows) {
-    task.tags_list = parseTags(task.tags);
+    const hydrated = { ...task, tags_list: parseTags(task.tags) };
     const stats = subStatsMap.get(task.id);
-    task.subtask_count = stats?.total ?? 0;
-    task.subtask_completed = stats?.completed ?? 0;
-    result.push(task);
+    hydrated.subtask_count = stats?.total ?? 0;
+    hydrated.subtask_completed = stats?.completed ?? 0;
+    result.push(hydrated);
   }
   return result;
 }
 
 export async function getTickTickTask(taskId: string): Promise<TickTickTask | null> {
-  const db = await getDatabase();
-  const rawRows = db.exec(`${TASK_SELECT} WHERE t.id = ?`, [taskId]);
-  if (rawRows.length === 0 || rawRows[0].values.length === 0) return null;
-  const task = mapTask(rawRows[0].values[0]);
-  return hydrateTask(db, task);
+  return getTickTickTaskFrom(await getReadOnlyDatabase(), taskId);
+}
+
+function getTickTickTaskFrom(database: TickTickReadDatabase, taskId: string): TickTickTask | null {
+  const task = readOne<TickTickTask>(database, `${TASK_SELECT} WHERE t.id = ?`, [taskId]);
+  return task ? hydrateTask(database, task) : null;
 }
 
 export async function createTickTickTask(input: TickTickTaskInput): Promise<TickTickTask> {
-  const db = await getDatabase();
-
   const listId = input.list_id?.trim();
   if (!listId) throw new Error('请先创建或选择一个清单');
-  const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
-  if (!listExists) throw new Error('清单不存在，请刷新后重试');
-
   const title = input.title.trim();
   if (!title) throw new Error('任务标题不能为空');
-
-  const taskId = id('task');
-  const timestamp = nowIso();
-
-  // Next sort_order in the same list
-  // Two-step MAX + increment is safe because Electron's main process is single-threaded
-  const maxOrder = oneSql<{ m: number }>(
-    db,
-    'SELECT MAX(sort_order) AS m FROM ticktick_tasks WHERE list_id = ?',
-    [listId]
-  );
-  const sortOrder = (maxOrder?.m ?? -1) + 1;
-
-  runSql(
-    db,
-    `INSERT INTO ticktick_tasks (
-       id, list_id, title, note, due_date, due_time, priority,
-       is_completed, completed_at, parent_id, sort_order, tags,
-       recurrence_rule, estimated_minutes, actual_minutes,
-       pomodoro_sessions, source, created_at, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
-    [
-      taskId,
-      listId,
-      title,
-      input.note || '',
-      input.due_date ?? null,
-      input.due_time ?? null,
-      input.priority || 'none',
-      input.parent_id ?? null,
-      sortOrder,
-      JSON.stringify(input.tags || []),
-      input.recurrence_rule ?? null,
-      input.estimated_minutes ?? 0,
-      input.source || 'manual',
-      timestamp,
-      timestamp
-    ]
-  );
-
-  // Write tags to ticktick_tags table
-  const tags = input.tags || [];
-  for (const tag of tags) {
-    runSql(db, 'INSERT OR IGNORE INTO ticktick_tags (id, name, color) VALUES (?, ?, ?)', [`tag_${tag}`, tag, '#999999']);
-  }
-
-  persistDatabase();
-  return (await getTickTickTask(taskId))!;
+  return executeLegacyMutation('ticktick-task-create', (database) => {
+    const listExists = readOne<{ cnt: number }>(database, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
+    if (!listExists) throw new Error('清单不存在，请刷新后重试');
+    const taskId = id('task');
+    const timestamp = nowIso();
+    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_tasks WHERE list_id = ?', [listId]);
+    const sortOrder = (maxOrder?.m ?? -1) + 1;
+    let changed = runMutation(
+      database,
+      `INSERT INTO ticktick_tasks (
+         id, list_id, title, note, due_date, due_time, priority,
+         is_completed, completed_at, parent_id, sort_order, tags,
+         recurrence_rule, estimated_minutes, actual_minutes,
+         pomodoro_sessions, source, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
+      [taskId, listId, title, input.note || '', input.due_date ?? null, input.due_time ?? null,
+        input.priority || 'none', input.parent_id ?? null, sortOrder, JSON.stringify(input.tags || []),
+        input.recurrence_rule ?? null, input.estimated_minutes ?? 0, input.source || 'manual', timestamp, timestamp]
+    );
+    for (const tag of input.tags || []) {
+      changed = runMutation(database, 'INSERT OR IGNORE INTO ticktick_tags (id, name, color) VALUES (?, ?, ?)', [`tag_${tag}`, tag, '#999999']) || changed;
+    }
+    return { changed, value: getTickTickTaskFrom(database, taskId)! };
+  });
 }
 
 export async function updateTickTickTask(taskId: string, partial: Partial<TickTickTaskInput & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }>): Promise<TickTickTask | null> {
-  const db = await getDatabase();
-  const current = await getTickTickTask(taskId);
-  if (!current) return null;
-
-  const sets: string[] = [];
-  const values: unknown[] = [];
+  return executeLegacyMutation('ticktick-task-update', (database) => {
+    const current = getTickTickTaskFrom(database, taskId);
+    if (!current) return { changed: false, value: null };
+    const sets: string[] = [];
+    const values: SqlValue[] = [];
 
   if (partial.list_id !== undefined) {
     const listId = partial.list_id?.trim();
     if (!listId) throw new Error('请先创建或选择一个清单');
-    const listExists = oneSql<{ cnt: number }>(db, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
+    const listExists = readOne<{ cnt: number }>(database, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
     if (!listExists) throw new Error('清单不存在，请刷新后重试');
     sets.push('list_id = ?');
     values.push(listId);
@@ -456,42 +412,34 @@ export async function updateTickTickTask(taskId: string, partial: Partial<TickTi
     }
   }
 
-  if (sets.length === 0) return current;
+    if (sets.length === 0) return { changed: false, value: current };
 
   sets.push('updated_at = ?');
   values.push(nowIso());
   values.push(taskId);
 
-  runSql(db, `UPDATE ticktick_tasks SET ${sets.join(', ')} WHERE id = ?`, values);
-  persistDatabase();
-  return getTickTickTask(taskId);
+    const changed = runMutation(database, `UPDATE ticktick_tasks SET ${sets.join(', ')} WHERE id = ?`, values);
+    return { changed, value: getTickTickTaskFrom(database, taskId) };
+  });
 }
 
 export async function deleteTickTickTask(taskId: string): Promise<boolean> {
-  const db = await getDatabase();
-  runSql(db, 'BEGIN');
-  try {
+  return executeLegacyMutation('ticktick-task-delete', (database) => {
     // Recursively collect all descendant IDs
     const allIds: string[] = [taskId];
     for (let i = 0; i < allIds.length; i++) {
-      const children = allSql<{ id: string }>(db, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
+      const children = readAll<{ id: string }>(database, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
       for (const child of children) allIds.push(child.id);
     }
     // FK CASCADE handles bridge cleanup, but we also clean manually for existing DBs
-    for (const id of allIds) {
-      runSql(db, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]);
-    }
+    let changed = false;
+    for (const id of allIds) changed = runMutation(database, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]) || changed;
     // Delete all descendant tasks (order doesn't matter with FK CASCADE on subtasks)
     for (const id of allIds) {
-      runSql(db, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]);
+      changed = runMutation(database, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]) || changed;
     }
-    runSql(db, 'COMMIT');
-    persistDatabase();
-    return true;
-  } catch (e) {
-    runSql(db, 'ROLLBACK');
-    throw e;
-  }
+    return { changed, value: true };
+  });
 }
 
 export async function completeTickTickTask(taskId: string): Promise<TickTickTask | null> {
@@ -508,43 +456,25 @@ export async function getTodayTickTickTasks(): Promise<{
   upcoming: TickTickTask[];
 }> {
   const today = localDate();
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
 
   // Overdue: due_date before today, not completed, no parent
-  const overdueRaw = db.exec(
+  const overdue = readAll<TickTickTask>(database,
     `${TASK_SELECT} WHERE t.parent_id IS NULL AND t.is_completed = 0 AND t.due_date IS NOT NULL AND t.due_date < ? ORDER BY t.due_date ASC, t.sort_order ASC`,
     [today]
-  );
-  const overdue: TickTickTask[] = [];
-  if (overdueRaw.length > 0) {
-    for (const row of overdueRaw[0].values) {
-      overdue.push(await hydrateTask(db, mapTask(row)));
-    }
-  }
+  ).map((task) => hydrateTask(database, task));
 
   // Today: due_date = today or no due_date
-  const todayRaw = db.exec(
+  const todayTasks = readAll<TickTickTask>(database,
     `${TASK_SELECT} WHERE t.parent_id IS NULL AND t.is_completed = 0 AND (t.due_date = ? OR t.due_date IS NULL) ORDER BY t.due_time ASC, t.sort_order ASC`,
     [today]
-  );
-  const todayTasks: TickTickTask[] = [];
-  if (todayRaw.length > 0) {
-    for (const row of todayRaw[0].values) {
-      todayTasks.push(await hydrateTask(db, mapTask(row)));
-    }
-  }
+  ).map((task) => hydrateTask(database, task));
 
   // Upcoming: due_date after today
-  const upcomingRaw = db.exec(
+  const upcoming = readAll<TickTickTask>(database,
     `${TASK_SELECT} WHERE t.parent_id IS NULL AND t.is_completed = 0 AND t.due_date > ? ORDER BY t.due_date ASC, t.sort_order ASC`,
     [today]
-  );
-  const upcoming: TickTickTask[] = [];
-  if (upcomingRaw.length > 0) {
-    for (const row of upcomingRaw[0].values) {
-      upcoming.push(await hydrateTask(db, mapTask(row)));
-    }
-  }
+  ).map((task) => hydrateTask(database, task));
 
   return { overdue, today: todayTasks, upcoming };
 }
@@ -552,10 +482,9 @@ export async function getTodayTickTickTasks(): Promise<{
 // ── Tags ──
 
 export async function listTickTickTags(): Promise<TickTickTag[]> {
-  const db = await getDatabase();
-  // Only count active (uncompleted) tasks
-  const rows = allSql<TickTickTag & { task_count: number }>(
-    db,
+  const database = await getReadOnlyDatabase();
+  return readAll<TickTickTag & { task_count: number }>(
+    database,
     `SELECT tg.*,
        (SELECT COUNT(*) FROM ticktick_tasks t
         WHERE t.tags LIKE '%"' || tg.name || '"%'
@@ -564,18 +493,32 @@ export async function listTickTickTags(): Promise<TickTickTag[]> {
      FROM ticktick_tags tg
      ORDER BY task_count DESC, tg.name ASC`
   );
-  // Clean up tags with zero active tasks
-  const usedTags = allSql<{ name: string }>(db,
-    "SELECT DISTINCT tg.name FROM ticktick_tags tg WHERE EXISTS (SELECT 1 FROM ticktick_tasks t WHERE t.tags LIKE '%\"' || tg.name || '\"%' AND t.is_completed = 0 AND t.parent_id IS NULL)"
-  );
-  const usedSet = new Set(usedTags.map(r => r.name));
-  for (const tag of rows) {
-    if (tag.task_count === 0 && !usedSet.has(tag.name)) {
-      runSql(db, 'DELETE FROM ticktick_tags WHERE id = ?', [tag.id]);
-    }
-  }
-  persistDatabase();
-  return rows;
+}
+
+export async function initializeTickTickService(): Promise<void> {
+  return executeLegacyMutation('ticktick-initialize', (database) => {
+    const tableExists = readOne<{ count: number }>(
+      database,
+      "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'"
+    )?.count === 1;
+    if (!tableExists) database.run('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    let changed = !tableExists;
+    changed = runMutation(
+      database,
+      'INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)',
+      ['ticktick_settings', JSON.stringify(DEFAULT_TICKTICK_SETTINGS)]
+    ) || changed;
+    changed = runMutation(
+      database,
+      `DELETE FROM ticktick_tags
+       WHERE NOT EXISTS (
+         SELECT 1 FROM ticktick_tasks t
+         WHERE t.tags LIKE '%"' || ticktick_tags.name || '"%'
+           AND t.is_completed = 0 AND t.parent_id IS NULL
+       )`
+    ) || changed;
+    return { changed, value: undefined };
+  });
 }
 
 // ── Focus Sessions ──
@@ -584,9 +527,9 @@ export async function listTickTickFocusSessions(filters?: {
   date?: string;
   taskId?: string;
 }): Promise<TickTickFocusSession[]> {
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SqlValue[] = [];
 
   if (filters?.date) {
     where.push("date(fs.start_time) = ?");
@@ -598,8 +541,8 @@ export async function listTickTickFocusSessions(filters?: {
   }
 
   const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  const rows = allSql<TickTickFocusSession & { task_title: string }>(
-    db,
+  return readAll<TickTickFocusSession & { task_title: string }>(
+    database,
     `SELECT fs.*, t.title AS task_title
      FROM ticktick_focus_sessions fs
      LEFT JOIN ticktick_tasks t ON t.id = fs.task_id
@@ -607,62 +550,46 @@ export async function listTickTickFocusSessions(filters?: {
      ORDER BY fs.start_time DESC`,
     params
   );
-  return rows;
 }
 
 export async function createTickTickFocusSession(input: TickTickFocusSessionInput): Promise<TickTickFocusSession> {
-  const db = await getDatabase();
-  const sessionId = id('focus');
-  const timestamp = nowIso();
-
-  runSql(
-    db,
-    `INSERT INTO ticktick_focus_sessions (
-       id, task_id, start_time, end_time, duration_minutes,
-       session_type, completed, white_noise, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      sessionId,
-      input.task_id ?? null,
-      input.start_time,
-      input.end_time ?? null,
-      input.duration_minutes,
-      input.session_type || 'focus',
-      input.completed ?? 1,
-      input.white_noise ?? null,
-      timestamp
-    ]
-  );
-  persistDatabase();
-
-  const row = oneSql<TickTickFocusSession & { task_title: string }>(
-    db,
-    `SELECT fs.*, t.title AS task_title
-     FROM ticktick_focus_sessions fs
-     LEFT JOIN ticktick_tasks t ON t.id = fs.task_id
-     WHERE fs.id = ?`,
-    [sessionId]
-  );
-  return row!;
+  return executeLegacyMutation('ticktick-focus-create', (database) => {
+    const sessionId = id('focus');
+    const timestamp = nowIso();
+    const changed = runMutation(
+      database,
+      `INSERT INTO ticktick_focus_sessions (
+         id, task_id, start_time, end_time, duration_minutes,
+         session_type, completed, white_noise, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [sessionId, input.task_id ?? null, input.start_time, input.end_time ?? null, input.duration_minutes,
+        input.session_type || 'focus', input.completed ?? 1, input.white_noise ?? null, timestamp]
+    );
+    const value = readOne<TickTickFocusSession & { task_title: string }>(
+      database,
+      `SELECT fs.*, t.title AS task_title FROM ticktick_focus_sessions fs
+       LEFT JOIN ticktick_tasks t ON t.id = fs.task_id WHERE fs.id = ?`,
+      [sessionId]
+    )!;
+    return { changed, value };
+  });
 }
 
 // ── Bridge ──
 
 export async function getTickTickTaskBridges(taskId: string): Promise<TickTickBridge[]> {
-  const db = await getDatabase();
-  return allSql<TickTickBridge>(
-    db,
+  return readAll<TickTickBridge>(
+    await getReadOnlyDatabase(),
     'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? ORDER BY linked_type, linked_id',
     [taskId]
   );
 }
 
 export async function createTickTickBridge(input: TickTickBridgeInput): Promise<TickTickBridge> {
-  const db = await getDatabase();
-  const timestamp = nowIso();
-
-  runSql(
-    db,
+  return executeLegacyMutation('ticktick-bridge-create', (database) => {
+    const timestamp = nowIso();
+    const changed = runMutation(
+      database,
     `INSERT OR IGNORE INTO ticktick_bridge (ticktick_task_id, linked_type, linked_id, sync_review, sync_mastery, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
     [
@@ -673,38 +600,29 @@ export async function createTickTickBridge(input: TickTickBridgeInput): Promise<
       input.sync_mastery ?? 0,
       timestamp
     ]
-  );
-  persistDatabase();
-
-  // On duplicate, last_insert_rowid() returns 0; fallback to lookup by unique key
-  const lastId = oneSql<{ id: number }>(db, 'SELECT last_insert_rowid() AS id');
-  if (lastId && lastId.id > 0) {
-    const row = oneSql<TickTickBridge>(db, 'SELECT * FROM ticktick_bridge WHERE id = ?', [lastId.id]);
-    if (row) return row;
-  }
-
-  // Duplicate was ignored — return existing record
-  const existing = oneSql<TickTickBridge>(db,
-    'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND linked_type = ? AND linked_id = ?',
-    [input.ticktick_task_id, input.linked_type, input.linked_id]
-  );
-  return existing!;
+    );
+    const value = readOne<TickTickBridge>(
+      database,
+      'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND linked_type = ? AND linked_id = ?',
+      [input.ticktick_task_id, input.linked_type, input.linked_id]
+    )!;
+    return { changed, value };
+  });
 }
 
 export async function deleteTickTickBridge(bridgeId: number): Promise<boolean> {
-  const db = await getDatabase();
-  runSql(db, 'DELETE FROM ticktick_bridge WHERE id = ?', [bridgeId]);
-  persistDatabase();
-  return true;
+  return executeLegacyMutation('ticktick-bridge-delete', (database) => ({
+    changed: runMutation(database, 'DELETE FROM ticktick_bridge WHERE id = ?', [bridgeId]),
+    value: true
+  }));
 }
 
 export async function getBridgesForLinked(
   linkedType: TickTickBridgeLinkedType,
   linkedId: string
 ): Promise<TickTickBridge[]> {
-  const db = await getDatabase();
-  return allSql<TickTickBridge>(
-    db,
+  return readAll<TickTickBridge>(
+    await getReadOnlyDatabase(),
     'SELECT * FROM ticktick_bridge WHERE linked_type = ? AND linked_id = ?',
     [linkedType, linkedId]
   );
@@ -715,7 +633,7 @@ export async function getBridgesForLinked(
 export async function getTickTickCalendarMonth(year: number, month: number): Promise<TickTickCalendarDay[]> {
   if (month < 1 || month > 12) throw new Error('月份必须在 1-12 之间');
 
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
 
   // Month range
   const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
@@ -723,34 +641,26 @@ export async function getTickTickCalendarMonth(year: number, month: number): Pro
   const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
 
   // 1) Tasks in this month (parent tasks only)
-  const tasksRaw = db.exec(
+  const tasks = readAll<TickTickTask>(database,
     `${TASK_SELECT} WHERE t.parent_id IS NULL AND t.due_date >= ? AND t.due_date <= ? ORDER BY t.due_date, t.sort_order`,
     [startDate, endDate]
-  );
-  const tasks: TickTickTask[] = [];
-  if (tasksRaw.length > 0) {
-    for (const row of tasksRaw[0].values) {
-      tasks.push(await hydrateTask(db, mapTask(row)));
-    }
-  }
+  ).map((task) => hydrateTask(database, task));
 
   // 2) Review due dates from questions table
-  const reviewsRaw = db.exec(
+  const reviews = readAll<{ next_review_at: string | null }>(database,
     `SELECT next_review_at FROM questions WHERE next_review_at >= ? AND next_review_at <= ?`,
     [startDate, endDate]
   );
   const reviewMap = new Map<string, number>();
-  if (reviewsRaw.length > 0) {
-    for (const [raw] of reviewsRaw[0].values) {
-      if (raw) {
-        const d = String(raw).slice(0, 10);
+  for (const review of reviews) {
+      if (review.next_review_at) {
+        const d = review.next_review_at.slice(0, 10);
         reviewMap.set(d, (reviewMap.get(d) || 0) + 1);
       }
-    }
   }
 
   // 3) Focus sessions (pomodoro count is per day)
-  const sessionsRaw = db.exec(
+  const sessions = readAll<{ d: string; cnt: number }>(database,
     `SELECT date(start_time) AS d, COUNT(*) AS cnt
      FROM ticktick_focus_sessions
      WHERE session_type = 'focus' AND completed = 1 AND date(start_time) >= ? AND date(start_time) <= ?
@@ -758,23 +668,15 @@ export async function getTickTickCalendarMonth(year: number, month: number): Pro
     [startDate, endDate]
   );
   const pomodoroMap = new Map<string, number>();
-  if (sessionsRaw.length > 0) {
-    for (const [d, cnt] of sessionsRaw[0].values) {
-      pomodoroMap.set(String(d), Number(cnt));
-    }
-  }
+  for (const session of sessions) pomodoroMap.set(String(session.d), Number(session.cnt));
 
   // 4) AI plans
-  const plansRaw = db.exec(
+  const plans = readAll<{ plan_date: string }>(database,
     `SELECT plan_date FROM ticktick_ai_plans WHERE plan_date >= ? AND plan_date <= ?`,
     [startDate, endDate]
   );
   const planSet = new Set<string>();
-  if (plansRaw.length > 0) {
-    for (const [d] of plansRaw[0].values) {
-      planSet.add(String(d));
-    }
-  }
+  for (const plan of plans) planSet.add(String(plan.plan_date));
 
   // Build day-by-day map
   const dayMap = new Map<string, TickTickCalendarDay>();
@@ -825,16 +727,22 @@ const DEFAULT_TICKTICK_SETTINGS: TickTickSettings = {
 };
 
 export async function getTickTickSettings(): Promise<TickTickSettings> {
-  const db = await getDatabase();
-  ensureAppSettings(db);
-
-  const rawRows = db.exec("SELECT value FROM app_settings WHERE key = 'ticktick_settings'");
-  if (rawRows.length === 0 || rawRows[0].values.length === 0) {
+  const database = await getReadOnlyDatabase();
+  const tableExists = readOne<{ count: number }>(
+    database,
+    "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'"
+  )?.count === 1;
+  if (!tableExists) return { ...DEFAULT_TICKTICK_SETTINGS };
+  const row = readOne<{ value: string }>(
+    database,
+    "SELECT value FROM app_settings WHERE key = 'ticktick_settings'"
+  );
+  if (!row) {
     return { ...DEFAULT_TICKTICK_SETTINGS };
   }
 
   try {
-    const parsed = JSON.parse(String(rawRows[0].values[0][0]));
+    const parsed = JSON.parse(row.value);
     return {
       pomodoro: { ...DEFAULT_TICKTICK_SETTINGS.pomodoro, ...(parsed.pomodoro || {}) },
       autoCreateReviewTasks: parsed.autoCreateReviewTasks ?? DEFAULT_TICKTICK_SETTINGS.autoCreateReviewTasks,
@@ -851,9 +759,6 @@ export async function saveTickTickSettings(settings: TickTickSettings): Promise<
     throw new Error('focusMinutes must be >= 1');
   }
 
-  const db = await getDatabase();
-  ensureAppSettings(db);
-
   const merged: TickTickSettings = {
     pomodoro: { ...DEFAULT_TICKTICK_SETTINGS.pomodoro, ...(settings.pomodoro || {}) },
     autoCreateReviewTasks: settings.autoCreateReviewTasks ?? DEFAULT_TICKTICK_SETTINGS.autoCreateReviewTasks,
@@ -861,13 +766,15 @@ export async function saveTickTickSettings(settings: TickTickSettings): Promise<
     defaultListId: settings.defaultListId ?? DEFAULT_TICKTICK_SETTINGS.defaultListId,
   };
 
-  runSql(
-    db,
-    'INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)',
-    ['ticktick_settings', JSON.stringify(merged)]
-  );
-  persistDatabase();
-  return merged;
+  return executeLegacyMutation('ticktick-settings-save', (database) => ({
+    changed: runMutation(
+      database,
+      `INSERT INTO app_settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE value != excluded.value`,
+      ['ticktick_settings', JSON.stringify(merged)]
+    ),
+    value: merged
+  }));
 }
 
 // ── Habits ──
@@ -875,14 +782,15 @@ export async function saveTickTickSettings(settings: TickTickSettings): Promise<
 const togglingHabits = new Set<string>();
 
 export async function listTickTickHabits(): Promise<TickTickHabit[]> {
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
   const today = localDate();
-  const habits = allSql<TickTickHabit>(db, 'SELECT * FROM ticktick_habits ORDER BY sort_order ASC');
+  const habits = readAll<TickTickHabit>(database, 'SELECT * FROM ticktick_habits ORDER BY sort_order ASC')
+    .map((habit) => ({ ...habit }));
   if (habits.length === 0) return [];
 
   // Batch load all logs for the last 365 days
   const since = localDate(new Date(Date.now() - 365 * 86400000));
-  const allLogs = allSql<{ habit_id: string; log_date: string }>(db,
+  const allLogs = readAll<{ habit_id: string; log_date: string }>(database,
     'SELECT habit_id, log_date FROM ticktick_habit_logs WHERE habit_id IN (' + habits.map(() => '?').join(',') + ') AND log_date >= ? ORDER BY log_date DESC',
     [...habits.map(h => h.id), since]
   );
@@ -918,85 +826,70 @@ export async function listTickTickHabits(): Promise<TickTickHabit[]> {
 }
 
 export async function createTickTickHabit(input: TickTickHabitInput): Promise<TickTickHabit> {
-  const db = await getDatabase();
-  const habitId = id('habit');
-  const now = nowIso();
-
-  const maxOrder = oneSql<{ m: number }>(db, 'SELECT MAX(sort_order) AS m FROM ticktick_habits');
-  const sortOrder = (maxOrder?.m ?? -1) + 1;
-
-  runSql(db,
-    'INSERT INTO ticktick_habits (id, name, icon, color, goal_description, frequency, target_count, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    [habitId, input.name.trim(), input.icon || 'check', input.color || '#4a90d9', input.goal_description || '', input.frequency || 'daily', input.target_count || 1, sortOrder, now, now]
-  );
-  persistDatabase();
-  const row = oneSql<TickTickHabit>(db, 'SELECT * FROM ticktick_habits WHERE id = ?', [habitId]);
-  return row!;
+  return executeLegacyMutation('ticktick-habit-create', (database) => {
+    const habitId = id('habit');
+    const timestamp = nowIso();
+    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_habits');
+    const sortOrder = (maxOrder?.m ?? -1) + 1;
+    const changed = runMutation(database,
+      'INSERT INTO ticktick_habits (id, name, icon, color, goal_description, frequency, target_count, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [habitId, input.name.trim(), input.icon || 'check', input.color || '#4a90d9', input.goal_description || '', input.frequency || 'daily', input.target_count || 1, sortOrder, timestamp, timestamp]
+    );
+    return { changed, value: readOne<TickTickHabit>(database, 'SELECT * FROM ticktick_habits WHERE id = ?', [habitId])! };
+  });
 }
 
 export async function updateTickTickHabit(id: string, input: TickTickHabitInput): Promise<TickTickHabit | null> {
-  const db = await getDatabase();
-  const now = nowIso();
-  runSql(db,
-    `UPDATE ticktick_habits SET name = COALESCE(?, name), icon = COALESCE(?, icon), color = COALESCE(?, color), goal_description = COALESCE(?, goal_description), frequency = COALESCE(?, frequency), target_count = COALESCE(?, target_count), updated_at = ? WHERE id = ?`,
-    [input.name?.trim() || null, input.icon || null, input.color || null, input.goal_description || null, input.frequency || null, input.target_count || null, now, id]
-  );
-  persistDatabase();
-  return oneSql<TickTickHabit>(db, 'SELECT * FROM ticktick_habits WHERE id = ?', [id]) ?? null;
+  return executeLegacyMutation('ticktick-habit-update', (database) => {
+    const changed = runMutation(database,
+      `UPDATE ticktick_habits SET name = COALESCE(?, name), icon = COALESCE(?, icon), color = COALESCE(?, color), goal_description = COALESCE(?, goal_description), frequency = COALESCE(?, frequency), target_count = COALESCE(?, target_count), updated_at = ? WHERE id = ?`,
+      [input.name?.trim() || null, input.icon || null, input.color || null, input.goal_description || null, input.frequency || null, input.target_count || null, nowIso(), id]
+    );
+    return { changed, value: readOne<TickTickHabit>(database, 'SELECT * FROM ticktick_habits WHERE id = ?', [id]) };
+  });
 }
 
 export async function deleteTickTickHabit(id: string): Promise<boolean> {
-  const db = await getDatabase();
-  runSql(db, 'DELETE FROM ticktick_habits WHERE id = ?', [id]);
-  persistDatabase();
-  return true;
+  return executeLegacyMutation('ticktick-habit-delete', (database) => ({
+    changed: runMutation(database, 'DELETE FROM ticktick_habits WHERE id = ?', [id]),
+    value: true
+  }));
 }
 
 export async function toggleTickTickHabit(habitId: string, date: string): Promise<TickTickHabitLog | null> {
   if (togglingHabits.has(habitId)) return null; // Skip concurrent toggle
   togglingHabits.add(habitId);
   try {
-    const db = await getDatabase();
-    const existing = oneSql<{ id: string; completed: number }>(db,
-      'SELECT id, completed FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ?',
-      [habitId, date]
-    );
-
-    if (existing) {
-      if (existing.completed) {
-        // Uncheck
-        runSql(db, 'DELETE FROM ticktick_habit_logs WHERE id = ?', [existing.id]);
-        persistDatabase();
-        return null;
+    return await executeLegacyMutation('ticktick-habit-toggle', (database) => {
+      const existing = readOne<{ id: string; completed: number }>(database,
+        'SELECT id, completed FROM ticktick_habit_logs WHERE habit_id = ? AND log_date = ?', [habitId, date]);
+      if (existing?.completed) {
+        return { changed: runMutation(database, 'DELETE FROM ticktick_habit_logs WHERE id = ?', [existing.id]), value: null };
       }
-      // Already unchecked? shouldn't happen, but keep
-      return { id: existing.id, habit_id: habitId, log_date: date, completed: 0, note: '', created_at: '' };
-    }
-
-    // Check in
-    const logId = id('hlog');
-    const now = nowIso();
-    runSql(db,
-      'INSERT OR IGNORE INTO ticktick_habit_logs (id, habit_id, log_date, completed, note, created_at) VALUES (?, ?, ?, 1, ?, ?)',
-      [logId, habitId, date, '', now]
-    );
-    persistDatabase();
-    const row = oneSql<TickTickHabitLog>(db, 'SELECT * FROM ticktick_habit_logs WHERE id = ?', [logId]);
-    return row ?? null;
+      if (existing) {
+        return { changed: false, value: { id: existing.id, habit_id: habitId, log_date: date, completed: 0, note: '', created_at: '' } };
+      }
+      const logId = id('hlog');
+      const changed = runMutation(database,
+        'INSERT OR IGNORE INTO ticktick_habit_logs (id, habit_id, log_date, completed, note, created_at) VALUES (?, ?, ?, 1, ?, ?)',
+        [logId, habitId, date, '', nowIso()]
+      );
+      return { changed, value: readOne<TickTickHabitLog>(database, 'SELECT * FROM ticktick_habit_logs WHERE id = ?', [logId]) };
+    });
   } finally {
     togglingHabits.delete(habitId);
   }
 }
 
 export async function getTickTickHabitLogs(habitId: string, fromDate?: string, toDate?: string): Promise<TickTickHabitLog[]> {
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
   if (fromDate && toDate) {
-    return allSql<TickTickHabitLog>(db,
+    return readAll<TickTickHabitLog>(database,
       'SELECT * FROM ticktick_habit_logs WHERE habit_id = ? AND log_date >= ? AND log_date <= ? ORDER BY log_date DESC',
       [habitId, fromDate, toDate]
     );
   }
-  return allSql<TickTickHabitLog>(db,
+  return readAll<TickTickHabitLog>(database,
     'SELECT * FROM ticktick_habit_logs WHERE habit_id = ? ORDER BY log_date DESC LIMIT 60',
     [habitId]
   );

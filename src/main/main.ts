@@ -18,6 +18,7 @@ import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
 import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
+import { initializeTickTickService } from './services/ticktickService';
 import { ensureDailyAutoBackup } from './services/backupService';
 import type {
   QuestionCategoryMigrationCommand,
@@ -239,6 +240,7 @@ export interface MainStartupDependencies {
   runStartupQuestionCommands?: () => Promise<void>;
   runCompatibilityStartupWriters?: () => Promise<void>;
   initializeStudySupervisor?: () => Promise<void>;
+  initializeTickTickService?: () => Promise<void>;
   ensureDailyAutoBackup(): void;
   registerImageProtocol(): void;
   registerWindowStateIpc(): void;
@@ -252,6 +254,7 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
   assertDatabaseReadyForRuntimeIpc,
   runStartupQuestionCommands,
   initializeStudySupervisor,
+  initializeTickTickService,
   ensureDailyAutoBackup,
   registerImageProtocol,
   registerWindowStateIpc() {
@@ -275,9 +278,12 @@ export async function runMainStartup(
   await runQuestionCommands();
   if (usesCompatibilitySeam) {
     await dependencies.initializeStudySupervisor?.();
+    await dependencies.initializeTickTickService?.();
   } else {
     if (!dependencies.initializeStudySupervisor) throw new Error('Study supervisor startup initializer is unavailable');
     await dependencies.initializeStudySupervisor();
+    if (!dependencies.initializeTickTickService) throw new Error('TickTick startup initializer is unavailable');
+    await dependencies.initializeTickTickService();
     dependencies.assertDatabaseReadyForRuntimeIpc();
   }
   try {

@@ -141,6 +141,7 @@ test('recovery fence aborts startup command handling and prevents IPC admission'
     assertDatabaseReadyForRuntimeIpc: () => trace.push('admission'),
     runStartupQuestionCommands: runQuestionCommands,
     initializeStudySupervisor: async () => assert.fail('study initialization must not run after a recovery fence'),
+    initializeTickTickService: async () => assert.fail('TickTick initialization must not run after a recovery fence'),
     ensureDailyAutoBackup: () => trace.push('backup'),
     registerImageProtocol: () => trace.push('protocol'),
     registerWindowStateIpc: () => trace.push('window-ipc'),
@@ -151,7 +152,7 @@ test('recovery fence aborts startup command handling and prevents IPC admission'
   assert.deepEqual(trace, ['paths', 'recovery', 'migration-failed', 'fenced']);
 });
 
-test('main startup orders recovery, question commands, study initialization, admission, then runtime IPC', async () => {
+test('main startup orders recovery, question commands, service initialization, admission, then runtime IPC', async () => {
   const trace = [];
   await main.runMainStartup({
     initializePaths: () => trace.push('paths'),
@@ -162,6 +163,7 @@ test('main startup orders recovery, question commands, study initialization, adm
     assertDatabaseReadyForRuntimeIpc: () => trace.push('admission'),
     runStartupQuestionCommands: async () => trace.push('commands'),
     initializeStudySupervisor: async () => trace.push('study'),
+    initializeTickTickService: async () => trace.push('ticktick'),
     ensureDailyAutoBackup: () => trace.push('backup'),
     registerImageProtocol: () => trace.push('protocol'),
     registerWindowStateIpc: () => trace.push('window-ipc'),
@@ -170,7 +172,7 @@ test('main startup orders recovery, question commands, study initialization, adm
   });
 
   assert.deepEqual(trace, [
-    'paths', 'recovery', 'commands', 'study', 'admission', 'backup',
+    'paths', 'recovery', 'commands', 'study', 'ticktick', 'admission', 'backup',
     'protocol', 'window-ipc', 'runtime-ipc', 'window'
   ]);
 });
@@ -191,6 +193,7 @@ test('study supervisor initialization failure prevents admission, IPC, and windo
       trace.push('study');
       throw initializationError;
     },
+    initializeTickTickService: async () => assert.fail('TickTick initialization must not run after study failure'),
     ensureDailyAutoBackup: () => trace.push('backup'),
     registerImageProtocol: () => trace.push('protocol'),
     registerWindowStateIpc: () => trace.push('window-ipc'),
@@ -199,4 +202,31 @@ test('study supervisor initialization failure prevents admission, IPC, and windo
   }), (error) => error === initializationError);
 
   assert.deepEqual(trace, ['paths', 'recovery', 'commands', 'study']);
+});
+
+test('TickTick initialization failure prevents admission, IPC, and window creation', async () => {
+  const trace = [];
+  const initializationError = new Error('TickTick initialization failed');
+
+  await assert.rejects(main.runMainStartup({
+    initializePaths: () => trace.push('paths'),
+    initializeDatabase: async () => {
+      trace.push('recovery');
+      return writableInitialization();
+    },
+    assertDatabaseReadyForRuntimeIpc: () => trace.push('admission'),
+    runStartupQuestionCommands: async () => trace.push('commands'),
+    initializeStudySupervisor: async () => trace.push('study'),
+    initializeTickTickService: async () => {
+      trace.push('ticktick');
+      throw initializationError;
+    },
+    ensureDailyAutoBackup: () => trace.push('backup'),
+    registerImageProtocol: () => trace.push('protocol'),
+    registerWindowStateIpc: () => trace.push('window-ipc'),
+    registerRuntimeIpc: () => trace.push('runtime-ipc'),
+    createWindow: () => trace.push('window')
+  }), (error) => error === initializationError);
+
+  assert.deepEqual(trace, ['paths', 'recovery', 'commands', 'study', 'ticktick']);
 });
