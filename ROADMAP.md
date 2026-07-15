@@ -6,13 +6,15 @@
 
 ## 当前阶段重点
 
-当前最大目标不是新增大功能，而是把已实现的 wide surface 收敛为可稳定交付的状态。
+当前主线已切回**错题本本体**的稳定化交付，目标不是新增大功能，而是把已实现的 wide surface 收敛为可稳定交付的状态。错题本主线 P0 详见 [docs/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md](docs/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md)。
 
-1. **交付稳定化** — 当前 `typecheck`/`build` 已恢复通过；下一步确保 `pack:win` 和 Electron 手工验收可复现。
-2. **TickTick 收口** — 按 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md) 处理 P0（布局/启动）和 P1（数据保存/同步链路）。
-3. **文档一致性** — README / ROADMAP / KNOWN_ISSUES 已校准；`TICKTICK_FEATURES.md` / `TICKTICK_KNOWN_BUGS.md` 后续择机合并归档。
-4. **最小测试体系** — ✅ 已落地最小回归套件（`npm test`，约 41 个用例，覆盖 schema/备份恢复/导入解析/导入批次删除/复习算法/TickTick 创建更新/桥接同步/题库/IPC 契约/migration 升级/知识地图导入/study supervisor 监督闭环）；✅ 最小 CI 已接入（GitHub Actions 在 push/PR 到 main 上运行 test/typecheck/build）作为提交门槛；🔧 仍需补 renderer 组件与 Electron 端到端覆盖。
-5. **工作区改动收敛** — 分离真实逻辑改动与行尾符噪声，完成未提交 diff 的提交。
+1. **打包版验收闭环** — `typecheck`/`build`/CI 已稳定通过；下一步确保 `pack:win` 与错题本主链路的打包版人工验收可复现、可留痕（P0）。
+2. **错题本主链路最小回归** — 现有 `npm test` 覆盖集中在 main/service 层，renderer/Electron 端到端仍空白；先产出最小回归方案与首批落地点，避免高估页面主链路稳定性（P0）。
+3. **文档口径一致性** — README / ROADMAP / KNOWN_ISSUES 与仓库现状对齐；`TICKTICK_FEATURES.md` / `TICKTICK_KNOWN_BUGS.md` 后续择机合并归档。
+4. **TickTick 收口（并行推进，非当前主线）** — 按 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md) 处理剩余 P0/P1/P2，作为后台收口项，不占用错题本主线优先级。
+5. **PDF 教材联动** — 已降级为非主线，保持 P1（见 V1.4 / V2.0），本阶段不推进。
+
+> 已收口不再单列：最小回归套件（`npm test`，约 41+ 用例，覆盖 schema/备份恢复/导入解析/导入批次删除/复习算法/TickTick 创建更新/桥接同步/题库/IPC 契约/migration 升级/知识地图导入/study supervisor）与最小 CI（GitHub Actions 在 push/PR 到 main 运行 test/typecheck/build）已落地；行尾符（CRLF/LF）治理已随 `.gitattributes` 完成，不再是当前事项。
 
 ---
 

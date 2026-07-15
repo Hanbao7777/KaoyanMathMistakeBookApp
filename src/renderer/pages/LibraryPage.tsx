@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CATEGORIES, DIFFICULTIES, ERROR_REASONS, MASTERY_LEVELS, MATH_SUBJECTS, QUESTION_TYPES, SOURCES } from '../../shared/options';
 import type { PdfExportMode, PdfExportResult, Question, QuestionFilters } from '../../shared/types';
+import { emptyFilters, hasActiveFilters, activeFilterBadges, computeQuestionSummary } from '../../shared/questionFilters';
 import { EmptyState } from '../components/EmptyState';
 import { useModal } from '../components/Modal';
 import { QuestionCard } from '../components/QuestionCard';
@@ -66,21 +67,6 @@ const T = {
   pdfBeta: 'PDF 导出功能目前为 Beta，复杂公式或长图分页可能需要后续优化。'
 };
 
-const emptyFilters: QuestionFilters = {
-  search: '',
-  subject: '',
-  category: '',
-  questionType: '',
-  errorReason: '',
-  masteryLevel: '',
-  difficulty: '',
-  source: '',
-  tag: '',
-  sortBy: 'created_at',
-  sortOrder: 'desc',
-  weakOnly: false
-};
-
 function SelectFilter({ label, value, options, onChange }: { label: string; value?: string; options: string[]; onChange: (value: string) => void }) {
   return (
     <label>
@@ -91,34 +77,6 @@ function SelectFilter({ label, value, options, onChange }: { label: string; valu
       </select>
     </label>
   );
-}
-
-function isDue(value?: string | null) {
-  if (!value) return false;
-  return value.slice(0, 10) <= new Date().toISOString().slice(0, 10);
-}
-
-function isWeak(question: Question) {
-  return question.mastery_level === '未掌握' || question.mastery_level === '较弱' || (question.wrong_count || 0) > (question.correct_count || 0) || (question.no_idea_count || 0) > 0;
-}
-
-function hasActiveFilters(filters: QuestionFilters) {
-  return Boolean(filters.search || filters.subject || filters.category || filters.questionType || filters.errorReason || filters.masteryLevel || filters.difficulty || filters.source || filters.tag || filters.weakOnly);
-}
-
-function activeFilterBadges(filters: QuestionFilters) {
-  const badges: Array<{ key: keyof QuestionFilters | 'weakOnly'; label: string }> = [];
-  if (filters.search) badges.push({ key: 'search', label: `关键词：${filters.search}` });
-  if (filters.subject) badges.push({ key: 'subject', label: `学科：${filters.subject}` });
-  if (filters.category) badges.push({ key: 'category', label: `章节：${filters.category}` });
-  if (filters.questionType) badges.push({ key: 'questionType', label: `题型：${filters.questionType}` });
-  if (filters.errorReason) badges.push({ key: 'errorReason', label: `错因：${filters.errorReason}` });
-  if (filters.masteryLevel) badges.push({ key: 'masteryLevel', label: `掌握程度：${filters.masteryLevel}` });
-  if (filters.difficulty) badges.push({ key: 'difficulty', label: `难度：${filters.difficulty}` });
-  if (filters.source) badges.push({ key: 'source', label: `来源：${filters.source}` });
-  if (filters.tag) badges.push({ key: 'tag', label: `标签：${filters.tag}` });
-  if (filters.weakOnly) badges.push({ key: 'weakOnly', label: '薄弱错题' });
-  return badges;
 }
 
 export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: LibraryPageProps) {
@@ -150,11 +108,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
 
   const activeBadges = useMemo(() => activeFilterBadges(filters), [filters]);
   const active = hasActiveFilters(filters);
-  const summary = useMemo(() => ({
-    unmastered: questions.filter((question) => question.mastery_level === '未掌握').length,
-    weak: questions.filter(isWeak).length,
-    due: questions.filter((question) => isDue(question.next_review_at)).length
-  }), [questions]);
+  const summary = useMemo(() => computeQuestionSummary(questions), [questions]);
 
   async function remove(id: number) {
     const confirmed = await modal.confirm({ title: '操作确认', message: T.deleteConfirm, confirmLabel: '删除', danger: true });
