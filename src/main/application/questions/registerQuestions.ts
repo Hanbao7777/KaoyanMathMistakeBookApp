@@ -27,6 +27,7 @@ function questionEventDraft(command: AppCommand, value: unknown) {
     case 'questions.remove_image': return { type: 'questions.image_removed', payload: { imageId: command.payload.imageId, deleteFile: command.payload.deleteFile } };
     case 'questions.mark_mastery': return { type: 'questions.mastery_changed', payload: { questionId: command.payload.questionId, mastery: command.payload.mastery } };
     case 'questions.submit_review': return { type: 'questions.review_submitted', payload: { questionId: command.payload.questionId, reviewLogId: (value as { log: { id: number } }).log.id, result: command.payload.result } };
+    case 'questions.undo_review': return { type: 'questions.review_undone', payload: { questionId: command.payload.questionId, reviewLogId: command.payload.reviewLogId } };
     case 'questions.link_knowledge': return { type: 'questions.knowledge_linked', payload: { questionId: command.payload.questionId, insertedCount: value as number } };
     case 'questions.migrate_categories': return { type: 'questions.categories_migrated', payload: { migrated: (value as { migrated: number }).migrated } };
     case 'questions.rematch_knowledge': return { type: 'questions.knowledge_rematched', payload: { ...(value as Record<string, unknown>) } };
@@ -82,6 +83,7 @@ export function registerQuestions(options: RegisterQuestionsOptions): QuestionsA
   commandBus.register('questions.remove_image', { handler: withQuestionEvent(handlers.removeImage), conflicts: (command) => [{ entityType: 'question_image', entityId: String(command.payload.imageId) }] });
   commandBus.register('questions.mark_mastery', { handler: withQuestionEvent(handlers.markMastery), conflicts: (command) => [{ entityType: 'question', entityId: String(command.payload.questionId) }] });
   commandBus.register('questions.submit_review', { handler: withQuestionEvent(handlers.submitReview), conflicts: (command) => [{ entityType: 'question', entityId: String(command.payload.questionId) }] });
+  commandBus.register('questions.undo_review', { handler: withQuestionEvent(handlers.undoReview), conflicts: (command) => [{ entityType: 'question', entityId: String(command.payload.questionId) }, { entityType: 'review_log', entityId: String(command.payload.reviewLogId) }] });
   commandBus.register('questions.link_knowledge', { handler: withQuestionEvent(handlers.linkKnowledge), conflicts: (command) => [{ entityType: 'question', entityId: String(command.payload.questionId) }] });
   commandBus.register('questions.migrate_categories', { handler: withQuestionEvent(handlers.migrateCategories) });
   commandBus.register('questions.rematch_knowledge', { handler: withQuestionEvent(handlers.rematchKnowledge) });

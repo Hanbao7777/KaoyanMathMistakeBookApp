@@ -86,6 +86,16 @@ export interface QuestionSubmitReviewCommand {
   payload: ReviewSubmitInput;
 }
 
+export interface QuestionUndoReviewCommand {
+  type: 'questions.undo_review';
+  payload: { questionId: number; reviewLogId: number };
+}
+
+export interface QuestionUndoReviewResult {
+  question: Question;
+  reviewLog: ReviewLog;
+}
+
 export interface QuestionLinkKnowledgeCommand {
   type: 'questions.link_knowledge';
   payload: { questionId: number; knowledgeNodeIds: string[]; matchType: 'gpt' | 'auto' | 'manual' };
@@ -128,6 +138,7 @@ export type QuestionCommand =
   | QuestionRemoveImageCommand
   | QuestionMarkMasteryCommand
   | QuestionSubmitReviewCommand
+  | QuestionUndoReviewCommand
   | QuestionLinkKnowledgeCommand
   | QuestionCategoryMigrationCommand
   | QuestionRematchCommand
@@ -143,6 +154,7 @@ export const questionCommandTypes = [
   'questions.remove_image',
   'questions.mark_mastery',
   'questions.submit_review',
+  'questions.undo_review',
   'questions.link_knowledge',
   'questions.migrate_categories',
   'questions.rematch_knowledge',
@@ -228,6 +240,7 @@ export interface QuestionCommandValues {
   'questions.remove_image': boolean;
   'questions.mark_mastery': Question;
   'questions.submit_review': ReviewSubmitResult;
+  'questions.undo_review': QuestionUndoReviewResult;
   'questions.link_knowledge': number;
   'questions.migrate_categories': { migrated: number };
   'questions.rematch_knowledge': { scannedQuestions: number; insertedCount: number };

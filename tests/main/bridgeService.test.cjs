@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const test = require('node:test');
 const {
   cleanupTestRoot,
@@ -136,4 +137,76 @@ test('uncompleteTaskWithReviewSync removes the synced review log via unified ent
 
   const logsAfterUndo = await databaseService.listReviewLogs(question.id);
   assert.equal(logsAfterUndo.length, 0);
+  const restored = await databaseService.getQuestion(question.id);
+  assert.equal(restored.review_count, 0);
+  assert.equal(restored.correct_count, 0);
+  assert.equal(restored.consecutive_correct, 0);
+  assert.equal(restored.mastery_level, '一般');
+  assert.equal(restored.last_reviewed_at, null);
+  assert.equal(restored.next_review_at, null);
+});
+
+async function installFailureTrigger(sql) {
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      database.run(sql);
+      return { changed: true, value: null };
+    }
+  });
+}
+
+test('completeTaskWithReviewSync restores TickTick state and rejects when review command fails', async () => {
+  const question = await createQuestion();
+  const task = await createTask('提交失败补偿');
+  await createQuestionBridge(task.id, question.id);
+  await installFailureTrigger(`CREATE TRIGGER fail_bridge_review_insert BEFORE INSERT ON review_logs
+    BEGIN SELECT RAISE(ABORT, 'forced review command failure'); END`);
+
+  await assert.rejects(
+    bridgeService.completeTaskWithReviewSync(task.id),
+    (error) => error?.code === 'INTERNAL_ERROR'
+  );
+
+  assert.equal((await ticktickService.getTickTickTask(task.id)).is_completed, 0);
+  assert.equal((await databaseService.listReviewLogs(question.id)).length, 0);
+  assert.equal((await databaseService.getQuestion(question.id)).review_count, 0);
+});
+
+test('uncompleteTaskWithReviewSync restores TickTick completion and rejects when undo command fails', async () => {
+  const question = await createQuestion();
+  const task = await createTask('撤销失败补偿');
+  await createQuestionBridge(task.id, question.id);
+  await bridgeService.completeTaskWithReviewSync(task.id);
+  await installFailureTrigger(`CREATE TRIGGER fail_bridge_review_delete BEFORE DELETE ON review_logs
+    BEGIN SELECT RAISE(ABORT, 'forced review undo failure'); END`);
+
+  await assert.rejects(
+    bridgeService.uncompleteTaskWithReviewSync(task.id),
+    (error) => error?.code === 'INTERNAL_ERROR'
+  );
+
+  assert.equal((await ticktickService.getTickTickTask(task.id)).is_completed, 1);
+  assert.equal((await databaseService.listReviewLogs(question.id)).length, 1);
+  assert.equal((await databaseService.getQuestion(question.id)).review_count, 1);
+});
+
+test('completeTaskWithReviewSync reports compensation failure instead of false success', async () => {
+  const question = await createQuestion();
+  const task = await createTask('补偿失败显式结果');
+  await createQuestionBridge(task.id, question.id);
+  await installFailureTrigger(`CREATE TRIGGER fail_bridge_review_and_uncomplete BEFORE INSERT ON review_logs
+    BEGIN SELECT RAISE(ABORT, 'forced review command failure'); END`);
+  await installFailureTrigger(`CREATE TRIGGER fail_bridge_uncomplete BEFORE UPDATE OF is_completed ON ticktick_tasks
+    WHEN NEW.is_completed = 0 BEGIN SELECT RAISE(ABORT, 'forced TickTick compensation failure'); END`);
+
+  await assert.rejects(
+    bridgeService.completeTaskWithReviewSync(task.id),
+    /TickTick completion compensation failed/
+  );
+
+  assert.equal((await ticktickService.getTickTickTask(task.id)).is_completed, 1);
+  assert.equal((await databaseService.listReviewLogs(question.id)).length, 0);
 });

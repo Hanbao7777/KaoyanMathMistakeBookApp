@@ -102,6 +102,80 @@ test('question repository rejects mutation construction without a coordinator sc
   );
 });
 
+test('undo review restores aggregates from retained history and emits an immutable event', async () => {
+  const { application, version } = await applicationAndVersion();
+  const created = await application.execute({ type: 'questions.create', payload: { input: input() } }, context(version));
+  const first = await application.execute({
+    type: 'questions.submit_review', payload: { questionId: created.value.id, result: 'correct', note: 'first' }
+  }, context(created.dataVersion));
+  const second = await application.execute({
+    type: 'questions.submit_review', payload: { questionId: created.value.id, result: 'wrong', note: 'second' }
+  }, context(first.dataVersion));
+  const observed = [];
+  application.eventBus.subscribe((event) => observed.push(event));
+
+  await assert.rejects(
+    application.execute({
+      type: 'questions.undo_review', payload: { questionId: created.value.id, reviewLogId: first.value.log.id }
+    }, context(second.dataVersion)),
+    (error) => error?.code === 'VALIDATION_ERROR'
+  );
+  assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), second.dataVersion);
+
+  const undone = await application.execute({
+    type: 'questions.undo_review', payload: { questionId: created.value.id, reviewLogId: second.value.log.id }
+  }, context(second.dataVersion));
+  assert.equal(undone.changed, true);
+  assert.equal(undone.value.reviewLog.id, second.value.log.id);
+  assert.equal(undone.value.question.review_count, 1);
+  assert.equal(undone.value.question.correct_count, 1);
+  assert.equal(undone.value.question.wrong_count, 0);
+  assert.equal(undone.value.question.no_idea_count, 0);
+  assert.equal(undone.value.question.consecutive_correct, 1);
+  assert.equal(undone.value.question.mastery_level, first.value.log.mastery_after);
+  assert.equal(undone.value.question.last_reviewed_at, first.value.log.reviewed_at);
+  assert.equal(undone.value.question.next_review_at, first.value.log.next_review_at);
+  assert.equal(undone.events[0].type, 'questions.review_undone');
+  assert.deepEqual(undone.events[0].payload, { questionId: created.value.id, reviewLogId: second.value.log.id });
+  assert.equal(Object.isFrozen(undone.events[0].payload), true);
+  assert.equal(observed.length, 1);
+
+  const empty = await application.execute({
+    type: 'questions.undo_review', payload: { questionId: created.value.id, reviewLogId: first.value.log.id }
+  }, context(undone.dataVersion));
+  assert.equal(empty.value.question.review_count, 0);
+  assert.equal(empty.value.question.correct_count, 0);
+  assert.equal(empty.value.question.wrong_count, 0);
+  assert.equal(empty.value.question.consecutive_correct, 0);
+  assert.equal(empty.value.question.mastery_level, first.value.log.mastery_before);
+  assert.equal(empty.value.question.last_reviewed_at, null);
+  assert.equal(empty.value.question.next_review_at, null);
+});
+
+test('undo review rejects wrong-question ownership and stale versions without mutation', async () => {
+  const { application, version } = await applicationAndVersion();
+  const firstQuestion = await application.execute({ type: 'questions.create', payload: { input: input() } }, context(version));
+  const secondQuestion = await application.execute({ type: 'questions.create', payload: { input: input({ title: 'second' }) } }, context(firstQuestion.dataVersion));
+  const reviewed = await application.execute({
+    type: 'questions.submit_review', payload: { questionId: firstQuestion.value.id, result: 'correct' }
+  }, context(secondQuestion.dataVersion));
+
+  await assert.rejects(
+    application.execute({
+      type: 'questions.undo_review', payload: { questionId: secondQuestion.value.id, reviewLogId: reviewed.value.log.id }
+    }, context(reviewed.dataVersion)),
+    (error) => error?.code === 'VALIDATION_ERROR'
+  );
+  await assert.rejects(
+    application.execute({
+      type: 'questions.undo_review', payload: { questionId: firstQuestion.value.id, reviewLogId: reviewed.value.log.id }
+    }, context(secondQuestion.dataVersion)),
+    (error) => error?.code === 'DATA_REVISION_CONFLICT'
+  );
+  assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), reviewed.dataVersion);
+  assert.equal((await databaseService.listReviewLogs(firstQuestion.value.id)).length, 1);
+});
+
 test('image create and quarantine deletion complete through the operation journal', async () => {
   const { application, version } = await applicationAndVersion();
   const paths = getControlPlanePaths();

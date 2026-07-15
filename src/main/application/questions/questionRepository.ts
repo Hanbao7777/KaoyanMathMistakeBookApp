@@ -1,4 +1,5 @@
 import type { Database, SqlValue } from 'sql.js';
+import { AgentError } from '../../../shared/agent/errors';
 import type { DatabaseMutationScope } from '../../persistence/databaseCoordinator';
 import { assertDatabaseMutationScope } from '../../persistence/databaseCoordinator';
 import type {
@@ -13,6 +14,7 @@ import type {
   ReviewSubmitInput,
   ReviewSubmitResult
 } from '../../../shared/types';
+import type { QuestionUndoReviewResult } from '../../../shared/agent/v1/contracts';
 
 const DEFAULT_SUBJECT = '高等数学';
 const SUBJECTS = new Set(['高等数学', '线性代数', '概率论', '其他']);
@@ -125,6 +127,12 @@ function resultLabel(result: ReviewResultV2): string {
   if (result === 'correct') return '做对了';
   if (result === 'wrong') return '做错了';
   return '没思路';
+}
+
+function normalizedReviewResult(result: ReviewLog['result']): ReviewResultV2 {
+  if (result === 'correct' || result === '做对了') return 'correct';
+  if (result === 'wrong' || result === '做错了') return 'wrong';
+  return 'no_idea';
 }
 
 function parseList(value: string | null | undefined): string[] {
@@ -318,6 +326,48 @@ export class QuestionRepository {
       log,
       message: `已记录：${resultLabel(input.result)}，下次复习：${dateOnly(new Date(nextReviewAt))}`
     };
+  }
+
+  undoReview(questionId: number, reviewLogId: number): QuestionUndoReviewResult {
+    this.assertScope();
+    if (!this.getQuestion(questionId)) throw new Error('错题不存在');
+    const reviewLog = one<ReviewLog>(this.database, 'SELECT * FROM review_logs WHERE id = ?', [reviewLogId]);
+    if (!reviewLog || reviewLog.question_id !== questionId) {
+      throw new AgentError('VALIDATION_ERROR', { field: 'command.payload.reviewLogId' });
+    }
+    const latest = one<ReviewLog>(this.database, 'SELECT * FROM review_logs WHERE question_id = ? ORDER BY id DESC LIMIT 1', [questionId]);
+    if (!latest || latest.id !== reviewLogId) {
+      throw new AgentError('VALIDATION_ERROR', { field: 'command.payload.reviewLogId' });
+    }
+
+    run(this.database, 'DELETE FROM review_logs WHERE id = ? AND question_id = ?', [reviewLogId, questionId]);
+    if (this.database.getRowsModified() !== 1) throw new Error('复习记录撤销失败');
+
+    const remaining = all<ReviewLog>(this.database, 'SELECT * FROM review_logs WHERE question_id = ? ORDER BY id ASC', [questionId]);
+    const latestRemaining = remaining.at(-1);
+    const results = remaining.map((log) => normalizedReviewResult(log.result));
+    let consecutiveCorrect = 0;
+    for (let index = results.length - 1; index >= 0 && results[index] === 'correct'; index -= 1) {
+      consecutiveCorrect += 1;
+    }
+    const correctCount = results.filter((result) => result === 'correct').length;
+    const noIdeaCount = results.filter((result) => result === 'no_idea').length;
+    const wrongCount = results.length - correctCount;
+    const mastery = normalizeMastery(latestRemaining?.mastery_after ?? reviewLog.mastery_before);
+    const lastReviewedAt = latestRemaining
+      ? latestRemaining.reviewed_at ?? latestRemaining.review_date ?? latestRemaining.created_at ?? null
+      : null;
+    const nextReviewAt = latestRemaining?.next_review_at ?? null;
+
+    run(this.database, `UPDATE questions SET
+      review_count = ?, correct_count = ?, wrong_count = ?, no_idea_count = ?, consecutive_correct = ?,
+      last_reviewed_at = ?, next_review_at = ?, mastery_level = ?, updated_at = ? WHERE id = ?`, [
+      remaining.length, correctCount, wrongCount, noIdeaCount, consecutiveCorrect,
+      lastReviewedAt, nextReviewAt, mastery, this.now(), questionId
+    ]);
+    const question = this.getQuestion(questionId);
+    if (!question) throw new Error('复习记录撤销后读取失败');
+    return { question, reviewLog };
   }
 
   linkKnowledgePoints(questionId: number, values: readonly string[], matchType: 'gpt' | 'auto' | 'manual'): LinkKnowledgeResult {

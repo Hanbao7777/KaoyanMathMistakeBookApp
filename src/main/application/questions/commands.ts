@@ -237,6 +237,11 @@ export function createQuestionCommandHandlers(dependencies: QuestionCommandDepen
     return { changed: true, value };
   };
 
+  const undoReview: Handler<'questions.undo_review'> = (command, _context, database, scope) => {
+    const value = repository(database, scope).undoReview(command.payload.questionId, command.payload.reviewLogId);
+    return { changed: true, value };
+  };
+
   const linkKnowledge: Handler<'questions.link_knowledge'> = (command, _context, database, scope) => {
     const result = repository(database, scope).linkKnowledgePoints(command.payload.questionId, command.payload.knowledgeNodeIds, command.payload.matchType);
     return { changed: result.inserted > 0, value: result.inserted };
@@ -304,7 +309,7 @@ export function createQuestionCommandHandlers(dependencies: QuestionCommandDepen
     return { changed: deleted > 0, value: { deleted } };
   };
 
-  return { create, update, delete: removeQuestion, removeImage, markMastery, submitReview, linkKnowledge, migrateCategories, rematchKnowledge, bulkUpsert, importQuestions, replaceAll, clearAll };
+  return { create, update, delete: removeQuestion, removeImage, markMastery, submitReview, undoReview, linkKnowledge, migrateCategories, rematchKnowledge, bulkUpsert, importQuestions, replaceAll, clearAll };
 }
 
 export async function finalizeQuestionFileOperation(

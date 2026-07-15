@@ -28,6 +28,7 @@ const commands = [
   { type: 'questions.remove_image', payload: { imageId: 1, deleteFile: false } },
   { type: 'questions.mark_mastery', payload: { questionId: 1, mastery: '一般' } },
   { type: 'questions.submit_review', payload: { questionId: 1, result: 'correct' } },
+  { type: 'questions.undo_review', payload: { questionId: 1, reviewLogId: 1 } },
   { type: 'questions.link_knowledge', payload: { questionId: 1, knowledgeNodeIds: ['node-1'], matchType: 'manual' } },
   { type: 'questions.migrate_categories', payload: { limit: 100 } },
   { type: 'questions.rematch_knowledge', payload: { limit: 100, questionIds: [1] } },
@@ -66,6 +67,8 @@ test('rejects unknown fields, discriminators, malformed ids, dates, and revision
     { ...commands[0], extra: true },
     { type: 'questions.unknown', payload: {} },
     { type: 'questions.delete', payload: { questionId: 0, deleteImages: false } },
+    { type: 'questions.undo_review', payload: { questionId: 1, reviewLogId: 0 } },
+    { type: 'questions.undo_review', payload: { questionId: 1, reviewLogId: 1, unexpected: true } },
     { type: 'questions.create', payload: { input: { ...input, unexpected: true } } }
   ];
   for (const command of invalid) assert.throws(() => agent.validateQuestionCommand(command), /request is invalid/i);

@@ -185,6 +185,10 @@ export function validateQuestionCommand(value: unknown, path = 'command'): asser
       const p = payload(command.payload, ['questionId', 'result', 'note'], ['questionId', 'result'], `${path}.payload`);
       id(p.questionId, `${path}.payload.questionId`); oneOf(p.result, ['correct', 'wrong', 'no_idea'], `${path}.payload.result`); optionalString(p.note, `${path}.payload.note`, 10_000); return;
     }
+    case 'questions.undo_review': {
+      const p = payload(command.payload, ['questionId', 'reviewLogId'], ['questionId', 'reviewLogId'], `${path}.payload`);
+      id(p.questionId, `${path}.payload.questionId`); id(p.reviewLogId, `${path}.payload.reviewLogId`); return;
+    }
     case 'questions.link_knowledge': {
       const p = payload(command.payload, ['questionId', 'knowledgeNodeIds', 'matchType'], ['questionId', 'knowledgeNodeIds', 'matchType'], `${path}.payload`);
       id(p.questionId, `${path}.payload.questionId`); stringArray(p.knowledgeNodeIds, `${path}.payload.knowledgeNodeIds`); oneOf(p.matchType, ['gpt', 'auto', 'manual'], `${path}.payload.matchType`); return;
