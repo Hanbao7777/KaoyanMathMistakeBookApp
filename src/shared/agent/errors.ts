@@ -11,6 +11,23 @@ export const agentErrorCodes = [
   'PERSISTENCE_INDETERMINATE',
   'MAINTENANCE_FENCE',
   'RECOVERY_FENCE',
+  'EXTERNAL_CONTROL_DISABLED',
+  'CLIENT_REVOKED',
+  'SCOPE_DENIED',
+  'POLICY_DENIED',
+  'POLICY_INVARIANT_VIOLATION',
+  'APPROVAL_REQUIRED',
+  'APPROVAL_INVALID',
+  'IDEMPOTENCY_CONFLICT',
+  'CATALOG_VERSION_MISMATCH',
+  'CURSOR_INVALID',
+  'AUDIT_INTEGRITY_FAILURE',
+  'AUDIT_UNAVAILABLE',
+  'R4_GRANT_REQUIRED',
+  'R4_GRANT_INVALID',
+  'R4_GRANT_RESERVED',
+  'R4_GRANT_CONSUMED',
+  'INVALID_RECEIPT_TRANSITION',
   'INTERNAL_ERROR'
 ] as const;
 
@@ -41,12 +58,30 @@ const errorMessages: Record<AgentErrorCode, string> = {
   PERSISTENCE_INDETERMINATE: 'The persistence outcome is indeterminate.',
   MAINTENANCE_FENCE: 'Writes are temporarily fenced for maintenance.',
   RECOVERY_FENCE: 'Writes are fenced pending recovery.',
+  EXTERNAL_CONTROL_DISABLED: 'External agent control is disabled.',
+  CLIENT_REVOKED: 'The agent client has been revoked.',
+  SCOPE_DENIED: 'The agent client lacks a required scope.',
+  POLICY_DENIED: 'The operation is denied by policy.',
+  POLICY_INVARIANT_VIOLATION: 'The policy would weaken a catalog safety invariant.',
+  APPROVAL_REQUIRED: 'The operation requires approval.',
+  APPROVAL_INVALID: 'The approval is invalid or no longer applicable.',
+  IDEMPOTENCY_CONFLICT: 'The request conflicts with an existing execution receipt.',
+  CATALOG_VERSION_MISMATCH: 'The operation catalog identity does not match.',
+  CURSOR_INVALID: 'The pagination cursor is invalid.',
+  AUDIT_INTEGRITY_FAILURE: 'Audit ledger integrity verification failed.',
+  AUDIT_UNAVAILABLE: 'Required audit recording is unavailable.',
+  R4_GRANT_REQUIRED: 'The operation requires an R4 grant.',
+  R4_GRANT_INVALID: 'The R4 grant is invalid or no longer applicable.',
+  R4_GRANT_RESERVED: 'The R4 grant is reserved by another request.',
+  R4_GRANT_CONSUMED: 'The R4 grant has already been consumed.',
+  INVALID_RECEIPT_TRANSITION: 'The execution receipt transition is invalid.',
   INTERNAL_ERROR: 'An internal error occurred.'
 };
 
 const retryableCodes = new Set<AgentErrorCode>([
   'DATA_REVISION_CONFLICT',
-  'MAINTENANCE_FENCE'
+  'MAINTENANCE_FENCE',
+  'R4_GRANT_RESERVED'
 ]);
 
 export class AgentError extends Error {
