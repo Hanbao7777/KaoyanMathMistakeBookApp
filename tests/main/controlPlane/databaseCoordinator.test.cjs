@@ -26,6 +26,11 @@ function createDatabase(revision = 0) {
       updated_at TEXT NOT NULL
     );
     CREATE TABLE entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE parents (id INTEGER PRIMARY KEY);
+    CREATE TABLE children (
+      id INTEGER PRIMARY KEY,
+      parent_id INTEGER NOT NULL REFERENCES parents(id) ON DELETE CASCADE
+    );
   `);
   db.run('INSERT INTO control_metadata VALUES (1, ?, ?, 1, ?)', [epoch, revision, '2026-07-15T00:00:00.000Z']);
   return db;
@@ -133,6 +138,25 @@ test('serializes admitted writes in strict FIFO order', async () => {
   assert.deepEqual(coordinator.currentVersion(), { dataEpoch: epoch, dataRevision: 3 });
   const disk = readDisk();
   assert.deepEqual(rows(disk), [[1, 'one'], [2, 'two'], [3, 'three']]);
+  disk.close();
+});
+
+test('reopened coordinator connections preserve foreign-key cascades', async () => {
+  const coordinator = createCoordinator();
+  await coordinator.executeWrite(write('foreign-key-seed', (db) => {
+    db.run('INSERT INTO parents VALUES (1)');
+    db.run('INSERT INTO children VALUES (1, 1)');
+    return { changed: true, value: true };
+  }));
+
+  await coordinator.executeWrite(write('foreign-key-delete', (db) => {
+    db.run('DELETE FROM parents WHERE id = 1');
+    return { changed: true, value: true };
+  }));
+
+  const disk = readDisk();
+  assert.deepEqual(disk.exec('PRAGMA foreign_key_check'), []);
+  assert.equal(disk.exec('SELECT COUNT(*) FROM children')[0].values[0][0], 0);
   disk.close();
 });
 

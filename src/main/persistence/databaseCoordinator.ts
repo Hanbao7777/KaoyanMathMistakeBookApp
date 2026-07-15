@@ -339,6 +339,7 @@ export class DatabaseCoordinator {
     }
     const next = this.openDatabase(bytes);
     try {
+      next.run('PRAGMA foreign_keys = ON;');
       const actual = new RevisionStore(next).readCurrentVersion();
       if (actual.dataEpoch !== expectedVersion.dataEpoch || actual.dataRevision !== expectedVersion.dataRevision) {
         throw new Error('The reopened database version changed during reload');
