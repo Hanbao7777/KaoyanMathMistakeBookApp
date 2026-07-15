@@ -197,6 +197,12 @@ function scanTransactionsAndMutators() {
       'src/main/persistence/databaseCandidate.ts',
       'src/main/persistence/databaseBootstrap.ts'
     ]);
+    const agentDurabilityFiles = new Set([
+      'src/main/agent/auditLedger.ts',
+      'src/main/agent/executionReceipts.ts',
+      'src/main/agent/idempotencyStore.ts',
+      'src/main/agent/workflows.ts'
+    ]);
     for (const match of source.matchAll(/\.(run|exec|prepare)\s*\(|\b(?:BEGIN(?:\s+TRANSACTION)?|COMMIT|ROLLBACK)\b/g)) {
       const token = match[0];
       let classification = null;
@@ -207,6 +213,14 @@ function scanTransactionsAndMutators() {
       else if (repositoryScoped) classification = 'capability-scoped question repository';
       else if (capabilityFiles.has(name)) classification = 'coordinator transaction/revision primitive';
       else if (candidateFiles.has(name)) classification = 'bootstrap/candidate validation';
+      else if (name === 'src/main/database/schema.ts') classification = 'database bootstrap/migration schema';
+      else if (agentDurabilityFiles.has(name) && scopeName(source, match.index) === 'one') classification = 'control ledger read helper';
+      else if (agentDurabilityFiles.has(name) && scopeName(source, match.index) === 'all') classification = 'control ledger read helper';
+      else if (
+        agentDurabilityFiles.has(name) &&
+        /assertDatabaseMutationScope\(/.test(source) &&
+        (name === 'src/main/agent/executionReceipts.ts' || /executeControlWrite/.test(source))
+      ) classification = 'coordinator-scoped agent durability collaborator';
       else if (name === 'src/main/services/bridgeService.ts' && scopeName(source, match.index) === 'getOrCreateDefaultList') classification = 'coordinator-only bridge helper';
       else if (name === 'src/main/services/studySupervisorService.ts' && scopeName(source, match.index) === 'ensureColumn') classification = 'coordinator-only study bootstrap helper';
       else if (name === 'src/main/services/questionBankService.ts' && scopeName(source, match.index) === 'extractMarkdownImageRefs') continue;
@@ -280,13 +294,16 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
   assert.deepEqual(counts, {
     'bootstrap/candidate validation': 7,
     'capability-scoped question repository': 2,
+    'control ledger read helper': 7,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator control invocation scope': 15,
     'coordinator invocation scope': 29,
     'coordinator transaction/revision primitive': 24,
+    'coordinator-scoped agent durability collaborator': 24,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
+    'database bootstrap/migration schema': 2,
     'control registry read helper': 2,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,

@@ -180,10 +180,21 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_review_logs_reviewed_at'), true);
-  for (const tableName of ['agent_control_settings', 'agent_clients', 'agent_client_scopes', 'agent_sessions']) {
+  for (const tableName of [
+    'agent_control_settings', 'agent_clients', 'agent_client_scopes', 'agent_sessions',
+    'agent_idempotency', 'agent_r4_grants', 'agent_approvals', 'agent_changesets',
+    'agent_changeset_operations', 'agent_audit_segments', 'agent_audit_events'
+  ]) {
     assert.equal(tableExists(db, tableName), true, `${tableName} should be added to an upgraded database`);
   }
   assert.equal(indexExists(db, 'idx_agent_sessions_client_expiry'), true);
+  assert.equal(indexExists(db, 'idx_agent_idempotency_status_updated'), true);
+  assert.equal(indexExists(db, 'idx_agent_r4_grants_reserve_lookup'), true);
+  assert.equal(indexExists(db, 'idx_agent_r4_grants_unique_authority'), true);
+  assert.equal(indexExists(db, 'idx_agent_audit_events_receipt'), true);
+  for (const column of ['r4_target_hash', 'r4_recovery', 'r4_max_affected_entities', 'r4_reservation_expires_at']) {
+    assert.equal(tableColumns(db, 'agent_idempotency').includes(column), true, `agent_idempotency.${column} should be added to an upgraded database`);
+  }
   assert.equal(bootstrap.changed, false);
   const metadata = one(db, 'SELECT * FROM control_metadata');
   assert.equal(metadata.id, 1);
