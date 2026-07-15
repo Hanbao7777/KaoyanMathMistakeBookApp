@@ -1,11 +1,17 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import type { Database } from 'sql.js';
+import type { DatabaseMutationResult } from '../persistence';
 import {
   clearAllData,
   exportData,
+  getDatabaseCoordinator,
   getCurrentPaths,
   getDashboard,
+  getQuestionsApplication,
+  getReadOnlyDatabase,
   getReviewBuckets,
   getStats,
   importData,
@@ -164,19 +170,107 @@ function handle<TArgs extends unknown[], TResult>(channel: string, listener: (..
   });
 }
 
+async function executeLegacyMutation<T>(
+  operation: string,
+  execute: (database: Database) => DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>
+): Promise<T> {
+  const coordinator = await getDatabaseCoordinator();
+  const application = await getQuestionsApplication();
+  const requestId = randomUUID();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation } }],
+    { requestId, traceId: randomUUID(), source: 'internal' }
+  );
+  const result = await coordinator.executeWrite({ requestId, concurrency: 'none', execute });
+  if (result.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: result.versionBefore,
+      versionAfter: result.versionAfter
+    }));
+  }
+  return result.value;
+}
+
+async function recordAiImport(questionId: number): Promise<{ batchId: string }> {
+  const timestamp = new Date();
+  const batchId = `wrong_questions-${timestamp.getTime()}-${Math.random().toString(36).slice(2, 10)}`;
+  return executeLegacyMutation('ipc-ai-record-import', (database) => {
+    const batchStatement = database.prepare(`INSERT INTO import_batches (
+      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'wrong_questions', ?, ?, 'AI 智能导入', ?, 0, 0, 'active', '', NULL)`);
+    try {
+      batchStatement.run([
+        batchId,
+        `AI 导入 - ${timestamp.toLocaleString('zh-CN')}`,
+        `ai-import-${timestamp.getTime()}`,
+        timestamp.toISOString()
+      ]);
+    } finally {
+      batchStatement.free();
+    }
+
+    const itemStatement = database.prepare(
+      "INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, 'questions', ?, 'created', ?)"
+    );
+    try {
+      itemStatement.run([batchId, String(questionId), timestamp.toISOString()]);
+    } finally {
+      itemStatement.free();
+    }
+    return { changed: true, value: { batchId } };
+  });
+}
+
+async function getWhiteNoiseState(): Promise<{ enabled: boolean; noise: TickTickWhiteNoise }> {
+  const database = await getReadOnlyDatabase();
+  try {
+    const row = database.select<{ value: string }>(
+      "SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'"
+    )[0];
+    if (row) return JSON.parse(row.value) as { enabled: boolean; noise: TickTickWhiteNoise };
+  } catch { /* not yet configured */ }
+  return { enabled: false, noise: 'none' };
+}
+
+async function setWhiteNoiseState(state: { enabled: boolean; noise: TickTickWhiteNoise }): Promise<void> {
+  const value = JSON.stringify(state);
+  await executeLegacyMutation('ipc-white-noise-set', (database) => {
+    const tableExists = database.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'"
+    ).length > 0;
+    if (!tableExists) {
+      database.run('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    } else {
+      const current = database.exec("SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'");
+      if (current[0]?.values[0]?.[0] === value) return { changed: false, value: undefined };
+    }
+
+    const statement = database.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)");
+    try {
+      statement.run([value]);
+    } finally {
+      statement.free();
+    }
+    return { changed: true, value: undefined };
+  });
+}
+
 // ── Shared Timer State (single source of truth: FocusTimerEngine) ──
 const focusTimerEngine = new FocusTimerEngine();
 let focusTimerInterval: ReturnType<typeof setInterval> | null = null;
 
 focusTimerEngine.setSessionEndCallback((info) => {
-  createTickTickFocusSession({
+  void createTickTickFocusSession({
     task_id: info.boundTaskId,
     start_time: new Date(info.sessionStartTime).toISOString(),
     end_time: new Date().toISOString(),
     duration_minutes: info.durationMinutes,
     session_type: 'focus',
     completed: 1,
-  }).catch((e) => { console.error('focusTimerEngine: saveSession', e); });
+  }).then(
+    () => undefined,
+    (error) => { console.error('focusTimerEngine: saveSession failed', error); }
+  );
 });
 
 function startEngineTick() {
@@ -436,19 +530,7 @@ export function registerIpc() {
   });
 
   // AI import batch record
-  handle('ai:recordImport', async (questionId: number) => {
-    const { createImportBatch, recordImportBatchItem } = await import('../services/importBatchService');
-    const { getDatabase } = await import('../services/databaseService');
-    const db = await getDatabase();
-    const batchId = await createImportBatch({
-      type: 'wrong_questions',
-      name: `AI 导入 - ${new Date().toLocaleString('zh-CN')}`,
-      source: 'AI 智能导入',
-      sourceFileName: `ai-import-${Date.now()}`
-    });
-    recordImportBatchItem(db, batchId, 'questions', questionId, 'created');
-    return { batchId };
-  });
+  handle('ai:recordImport', (questionId: number) => recordAiImport(questionId));
 
   // TickTick Lists
   handle('ticktick:lists:list', () => listTickTickLists());
@@ -509,20 +591,8 @@ export function registerIpc() {
   handle('ticktick:sync:masteryChanged', (knowledgeNodeId: string, newMasteryScore: number) => syncMasteryToTaskPriority(knowledgeNodeId, newMasteryScore));
 
   // White noise state
-  handle('ticktick:whiteNoise:get', async () => {
-    const db = await (await import('../services/databaseService')).getDatabase();
-    try {
-      const result = db.exec("SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'");
-      if (result.length && result[0].values.length) return JSON.parse(result[0].values[0][0] as string);
-    } catch { /* ignore */ }
-    return { enabled: false, noise: 'none' };
-  });
-  handle('ticktick:whiteNoise:set', async (state: { enabled: boolean; noise: TickTickWhiteNoise }) => {
-    const db = await (await import('../services/databaseService')).getDatabase();
-    db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);
-    (await import('../services/databaseService')).persistDatabase();
-  });
+  handle('ticktick:whiteNoise:get', () => getWhiteNoiseState());
+  handle('ticktick:whiteNoise:set', (state: { enabled: boolean; noise: TickTickWhiteNoise }) => setWhiteNoiseState(state));
 
   // Shared timer state IPC (single source of truth: engine)
   handle('timer:getState', () => focusTimerEngine.getState());

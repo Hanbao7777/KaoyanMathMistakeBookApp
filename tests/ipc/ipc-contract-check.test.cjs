@@ -107,3 +107,26 @@ test('question IPC registrations use the adapter boundary', () => {
   assert.match(adapterSource, /createRendererExecutionContext/);
   assert.doesNotMatch(registerIpcSource, /handle\('questions:(create|update|delete|markMastery)'[^\n]*(?<!FromRenderer)(createQuestion|updateQuestion|deleteQuestion|markMastery)\(/);
 });
+
+test('direct IPC database writers use coordinator-contained application mutations', () => {
+  for (const channel of ['ai:recordImport', 'ticktick:whiteNoise:get', 'ticktick:whiteNoise:set']) {
+    assert.equal(registeredChannels.has(channel), true, `missing contained IPC channel: ${channel}`);
+  }
+  assert.doesNotMatch(registerIpcSource, /\bgetDatabase\s*\(/);
+  assert.doesNotMatch(registerIpcSource, /\bpersistDatabase\s*\(/);
+  assert.doesNotMatch(registerIpcSource, /\b(?:createImportBatch|recordImportBatchItem)\s*\(/);
+  assert.match(registerIpcSource, /async function executeLegacyMutation/);
+  assert.match(registerIpcSource, /getReadOnlyDatabase/);
+  assert.match(registerIpcSource, /handle\('ai:recordImport'[^\n]+recordAiImport/);
+  assert.match(registerIpcSource, /handle\('ticktick:whiteNoise:set'[^\n]+setWhiteNoiseState/);
+});
+
+test('focus session-end persistence has an explicit failure observer', () => {
+  const callbackStart = registerIpcSource.indexOf('focusTimerEngine.setSessionEndCallback');
+  const callbackEnd = registerIpcSource.indexOf('function startEngineTick', callbackStart);
+  const callbackSource = registerIpcSource.slice(callbackStart, callbackEnd);
+  assert.match(callbackSource, /void createTickTickFocusSession/);
+  assert.match(callbackSource, /\.then\(/);
+  assert.match(callbackSource, /console\.error\('focusTimerEngine: saveSession failed'/);
+  assert.doesNotMatch(callbackSource, /\.catch\([^)]*=>\s*\{?\s*\}?\s*\)/);
+});
