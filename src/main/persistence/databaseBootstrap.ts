@@ -6,6 +6,7 @@ import {
 } from '../database/schema';
 import {
   createRevisionMutationCapability,
+  migrateControlMetadataControlRevision,
   RevisionStore,
   type ControlMetadata
 } from './revisionStore';
@@ -27,6 +28,7 @@ export function bootstrapControlMetadata(
   const createEpoch = dependencies.createEpoch ?? randomUUID;
   const now = dependencies.now ?? (() => new Date().toISOString());
   database.exec(controlMetadataSchemaSql);
+  const migratedControlRevision = migrateControlMetadataControlRevision(database);
   const store = new RevisionStore(database, now);
   const existing = store.readOptionalMetadata();
   if (existing) {
@@ -35,7 +37,7 @@ export function bootstrapControlMetadata(
         `Unsupported control metadata schema version: expected ${controlMetadataSchemaVersion}, found ${existing.schemaVersion}`
       );
     }
-    return { changed: false, metadata: existing };
+    return { changed: migratedControlRevision, metadata: existing };
   }
   return store.initializeMissing(createRevisionMutationCapability(database), {
     dataEpoch: createEpoch(),

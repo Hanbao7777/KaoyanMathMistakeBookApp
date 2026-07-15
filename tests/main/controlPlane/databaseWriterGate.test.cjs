@@ -272,12 +272,12 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     occurrences.filter((entry) => entry.classification === classification).length
   ]));
   assert.deepEqual(counts, {
-    'bootstrap/candidate validation': 6,
+    'bootstrap/candidate validation': 7,
     'capability-scoped question repository': 2,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator invocation scope': 29,
-    'coordinator transaction/revision primitive': 13,
+    'coordinator transaction/revision primitive': 24,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
     'scope-asserting mutation helper': 3,

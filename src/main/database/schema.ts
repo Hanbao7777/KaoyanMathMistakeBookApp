@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS control_metadata (
     AND data_revision >= 0
     AND data_revision <= 9007199254740991
   ),
+  control_revision INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(control_revision) = 'integer'
+    AND control_revision >= 0
+    AND control_revision <= 9007199254740991
+  ),
   schema_version INTEGER NOT NULL CHECK (
     typeof(schema_version) = 'integer'
     AND schema_version >= 1

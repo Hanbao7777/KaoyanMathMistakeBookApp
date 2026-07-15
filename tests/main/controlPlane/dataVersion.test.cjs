@@ -62,6 +62,36 @@ test('legacy bootstrap creates one metadata row and is idempotent', () => {
   });
 });
 
+test('control revision migration is bootstrap-owned, durable, and read-pure', () => {
+  const db = createDatabase(false);
+  db.exec('CREATE TABLE control_metadata (id, data_epoch, data_revision, schema_version, updated_at)');
+  db.run('INSERT INTO control_metadata VALUES (1, ?, 4, 1, ?)', [
+    '00000000-0000-4000-8000-000000000012',
+    '2026-07-15T00:00:00.000Z'
+  ]);
+
+  const beforeRead = db.exec('PRAGMA table_info(control_metadata)')[0].values.map((row) => row[1]);
+  assert.deepEqual(new RevisionStore(db).readCurrentGeneration(), {
+    dataEpoch: '00000000-0000-4000-8000-000000000012', dataRevision: 4, controlRevision: 0
+  });
+  assert.deepEqual(db.exec('PRAGMA table_info(control_metadata)')[0].values.map((row) => row[1]), beforeRead);
+
+  const migrated = bootstrap(db, 'unused-epoch');
+  assert.equal(migrated.changed, true);
+  assert.deepEqual(migrated.metadata, {
+    dataEpoch: '00000000-0000-4000-8000-000000000012',
+    dataRevision: 4,
+    controlRevision: 0,
+    schemaVersion: 1,
+    updatedAt: '2026-07-15T00:00:00.000Z'
+  });
+  const reopened = new SQL.Database(db.export());
+  assert.deepEqual(new RevisionStore(reopened).readCurrentGeneration(), {
+    dataEpoch: '00000000-0000-4000-8000-000000000012', dataRevision: 4, controlRevision: 0
+  });
+  reopened.close();
+});
+
 test('bootstrap calls injected UUID and clock exactly once only when metadata is missing', () => {
   const db = createDatabase(false);
   let epochCalls = 0;

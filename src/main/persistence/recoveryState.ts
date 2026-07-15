@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { AgentError } from '../../shared/agent/errors';
 import type { DataVersion } from '../../shared/agent/v1/contracts';
+import type { DatabaseGeneration } from './revisionStore';
 import {
   decideDatabaseCandidate,
   inspectDatabaseFile,
@@ -167,6 +168,10 @@ export function decideStartupDatabaseCandidate(
       candidate.version.dataEpoch === transition.toEpoch
   ));
   if (targetDecision.status !== 'selected') return ordinary;
+  if (
+    targetDecision.candidate.generation.dataRevision !== 0 ||
+    targetDecision.candidate.generation.controlRevision !== 0
+  ) return ordinary;
   return {
     status: 'selected_by_transition',
     candidate: targetDecision.candidate,
@@ -193,6 +198,7 @@ export type StartupDatabaseRecoveryResult =
       status: 'ready';
       candidate: VersionedDatabaseCandidate;
       version: DataVersion;
+      generation: DatabaseGeneration;
       bytes: Uint8Array;
       quarantined: string[];
       decision: StartupCandidateDecision;
@@ -314,7 +320,15 @@ export async function recoverStartupDatabase(
   }
 
   const expectedVersion = selected.metadata === 'present' ? selected.version : undefined;
-  const live = await inspectDatabaseFile(options.livePath, 'live', options.opener, expectedVersion, files);
+  const expectedGeneration = selected.metadata === 'present' ? selected.generation : undefined;
+  const live = await inspectDatabaseFile(
+    options.livePath,
+    'live',
+    options.opener,
+    expectedVersion,
+    files,
+    expectedGeneration
+  );
   if (live.status !== 'valid' || live.metadata !== selected.metadata) {
     return { status: 'needs_recovery', reason: 'publication_failed', decision, quarantined, error: live };
   }
@@ -327,7 +341,15 @@ export async function recoverStartupDatabase(
   if (live.metadata === 'absent') {
     return { status: 'legacy_ready', candidate: live, bytes, quarantined, decision };
   }
-  return { status: 'ready', candidate: live, version: live.version, bytes, quarantined, decision };
+  return {
+    status: 'ready',
+    candidate: live,
+    version: live.version,
+    generation: live.generation,
+    bytes,
+    quarantined,
+    decision
+  };
 }
 
 export const defaultStartupRecoveryFiles: StartupRecoveryFileDependencies = {

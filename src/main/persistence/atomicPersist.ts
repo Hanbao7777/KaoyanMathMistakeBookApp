@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { DataVersion } from '../../shared/agent';
+import type { DatabaseGeneration } from './revisionStore';
 import {
   databasePreviousPath,
   databaseTempPrefix,
@@ -88,6 +89,7 @@ export interface AtomicPersistHookContext {
   previousPath: string;
   tempPath?: string;
   expectedVersion: DataVersion;
+  expectedGeneration?: DatabaseGeneration;
 }
 
 export type AtomicPersistHook = (context: AtomicPersistHookContext) => void | Promise<void>;
@@ -118,6 +120,7 @@ export interface AtomicPersistOptions {
   requestId: string;
   bytes: Uint8Array;
   expectedVersion: DataVersion;
+  expectedGeneration?: DatabaseGeneration;
   dependencies: AtomicPersistDependencies;
   retry?: Partial<AtomicRetryPolicy>;
 }
@@ -187,6 +190,11 @@ function validateOptions(options: AtomicPersistOptions, retry: AtomicRetryPolicy
     typeof version?.dataEpoch !== 'string' || version.dataEpoch.length === 0 || version.dataEpoch.length > 200 ||
     !Number.isSafeInteger(version.dataRevision) || version.dataRevision < 0
   ) throw new PersistFailure('invalid_options', 'options_validation', new Error('expectedVersion is invalid'));
+  const generation = options.expectedGeneration;
+  if (generation && (
+    generation.dataEpoch !== version.dataEpoch || generation.dataRevision !== version.dataRevision ||
+    !Number.isSafeInteger(generation.controlRevision) || generation.controlRevision < 0
+  )) throw new PersistFailure('invalid_options', 'options_validation', new Error('expectedGeneration is invalid'));
 }
 
 function phaseForStage(stage: AtomicPersistStage): AtomicPersistPhase {
@@ -289,8 +297,11 @@ function isVersioned(candidate: ValidDatabaseCandidate): candidate is VersionedD
 
 function canRemovePrevious(previous: ValidDatabaseCandidate, live: ValidDatabaseCandidate): boolean {
   if (!isVersioned(previous) || !isVersioned(live)) return false;
-  return previous.version.dataEpoch === live.version.dataEpoch &&
-    previous.version.dataRevision <= live.version.dataRevision;
+  return previous.generation.dataEpoch === live.generation.dataEpoch && (
+    previous.generation.dataRevision < live.generation.dataRevision ||
+    (previous.generation.dataRevision === live.generation.dataRevision &&
+      previous.generation.controlRevision <= live.generation.controlRevision)
+  );
 }
 
 async function flushRequiredDirectory(
@@ -341,7 +352,12 @@ export async function atomicPersist(options: AtomicPersistOptions): Promise<Atom
   const previousPath = databasePreviousPath(options.livePath);
   const directoryPath = path.dirname(options.livePath);
   const directoryFlushes: DurabilityOutcome[] = [];
-  const hookContext = { livePath: options.livePath, previousPath, expectedVersion: options.expectedVersion };
+  const hookContext = {
+    livePath: options.livePath,
+    previousPath,
+    expectedVersion: options.expectedVersion,
+    expectedGeneration: options.expectedGeneration
+  };
   let stage: AtomicPersistStage = 'beforeExport';
   let tempPath: string | undefined;
   let tempHandle: AtomicFileHandle | undefined;
@@ -397,7 +413,14 @@ export async function atomicPersist(options: AtomicPersistOptions): Promise<Atom
 
     await flushRequiredDirectory(directoryPath, directoryDurability, directoryFlushes, 'temp_directory_flush');
 
-    const tempCandidate = await inspectDatabaseFile(tempPath, 'temp', options.dependencies.opener, options.expectedVersion, files);
+    const tempCandidate = await inspectDatabaseFile(
+      tempPath,
+      'temp',
+      options.dependencies.opener,
+      options.expectedVersion,
+      files,
+      options.expectedGeneration
+    );
     if (tempCandidate.status !== 'valid' || tempCandidate.metadata !== 'present') {
       throw new PersistFailure('temp_validation_failed', 'temp_validation', tempCandidate);
     }
@@ -452,7 +475,14 @@ export async function atomicPersist(options: AtomicPersistOptions): Promise<Atom
     stage = 'afterLivePublish';
     await invokeHook(options.dependencies.hook, { ...hookContext, tempPath }, stage);
 
-    const reopened = await inspectDatabaseFile(options.livePath, 'live', options.dependencies.opener, options.expectedVersion, files);
+    const reopened = await inspectDatabaseFile(
+      options.livePath,
+      'live',
+      options.dependencies.opener,
+      options.expectedVersion,
+      files,
+      options.expectedGeneration
+    );
     if (reopened.status !== 'valid' || reopened.metadata !== 'present') {
       throw new PersistFailure('live_validation_failed', 'live_validation', reopened);
     }
@@ -475,7 +505,9 @@ export async function atomicPersist(options: AtomicPersistOptions): Promise<Atom
       inspected.recovery.status !== 'selected' ||
       inspected.recovery.candidate.kind !== 'live' ||
       inspected.recovery.candidate.version.dataEpoch !== options.expectedVersion.dataEpoch ||
-      inspected.recovery.candidate.version.dataRevision !== options.expectedVersion.dataRevision
+      inspected.recovery.candidate.version.dataRevision !== options.expectedVersion.dataRevision ||
+      (options.expectedGeneration &&
+        inspected.recovery.candidate.generation.controlRevision !== options.expectedGeneration.controlRevision)
     ) throw new PersistFailure('live_validation_failed', 'live_validation', inspected.recovery);
     return {
       status: 'success',

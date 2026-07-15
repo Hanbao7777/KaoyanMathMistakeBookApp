@@ -6,6 +6,7 @@ interface ControlMetadataRow {
   id: unknown;
   data_epoch: unknown;
   data_revision: unknown;
+  control_revision: unknown;
   schema_version: unknown;
   updated_at: unknown;
 }
@@ -19,7 +20,11 @@ export interface RevisionMutationCapability {
   readonly kind: 'revision-mutation-capability';
 }
 
-export interface ControlMetadata extends DataVersion {
+export interface DatabaseGeneration extends DataVersion {
+  readonly controlRevision: number;
+}
+
+export interface ControlMetadata extends DatabaseGeneration {
   readonly schemaVersion: number;
   readonly updatedAt: string;
 }
@@ -32,6 +37,24 @@ export function createRevisionMutationCapability(database: Database): RevisionMu
   const capability = Object.freeze({ kind: 'revision-mutation-capability' as const });
   capabilityStates.set(capability, { database, consumed: false });
   return capability;
+}
+
+export function migrateControlMetadataControlRevision(database: Database): boolean {
+  const table = allRows<{ name: unknown }>(
+    database,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'control_metadata'"
+  );
+  if (table.length === 0) return false;
+  const columns = allRows<{ name: unknown }>(database, 'PRAGMA table_info(control_metadata)');
+  if (columns.some((column) => column.name === 'control_revision')) return false;
+  database.exec(`
+    ALTER TABLE control_metadata ADD COLUMN control_revision INTEGER NOT NULL DEFAULT 0 CHECK (
+      typeof(control_revision) = 'integer'
+      AND control_revision >= 0
+      AND control_revision <= 9007199254740991
+    )
+  `);
+  return true;
 }
 
 function allRows<T>(database: Database, sql: string, params: SqlValue[] = []): T[] {
@@ -88,9 +111,13 @@ export class RevisionStore {
   private readRows(): ControlMetadataRow[] {
     let rows: ControlMetadataRow[];
     try {
+      const columns = allRows<{ name: unknown }>(this.database, 'PRAGMA table_info(control_metadata)');
+      const controlRevision = columns.some((column) => column.name === 'control_revision')
+        ? 'control_revision'
+        : '0 AS control_revision';
       rows = allRows<ControlMetadataRow>(
         this.database,
-        'SELECT id, data_epoch, data_revision, schema_version, updated_at FROM control_metadata'
+        `SELECT id, data_epoch, data_revision, ${controlRevision}, schema_version, updated_at FROM control_metadata`
       );
     } catch (error) {
       throw new Error('Control metadata table is missing or unreadable', { cause: error });
@@ -107,11 +134,13 @@ export class RevisionStore {
     if (row.id !== 1) throw new Error('Malformed control metadata: singleton id must be 1');
     assertNonemptyString(row.data_epoch, 'data_epoch', MAX_EPOCH_LENGTH);
     assertSafeNonNegativeInteger(row.data_revision, 'data_revision');
+    assertSafeNonNegativeInteger(row.control_revision, 'control_revision');
     assertSafePositiveInteger(row.schema_version, 'schema_version');
     assertIsoTimestamp(row.updated_at, 'updated_at');
     return Object.freeze({
       dataEpoch: row.data_epoch,
       dataRevision: row.data_revision,
+      controlRevision: row.control_revision,
       schemaVersion: row.schema_version,
       updatedAt: row.updated_at
     });
@@ -126,6 +155,15 @@ export class RevisionStore {
   readCurrentVersion(): DataVersion {
     const metadata = this.readMetadata();
     return Object.freeze({ dataEpoch: metadata.dataEpoch, dataRevision: metadata.dataRevision });
+  }
+
+  readCurrentGeneration(): DatabaseGeneration {
+    const metadata = this.readMetadata();
+    return Object.freeze({
+      dataEpoch: metadata.dataEpoch,
+      dataRevision: metadata.dataRevision,
+      controlRevision: metadata.controlRevision
+    });
   }
 
   assertCurrentVersion(expected: DataVersion): DataVersion {
@@ -161,7 +199,7 @@ export class RevisionStore {
     assertSafePositiveInteger(metadata.schemaVersion, 'schema_version');
     assertIsoTimestamp(metadata.updatedAt, 'updated_at');
     this.database.run(
-      'INSERT INTO control_metadata (id, data_epoch, data_revision, schema_version, updated_at) VALUES (1, ?, 0, ?, ?)',
+      'INSERT INTO control_metadata (id, data_epoch, data_revision, control_revision, schema_version, updated_at) VALUES (1, ?, 0, 0, ?, ?)',
       [metadata.dataEpoch, metadata.schemaVersion, metadata.updatedAt]
     );
     if (this.database.getRowsModified() !== 1) {
@@ -195,6 +233,50 @@ export class RevisionStore {
     return nextVersion;
   }
 
+  incrementControl(
+    capability: RevisionMutationCapability,
+    expected: DatabaseGeneration
+  ): DatabaseGeneration {
+    consumeCapability(this.database, capability);
+    const current = this.assertCurrentGeneration(expected);
+    if (current.controlRevision === Number.MAX_SAFE_INTEGER) {
+      throw new Error('Control revision overflow requires an epoch reset');
+    }
+    const updatedAt = this.now();
+    assertIsoTimestamp(updatedAt, 'updated_at');
+    this.database.run(
+      'UPDATE control_metadata SET control_revision = control_revision + 1, updated_at = ? WHERE id = 1',
+      [updatedAt]
+    );
+    if (this.database.getRowsModified() !== 1) {
+      throw new Error('Control revision increment did not update exactly one row');
+    }
+    const next = this.readCurrentGeneration();
+    if (
+      next.dataEpoch !== current.dataEpoch ||
+      next.dataRevision !== current.dataRevision ||
+      next.controlRevision !== current.controlRevision + 1
+    ) {
+      throw new Error('Control revision increment produced an unexpected generation');
+    }
+    return next;
+  }
+
+  assertCurrentGeneration(expected: DatabaseGeneration): DatabaseGeneration {
+    assertNonemptyString(expected.dataEpoch, 'expected.dataEpoch', MAX_EPOCH_LENGTH);
+    assertSafeNonNegativeInteger(expected.dataRevision, 'expected.dataRevision');
+    assertSafeNonNegativeInteger(expected.controlRevision, 'expected.controlRevision');
+    const current = this.readCurrentGeneration();
+    if (
+      current.dataEpoch !== expected.dataEpoch ||
+      current.dataRevision !== expected.dataRevision ||
+      current.controlRevision !== expected.controlRevision
+    ) {
+      throw new Error('Database generation does not match the expected durable generation');
+    }
+    return current;
+  }
+
   resetDatabaseIdentity(capability: RevisionMutationCapability, dataEpoch: string): DataVersion {
     consumeCapability(this.database, capability);
     assertNonemptyString(dataEpoch, 'data_epoch', MAX_EPOCH_LENGTH);
@@ -205,7 +287,7 @@ export class RevisionStore {
     const updatedAt = this.now();
     assertIsoTimestamp(updatedAt, 'updated_at');
     this.database.run(
-      'UPDATE control_metadata SET data_epoch = ?, data_revision = 0, updated_at = ? WHERE id = 1',
+      'UPDATE control_metadata SET data_epoch = ?, data_revision = 0, control_revision = 0, updated_at = ? WHERE id = 1',
       [dataEpoch, updatedAt]
     );
     if (this.database.getRowsModified() !== 1) {

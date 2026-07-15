@@ -47,33 +47,37 @@ test('initializeDatabase creates critical application tables', async () => {
 test('control_metadata enforces singleton and safe metadata constraints', async () => {
   const db = await databaseService.getDatabase();
   const columns = tableColumns(db, 'control_metadata');
-  assert.deepEqual(columns, ['id', 'data_epoch', 'data_revision', 'schema_version', 'updated_at']);
+  assert.deepEqual(columns, ['id', 'data_epoch', 'data_revision', 'control_revision', 'schema_version', 'updated_at']);
   db.run('DELETE FROM control_metadata');
 
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (2, 'epoch', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (2, 'epoch', 0, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /CHECK constraint failed/
   );
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (1, '', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (1, '', 0, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /CHECK constraint failed/
   );
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', -1, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', -1, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /CHECK constraint failed/
   );
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 1.5, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 1.5, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /CHECK constraint failed/
   );
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 9007199254740992, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 9007199254740992, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /CHECK constraint failed/
   );
 
-  db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 0, 1, '2026-07-15T00:00:00.000Z')");
   assert.throws(
-    () => db.run("INSERT INTO control_metadata VALUES (1, 'other', 0, 1, '2026-07-15T00:00:00.000Z')"),
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 0, -1, 1, '2026-07-15T00:00:00.000Z')"),
+    /CHECK constraint failed/
+  );
+  db.run("INSERT INTO control_metadata VALUES (1, 'epoch', 0, 0, 1, '2026-07-15T00:00:00.000Z')");
+  assert.throws(
+    () => db.run("INSERT INTO control_metadata VALUES (1, 'other', 0, 0, 1, '2026-07-15T00:00:00.000Z')"),
     /UNIQUE constraint failed/
   );
 });

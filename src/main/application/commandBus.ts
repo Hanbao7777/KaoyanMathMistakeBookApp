@@ -11,9 +11,12 @@ import type {
 import { validateCommandEnvelope } from '../../shared/agent/v1/schemas';
 import type {
   DatabaseCoordinator,
+  DatabaseCoordinatorCapability,
   DatabaseMutationScope,
-  DatabaseMutationResult
+  DatabaseMutationResult,
+  DatabaseTerminalHook
 } from '../persistence/databaseCoordinator';
+import { createDatabaseCoordinatorBusinessCapability } from '../persistence/databaseCoordinator';
 import {
   DomainEventBus,
   type DomainEventDraft,
@@ -44,6 +47,20 @@ interface StoredRegistration {
   readonly conflicts?: (command: AppCommand) => readonly EntityRef[];
 }
 
+export interface CommandBusExecutionReceiptCapability {
+  readonly kind: 'command-bus-execution-receipt-capability';
+}
+
+const receiptCapabilities = new WeakMap<object, CommandBus>();
+
+export function createCommandBusExecutionReceiptCapability(
+  commandBus: CommandBus
+): CommandBusExecutionReceiptCapability {
+  const capability = Object.freeze({ kind: 'command-bus-execution-receipt-capability' as const });
+  receiptCapabilities.set(capability, commandBus);
+  return capability;
+}
+
 function applicationError(error: unknown): AgentError {
   return error instanceof AgentError ? error : new AgentError('INTERNAL_ERROR');
 }
@@ -58,11 +75,12 @@ function trustedContext(envelope: CommandEnvelope): TrustedExecutionContext {
 export class CommandBus {
   private readonly registrations = new Map<AppCommand['type'], StoredRegistration>();
   private readonly coordinator: DatabaseCoordinator;
+  private readonly coordinatorCapability: DatabaseCoordinatorCapability;
   private readonly eventBus: DomainEventBus;
-  private queueTail: Promise<void> = Promise.resolve();
 
   constructor(coordinator: DatabaseCoordinator, eventBus: DomainEventBus) {
     this.coordinator = coordinator;
+    this.coordinatorCapability = createDatabaseCoordinatorBusinessCapability(coordinator);
     this.eventBus = eventBus;
   }
 
@@ -85,23 +103,56 @@ export class CommandBus {
       return Promise.reject(applicationError(error));
     }
 
-    const run = this.queueTail.then(() => this.executeValidated(envelope));
-    this.queueTail = run.then(() => undefined, () => undefined);
-    return run;
+    return this.executeValidated(envelope);
   }
 
-  private async executeValidated(envelope: CommandEnvelope): Promise<CommandResult> {
+  executeWithExecutionReceipt<C extends AppCommand>(
+    capability: CommandBusExecutionReceiptCapability,
+    envelope: CommandEnvelope<C>,
+    terminalHook: DatabaseTerminalHook
+  ): Promise<CommandResult<CommandValue<C>>>;
+  executeWithExecutionReceipt(
+    capability: CommandBusExecutionReceiptCapability,
+    envelope: unknown,
+    terminalHook: DatabaseTerminalHook
+  ): Promise<CommandResult>;
+  executeWithExecutionReceipt(
+    capability: CommandBusExecutionReceiptCapability,
+    envelope: unknown,
+    terminalHook: DatabaseTerminalHook
+  ): Promise<CommandResult> {
+    if (receiptCapabilities.get(capability as object) !== this) {
+      return Promise.reject(applicationError(new Error('A valid execution receipt capability is required')));
+    }
+    if (!terminalHook || typeof terminalHook.execute !== 'function') {
+      return Promise.reject(applicationError(new Error('A terminal receipt hook is required')));
+    }
+    try {
+      validateCommandEnvelope(envelope);
+      trustedContext(envelope);
+      if (!this.registrations.has(envelope.command.type)) throw new AgentError('HANDLER_NOT_FOUND');
+    } catch (error) {
+      return Promise.reject(applicationError(error));
+    }
+    return this.executeValidated(envelope, terminalHook);
+  }
+
+  private async executeValidated(
+    envelope: CommandEnvelope,
+    terminalHook?: DatabaseTerminalHook
+  ): Promise<CommandResult> {
     const context = trustedContext(envelope);
     const registration = this.registrations.get(envelope.command.type);
     if (!registration) throw new AgentError('HANDLER_NOT_FOUND');
     let preparedEvents: readonly PreparedDomainEvent[] = Object.freeze([]);
 
     try {
-      const writeResult = await this.coordinator.executeWrite({
+      const writeResult = await this.coordinator.executeBusinessWrite(this.coordinatorCapability, {
         requestId: context.requestId,
         concurrency: context.concurrency,
         expectedVersion: context.expectedVersion,
         conflicts: registration.conflicts?.(envelope.command),
+        terminalHook,
         execute: async (database, scope) => {
           const handlerResult = await registration.handler(envelope.command, context, database, scope);
           if (!handlerResult || typeof handlerResult.changed !== 'boolean') {

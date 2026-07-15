@@ -16,7 +16,8 @@ import {
 } from './databaseCandidate';
 import {
   createRevisionMutationCapability,
-  RevisionStore
+  RevisionStore,
+  type DatabaseGeneration
 } from './revisionStore';
 import {
   DatabaseRuntimeStateController,
@@ -34,7 +35,15 @@ interface MutationScopeState {
   active: boolean;
 }
 
+interface CoordinatorCapabilityState {
+  readonly coordinator: DatabaseCoordinator;
+  readonly mode: 'business' | 'control';
+}
+
+type WriteMode = 'legacy' | CoordinatorCapabilityState['mode'];
+
 const mutationScopes = new WeakMap<object, MutationScopeState>();
+const coordinatorCapabilities = new WeakMap<object, CoordinatorCapabilityState>();
 const activeCoordinator = new AsyncLocalStorage<DatabaseCoordinator>();
 
 export function assertDatabaseMutationScope(scope: DatabaseMutationScope, database: Database): void {
@@ -49,6 +58,27 @@ export interface DatabaseMutationResult<T> {
   readonly value: T;
 }
 
+export interface DatabaseCoordinatorCapability {
+  readonly kind: 'database-coordinator-capability';
+}
+
+export interface DatabaseTerminalHookContext<T> {
+  readonly value: T;
+  readonly semanticChanged: boolean;
+  readonly versionBefore: DataVersion;
+  readonly versionAfter: DataVersion;
+  readonly generationBefore: DatabaseGeneration;
+  readonly generationAfterDataMutation: DatabaseGeneration;
+}
+
+export interface DatabaseTerminalHook {
+  execute<T>(
+    database: Database,
+    scope: DatabaseMutationScope,
+    context: DatabaseTerminalHookContext<T>
+  ): DatabaseMutationResult<void> | Promise<DatabaseMutationResult<void>>;
+}
+
 export interface DatabaseWriteRequest<T> {
   readonly requestId: string;
   readonly concurrency: ConcurrencyPolicy;
@@ -57,9 +87,20 @@ export interface DatabaseWriteRequest<T> {
   execute(database: Database, scope: DatabaseMutationScope): DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>;
 }
 
+export interface DatabaseBusinessWriteRequest<T> extends DatabaseWriteRequest<T> {
+  readonly terminalHook?: DatabaseTerminalHook;
+}
+
+export interface DatabaseControlWriteRequest<T> {
+  readonly requestId: string;
+  execute(database: Database, scope: DatabaseMutationScope): DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>;
+}
+
 export interface DatabaseWriteResult<T> extends DatabaseMutationResult<T> {
   readonly versionBefore: DataVersion;
   readonly versionAfter: DataVersion;
+  readonly generationBefore: DatabaseGeneration;
+  readonly generationAfter: DatabaseGeneration;
 }
 
 export type AtomicPublisher = (options: AtomicPersistOptions) => Promise<AtomicPersistOutcome>;
@@ -77,8 +118,10 @@ export interface DatabaseCoordinatorOptions {
   initialState?: DatabaseRuntimeState;
 }
 
-function isVersion(candidate: VersionedDatabaseCandidate, expected: DataVersion): boolean {
-  return candidate.version.dataEpoch === expected.dataEpoch && candidate.version.dataRevision === expected.dataRevision;
+function isGeneration(candidate: VersionedDatabaseCandidate, expected: DatabaseGeneration): boolean {
+  return candidate.generation.dataEpoch === expected.dataEpoch &&
+    candidate.generation.dataRevision === expected.dataRevision &&
+    candidate.generation.controlRevision === expected.controlRevision;
 }
 
 function validationError(field: string): AgentError {
@@ -92,6 +135,111 @@ function totalChanges(database: Database): number {
     throw new Error('Unable to read database mutation count');
   }
   return value;
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function quoteLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function pragmaInteger(database: Database, pragma: string): number {
+  const value = database.exec(`PRAGMA ${pragma}`)[0]?.values[0]?.[0];
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`Unable to read ${pragma}`);
+  }
+  return value;
+}
+
+function tableNames(database: Database): string[] {
+  const result = database.exec(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+  );
+  return (result[0]?.values ?? []).map((row) => row[0]).filter((name): name is string => typeof name === 'string');
+}
+
+function prepareMutationTracker(database: Database): void {
+  database.exec(`
+    CREATE TEMP TABLE IF NOT EXISTS coordinator_mutation_log (
+      table_name TEXT PRIMARY KEY
+    );
+    DELETE FROM coordinator_mutation_log;
+  `);
+  const ownedTriggerResult = database.exec(
+    "SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE 'coordinator_track_%' ORDER BY name"
+  );
+  const ownedTriggers = (ownedTriggerResult[0]?.values ?? [])
+    .map((row) => row[0])
+    .filter((name): name is string => typeof name === 'string');
+  for (const triggerName of ownedTriggers) database.exec(`DROP TRIGGER temp.${quoteIdentifier(triggerName)}`);
+  tableNames(database).forEach((tableName, index) => {
+    for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+      database.exec(`
+        CREATE TEMP TRIGGER coordinator_track_${index}_${operation.toLowerCase()}
+        AFTER ${operation} ON ${quoteIdentifier(tableName)}
+        BEGIN
+          INSERT OR IGNORE INTO coordinator_mutation_log (table_name) VALUES (${quoteLiteral(tableName)});
+        END;
+      `);
+    }
+  });
+}
+
+function readMutationTables(database: Database): string[] {
+  const result = database.exec('SELECT table_name FROM coordinator_mutation_log ORDER BY table_name');
+  return (result[0]?.values ?? []).map((row) => row[0]).filter((name): name is string => typeof name === 'string');
+}
+
+function clearMutationTracker(database: Database): void {
+  database.run('DELETE FROM coordinator_mutation_log');
+}
+
+function isControlTable(tableName: string): boolean {
+  return tableName.startsWith('agent_');
+}
+
+function assertStableSchema(database: Database, schemaVersion: number, tempSchemaVersion: number): void {
+  if (
+    pragmaInteger(database, 'schema_version') !== schemaVersion ||
+    pragmaInteger(database, 'temp.schema_version') !== tempSchemaVersion
+  ) throw new Error('Coordinator writes cannot change database schema');
+}
+
+function assertReportedMutation(
+  database: Database,
+  changed: boolean,
+  changesBefore: number,
+  tables: readonly string[],
+  label: string
+): void {
+  if (!changed && tables.length > 0) throw new Error(`${label} cannot report changed: false`);
+  if (changed && tables.length === 0) throw new Error(`${label} reported changed without mutating an allowed table`);
+  if (totalChanges(database) !== changesBefore && tables.length === 0) {
+    throw new Error(`${label} mutation tracking was bypassed`);
+  }
+}
+
+function createCoordinatorCapability(
+  coordinator: DatabaseCoordinator,
+  mode: CoordinatorCapabilityState['mode']
+): DatabaseCoordinatorCapability {
+  const capability = Object.freeze({ kind: 'database-coordinator-capability' as const });
+  coordinatorCapabilities.set(capability, { coordinator, mode });
+  return capability;
+}
+
+export function createDatabaseCoordinatorBusinessCapability(
+  coordinator: DatabaseCoordinator
+): DatabaseCoordinatorCapability {
+  return createCoordinatorCapability(coordinator, 'business');
+}
+
+export function createDatabaseCoordinatorControlCapability(
+  coordinator: DatabaseCoordinator
+): DatabaseCoordinatorCapability {
+  return createCoordinatorCapability(coordinator, 'control');
 }
 
 export class DatabaseCoordinator {
@@ -141,16 +289,54 @@ export class DatabaseCoordinator {
     return new RevisionStore(this.database).readCurrentVersion();
   }
 
+  currentGeneration(): DatabaseGeneration {
+    return new RevisionStore(this.database).readCurrentGeneration();
+  }
+
   async executeWrite<T>(request: DatabaseWriteRequest<T>): Promise<DatabaseWriteResult<T>> {
+    return this.admitWrite('legacy', request);
+  }
+
+  async executeBusinessWrite<T>(
+    capability: DatabaseCoordinatorCapability,
+    request: DatabaseBusinessWriteRequest<T>
+  ): Promise<DatabaseWriteResult<T>> {
+    this.assertCapability(capability, 'business');
+    return this.admitWrite('business', request);
+  }
+
+  async executeControlWrite<T>(
+    capability: DatabaseCoordinatorCapability,
+    request: DatabaseControlWriteRequest<T>
+  ): Promise<DatabaseWriteResult<T>> {
+    this.assertCapability(capability, 'control');
+    return this.admitWrite('control', request);
+  }
+
+  private assertCapability(capability: DatabaseCoordinatorCapability, mode: CoordinatorCapabilityState['mode']): void {
+    const state = coordinatorCapabilities.get(capability as object);
+    if (!state || state.coordinator !== this || state.mode !== mode) {
+      throw new Error(`A valid ${mode} coordinator capability is required`);
+    }
+  }
+
+  private async admitWrite<T>(
+    mode: WriteMode,
+    request: DatabaseBusinessWriteRequest<T> | DatabaseControlWriteRequest<T>
+  ): Promise<DatabaseWriteResult<T>> {
     if (activeCoordinator.getStore() === this) {
       throw new Error('Nested or reentrant database coordinator writes are forbidden');
     }
     this.runtimeState.assertWriteAdmission();
-    this.validateConcurrencyRequest(request);
+    if (mode === 'business' || mode === 'legacy') this.validateConcurrencyRequest(request as DatabaseBusinessWriteRequest<T>);
+    else if (!/^[A-Za-z0-9_-]{1,200}$/.test(request.requestId)) throw validationError('requestId');
     this.admittedWrites += 1;
     const admissionId = ++this.nextAdmissionId;
     this.pendingAdmissionIds.add(admissionId);
-    const run = this.queueTail.then(() => activeCoordinator.run(this, () => this.executeAdmittedWrite(request)));
+    const run = this.queueTail.then(() => activeCoordinator.run(
+      this,
+      () => this.executeAdmittedWrite(mode, request)
+    ));
     this.queueTail = run.then(
       () => { this.settleAdmission(admissionId, false); },
       (error) => { this.settleAdmission(admissionId, true, error); }
@@ -224,29 +410,93 @@ export class DatabaseCoordinator {
     }
   }
 
-  private async executeAdmittedWrite<T>(request: DatabaseWriteRequest<T>): Promise<DatabaseWriteResult<T>> {
+  private async executeAdmittedWrite<T>(
+    mode: WriteMode,
+    request: DatabaseBusinessWriteRequest<T> | DatabaseControlWriteRequest<T>
+  ): Promise<DatabaseWriteResult<T>> {
     this.runtimeState.assertAdmittedWriteMayStart();
     const database = this.database;
     const store = new RevisionStore(database, this.now);
-    const versionBefore = this.assertExpectedVersion(store, request);
+    const generationBefore = store.readCurrentGeneration();
+    const versionBefore = mode === 'business' || mode === 'legacy'
+      ? this.assertExpectedVersion(store, request as DatabaseBusinessWriteRequest<T>)
+      : store.readCurrentVersion();
     let transactionStarted = false;
     let versionAfter = versionBefore;
+    let generationAfter = generationBefore;
     let mutationResult: DatabaseMutationResult<T>;
+    let controlChanged = false;
     const scope = Object.freeze({ kind: 'database-mutation-scope' as const });
     const scopeState: MutationScopeState = { coordinator: this, database, active: true };
     mutationScopes.set(scope, scopeState);
 
     try {
+      if (mode !== 'legacy') prepareMutationTracker(database);
       database.run('BEGIN');
       transactionStarted = true;
+      const schemaVersion = mode === 'legacy' ? undefined : pragmaInteger(database, 'schema_version');
+      const tempSchemaVersion = mode === 'legacy' ? undefined : pragmaInteger(database, 'temp.schema_version');
       const changesBefore = totalChanges(database);
       mutationResult = await request.execute(database, scope);
       if (!mutationResult || typeof mutationResult.changed !== 'boolean') throw new Error('Mutation returned an invalid result');
-      if (!mutationResult.changed && totalChanges(database) !== changesBefore) {
-        throw new Error('A database mutation cannot report changed: false');
+      if (mode === 'legacy') {
+        if (!mutationResult.changed && totalChanges(database) !== changesBefore) {
+          throw new Error('A database mutation cannot report changed: false');
+        }
+      } else {
+        assertStableSchema(database, schemaVersion!, tempSchemaVersion!);
+        const mutationTables = readMutationTables(database);
+        assertReportedMutation(database, mutationResult.changed, changesBefore, mutationTables, 'A database mutation');
+
+        if (mode === 'control') {
+          if (mutationTables.some((table) => !isControlTable(table))) {
+            throw new Error('Control writes may mutate only control-plane tables');
+          }
+          if (mutationResult.changed) {
+            clearMutationTracker(database);
+            generationAfter = store.incrementControl(createRevisionMutationCapability(database), generationBefore);
+            controlChanged = true;
+          }
+        } else if (mutationTables.some((table) => isControlTable(table) || table === 'control_metadata')) {
+          throw new Error('Business handlers may mutate only domain tables');
+        }
       }
-      if (mutationResult.changed) {
-        versionAfter = store.increment(createRevisionMutationCapability(database), versionBefore);
+
+      if (mode === 'business' || mode === 'legacy') {
+        if (mutationResult.changed) {
+          versionAfter = store.increment(createRevisionMutationCapability(database), versionBefore);
+          generationAfter = store.readCurrentGeneration();
+        }
+
+        const terminalHook = mode === 'business'
+          ? (request as DatabaseBusinessWriteRequest<T>).terminalHook
+          : undefined;
+        if (terminalHook) {
+          clearMutationTracker(database);
+          const hookChangesBefore = totalChanges(database);
+          const hookResult = await terminalHook.execute(database, scope, {
+            value: mutationResult.value,
+            semanticChanged: mutationResult.changed,
+            versionBefore,
+            versionAfter,
+            generationBefore,
+            generationAfterDataMutation: generationAfter
+          });
+          if (!hookResult || typeof hookResult.changed !== 'boolean') {
+            throw new Error('Terminal receipt hook returned an invalid result');
+          }
+          assertStableSchema(database, schemaVersion!, tempSchemaVersion!);
+          const hookTables = readMutationTables(database);
+          assertReportedMutation(database, hookResult.changed, hookChangesBefore, hookTables, 'Terminal receipt hook');
+          if (hookTables.some((table) => !isControlTable(table))) {
+            throw new Error('Terminal receipt hooks may mutate only control-plane tables');
+          }
+          if (hookResult.changed) {
+            clearMutationTracker(database);
+            generationAfter = store.incrementControl(createRevisionMutationCapability(database), generationAfter);
+            controlChanged = true;
+          }
+        }
       }
       database.run('COMMIT');
       transactionStarted = false;
@@ -260,7 +510,7 @@ export class DatabaseCoordinator {
         }
       }
       try {
-        await this.reloadVerifiedLive(versionBefore);
+        await this.reloadVerifiedLive(generationBefore);
       } catch (reloadError) {
         await this.enterRecoveryAfterReloadFailure(reloadError);
         throw new AgentError('RECOVERY_FENCE');
@@ -270,15 +520,15 @@ export class DatabaseCoordinator {
       scopeState.active = false;
     }
 
-    if (!mutationResult.changed) {
-      return { ...mutationResult, versionBefore, versionAfter };
+    if (!mutationResult.changed && !controlChanged) {
+      return { ...mutationResult, versionBefore, versionAfter, generationBefore, generationAfter };
     }
 
     let bytes: Uint8Array;
     try {
       bytes = database.export();
     } catch (error) {
-      await this.restoreAfterDefiniteFailure(versionBefore, error);
+      await this.restoreAfterDefiniteFailure(generationBefore, error);
       throw error;
     }
 
@@ -289,25 +539,26 @@ export class DatabaseCoordinator {
         requestId: request.requestId,
         bytes,
         expectedVersion: versionAfter,
+        expectedGeneration: generationAfter,
         dependencies: this.persistDependencies
       });
     } catch (error) {
-      await this.restoreAfterDefiniteFailure(versionBefore, error);
+      await this.restoreAfterDefiniteFailure(generationBefore, error);
       throw error;
     }
 
     if (publication.status === 'success') {
       try {
-        await this.reloadVerifiedLive(versionAfter);
+        await this.reloadVerifiedLive(generationAfter);
       } catch (error) {
         this.runtimeState.enterRecovery(error);
         throw new AgentError('PERSISTENCE_INDETERMINATE');
       }
-      return { ...mutationResult, versionBefore, versionAfter };
+      return { ...mutationResult, versionBefore, versionAfter, generationBefore, generationAfter };
     }
 
     if (publication.status === 'failed') {
-      await this.restoreAfterDefiniteFailure(versionBefore, publication.failure);
+      await this.restoreAfterDefiniteFailure(generationBefore, publication.failure);
       throw publication.error;
     }
 
@@ -322,9 +573,9 @@ export class DatabaseCoordinator {
     throw new AgentError('PERSISTENCE_INDETERMINATE');
   }
 
-  private async restoreAfterDefiniteFailure(expectedVersion: DataVersion, reason: unknown): Promise<void> {
+  private async restoreAfterDefiniteFailure(expectedGeneration: DatabaseGeneration, reason: unknown): Promise<void> {
     try {
-      await this.reloadVerifiedLive(expectedVersion);
+      await this.reloadVerifiedLive(expectedGeneration);
     } catch (error) {
       await this.enterRecoveryAfterReloadFailure({ reason, reloadError: error });
       throw new AgentError('RECOVERY_FENCE');
@@ -335,33 +586,42 @@ export class DatabaseCoordinator {
     this.runtimeState.enterRecovery(reason);
   }
 
-  private async reloadVerifiedLive(expectedVersion: DataVersion): Promise<void> {
+  private async reloadVerifiedLive(expectedGeneration: DatabaseGeneration): Promise<void> {
     await this.reloadVerifiedCandidate({
       path: this.livePath,
       kind: 'live',
       status: 'valid',
       metadata: 'present',
-      version: expectedVersion
+      version: {
+        dataEpoch: expectedGeneration.dataEpoch,
+        dataRevision: expectedGeneration.dataRevision
+      },
+      generation: expectedGeneration
     });
   }
 
   private async reloadVerifiedCandidate(candidate: VersionedDatabaseCandidate): Promise<void> {
-    const expectedVersion = candidate.version;
+    const expectedGeneration = candidate.generation;
     const bytes = await this.files.readFile(candidate.path);
     const inspected = inspectDatabaseBytes(
       bytes,
       { path: candidate.path, kind: candidate.kind },
       this.opener,
-      expectedVersion
+      candidate.version,
+      expectedGeneration
     );
-    if (inspected.status !== 'valid' || inspected.metadata !== 'present' || !isVersion(inspected, expectedVersion)) {
+    if (inspected.status !== 'valid' || inspected.metadata !== 'present' || !isGeneration(inspected, expectedGeneration)) {
       throw new Error('The selected database candidate does not match the required version');
     }
     const next = this.openDatabase(bytes);
     try {
       next.run('PRAGMA foreign_keys = ON;');
-      const actual = new RevisionStore(next).readCurrentVersion();
-      if (actual.dataEpoch !== expectedVersion.dataEpoch || actual.dataRevision !== expectedVersion.dataRevision) {
+      const actual = new RevisionStore(next).readCurrentGeneration();
+      if (
+        actual.dataEpoch !== expectedGeneration.dataEpoch ||
+        actual.dataRevision !== expectedGeneration.dataRevision ||
+        actual.controlRevision !== expectedGeneration.controlRevision
+      ) {
         throw new Error('The reopened database version changed during reload');
       }
       await this.replaceDatabase?.(next, this.database);

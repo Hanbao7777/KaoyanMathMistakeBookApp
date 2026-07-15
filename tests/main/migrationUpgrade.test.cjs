@@ -182,6 +182,7 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
   assert.equal(typeof metadata.data_epoch, 'string');
   assert.equal(metadata.data_epoch.length > 0, true);
   assert.equal(metadata.data_revision, 0);
+  assert.equal(metadata.control_revision, 0);
   assert.equal(metadata.schema_version, 1);
   assert.equal(Number.isFinite(Date.parse(metadata.updated_at)), true);
 

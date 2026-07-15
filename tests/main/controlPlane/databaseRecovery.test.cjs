@@ -21,15 +21,23 @@ function databaseBytes(version, options = {}) {
     db.exec('CREATE TABLE control_metadata (id, data_epoch, data_revision)');
     db.run("INSERT INTO control_metadata VALUES (1, 'epoch-a', 1), (2, 'epoch-a', 2)");
   } else {
+    const hasControlRevision = Number.isSafeInteger(options.controlRevision);
     db.exec(`
       CREATE TABLE control_metadata (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         data_epoch TEXT NOT NULL,
-        data_revision INTEGER NOT NULL
+        data_revision INTEGER NOT NULL${hasControlRevision ? ',\n        control_revision INTEGER NOT NULL CHECK (control_revision >= 0)' : ''}
       );
       CREATE TABLE data (id INTEGER PRIMARY KEY);
     `);
-    db.run('INSERT INTO control_metadata VALUES (1, ?, ?)', [version.dataEpoch, version.dataRevision]);
+    db.run(
+      hasControlRevision
+        ? 'INSERT INTO control_metadata VALUES (1, ?, ?, ?)'
+        : 'INSERT INTO control_metadata VALUES (1, ?, ?)',
+      hasControlRevision
+        ? [version.dataEpoch, version.dataRevision, options.controlRevision]
+        : [version.dataEpoch, version.dataRevision]
+    );
   }
   const bytes = db.export();
   db.close();
@@ -167,6 +175,18 @@ test('prefers live deterministically when same epoch and revision tie', async ()
   assert.equal(result.quarantined.length, 0);
 });
 
+test('orders same-epoch candidates by data revision then control revision', async () => {
+  await write(livePath, { dataEpoch: 'epoch-a', dataRevision: 7 }, { controlRevision: 1 });
+  await write(candidates.databasePreviousPath(livePath), { dataEpoch: 'epoch-a', dataRevision: 7 }, { controlRevision: 2 });
+  await write(tempPath('control-newest'), { dataEpoch: 'epoch-a', dataRevision: 7 }, { controlRevision: 3 });
+
+  const result = await recover();
+  assert.equal(result.status, 'ready');
+  assert.equal(result.decision.candidate.kind, 'temp');
+  assert.deepEqual(result.version, { dataEpoch: 'epoch-a', dataRevision: 7 });
+  assert.deepEqual(result.generation, { dataEpoch: 'epoch-a', dataRevision: 7, controlRevision: 3 });
+});
+
 test('never orders opaque epochs and requires an explicit committed transition', async () => {
   await write(livePath, { dataEpoch: 'zzz-older-by-identity-only', dataRevision: 100 });
   await write(tempPath('other-epoch'), { dataEpoch: 'aaa-newer-by-identity-only', dataRevision: 0 });
@@ -180,6 +200,14 @@ test('never orders opaque epochs and requires an explicit committed transition',
   assert.equal(result.status, 'ready');
   assert.equal(result.decision.status, 'selected_by_transition');
   assert.deepEqual(result.version, { dataEpoch: 'aaa-newer-by-identity-only', dataRevision: 0 });
+});
+
+test('transition evidence requires a fresh target control generation', async () => {
+  await write(livePath, { dataEpoch: 'epoch-a', dataRevision: 5 }, { controlRevision: 9 });
+  await write(tempPath('target-with-control-history'), { dataEpoch: 'epoch-b', dataRevision: 0 }, { controlRevision: 1 });
+  const result = await recover({ transitions: [{ fromEpoch: 'epoch-a', toEpoch: 'epoch-b' }] });
+  assert.equal(result.status, 'needs_recovery');
+  assert.equal(result.decision.status, 'ambiguous_epochs');
 });
 
 test('ambiguous or conflicting transition evidence remains fenced', async () => {

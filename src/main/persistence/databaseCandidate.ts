@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { SqlJsStatic, SqlValue } from 'sql.js';
 import type { DataVersion } from '../../shared/agent';
+import type { DatabaseGeneration } from './revisionStore';
 
 export type DatabaseCandidateKind = 'live' | 'previous' | 'temp';
 
@@ -33,6 +34,7 @@ export interface VersionedDatabaseCandidate extends CandidateIdentity {
   status: 'valid';
   metadata: 'present';
   version: DataVersion;
+  generation: DatabaseGeneration;
 }
 
 export interface LegacyDatabaseCandidate extends CandidateIdentity {
@@ -47,6 +49,7 @@ export interface InvalidDatabaseCandidate extends CandidateIdentity {
   reason: CandidateInvalidReason;
   error?: unknown;
   actualVersion?: DataVersion;
+  actualGeneration?: DatabaseGeneration;
 }
 
 export type DatabaseCandidate = ValidDatabaseCandidate | InvalidDatabaseCandidate;
@@ -61,6 +64,7 @@ export interface EnumerateCandidatesOptions {
   opener: CandidateOpener;
   files?: CandidateFileDependencies;
   expectedVersion?: DataVersion;
+  expectedGeneration?: DatabaseGeneration;
 }
 
 export type CandidateScanOutcome =
@@ -96,33 +100,53 @@ function flattenCells(results: Array<{ values: SqlValue[][] }>): SqlValue[] {
   return results.flatMap((result) => result.values.flat());
 }
 
-function readVersion(database: CandidateDatabase): { metadata: 'absent' } | { metadata: 'present'; version: DataVersion } {
+function readGeneration(database: CandidateDatabase):
+  | { metadata: 'absent' }
+  | { metadata: 'present'; version: DataVersion; generation: DatabaseGeneration } {
   const tableRows = flattenCells(database.exec(
     "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'control_metadata'"
   ));
   if (tableRows.length === 0) return { metadata: 'absent' };
   if (tableRows.length !== 1 || tableRows[0] !== 'control_metadata') throw new Error('control_metadata lookup is malformed');
 
-  const result = database.exec('SELECT id, data_epoch, data_revision FROM control_metadata');
+  const columnRows = database.exec('PRAGMA table_info(control_metadata)');
+  const columns = new Set(flattenCells(columnRows).filter((_value, index) => index % 6 === 1));
+  const hasControlRevision = columns.has('control_revision');
+  const result = database.exec(
+    hasControlRevision
+      ? 'SELECT id, data_epoch, data_revision, control_revision FROM control_metadata'
+      : 'SELECT id, data_epoch, data_revision FROM control_metadata'
+  );
   if (result.length !== 1 || result[0].values.length !== 1) throw new Error('control_metadata must contain one row');
-  const [id, dataEpoch, dataRevision] = result[0].values[0];
+  const [id, dataEpoch, dataRevision, storedControlRevision] = result[0].values[0];
+  const controlRevision = hasControlRevision ? storedControlRevision : 0;
   if (
     id !== 1 ||
     typeof dataEpoch !== 'string' || dataEpoch.length === 0 || dataEpoch.length > 200 ||
-    typeof dataRevision !== 'number' || !Number.isSafeInteger(dataRevision) || dataRevision < 0
+    typeof dataRevision !== 'number' || !Number.isSafeInteger(dataRevision) || dataRevision < 0 ||
+    typeof controlRevision !== 'number' || !Number.isSafeInteger(controlRevision) || controlRevision < 0
   ) throw new Error('control_metadata contains an invalid data version');
-  return { metadata: 'present', version: { dataEpoch, dataRevision } };
+  return {
+    metadata: 'present',
+    version: { dataEpoch, dataRevision },
+    generation: { dataEpoch, dataRevision, controlRevision }
+  };
 }
 
 function sameVersion(left: DataVersion, right: DataVersion): boolean {
   return left.dataEpoch === right.dataEpoch && left.dataRevision === right.dataRevision;
 }
 
+function sameGeneration(left: DatabaseGeneration, right: DatabaseGeneration): boolean {
+  return sameVersion(left, right) && left.controlRevision === right.controlRevision;
+}
+
 export function inspectDatabaseBytes(
   bytes: Uint8Array,
   identity: CandidateIdentity,
   opener: CandidateOpener,
-  expectedVersion?: DataVersion
+  expectedVersion?: DataVersion,
+  expectedGeneration?: DatabaseGeneration
 ): DatabaseCandidate {
   let database: CandidateDatabase;
   try {
@@ -162,25 +186,40 @@ export function inspectDatabaseBytes(
       return closeCandidate(database, result, identity);
     }
 
-    let metadata: ReturnType<typeof readVersion>;
+    let metadata: ReturnType<typeof readGeneration>;
     try {
-      metadata = readVersion(database);
+      metadata = readGeneration(database);
     } catch (error) {
       result = { ...identity, status: 'invalid', reason: 'metadata_error', error };
       return closeCandidate(database, result, identity);
     }
 
     if (metadata.metadata === 'absent') {
-      result = expectedVersion
+      result = expectedVersion || expectedGeneration
         ? { ...identity, status: 'invalid', reason: 'version_mismatch' }
         : { ...identity, status: 'valid', metadata: 'absent' };
       return closeCandidate(database, result, identity);
     }
-    if (expectedVersion && !sameVersion(metadata.version, expectedVersion)) {
-      result = { ...identity, status: 'invalid', reason: 'version_mismatch', actualVersion: metadata.version };
+    if (
+      (expectedGeneration && !sameGeneration(metadata.generation, expectedGeneration)) ||
+      (!expectedGeneration && expectedVersion && !sameVersion(metadata.version, expectedVersion))
+    ) {
+      result = {
+        ...identity,
+        status: 'invalid',
+        reason: 'version_mismatch',
+        actualVersion: metadata.version,
+        actualGeneration: metadata.generation
+      };
       return closeCandidate(database, result, identity);
     }
-    result = { ...identity, status: 'valid', metadata: 'present', version: metadata.version };
+    result = {
+      ...identity,
+      status: 'valid',
+      metadata: 'present',
+      version: metadata.version,
+      generation: metadata.generation
+    };
     return closeCandidate(database, result, identity);
   } catch (error) {
     result = { ...identity, status: 'invalid', reason: 'integrity_error', error };
@@ -206,7 +245,8 @@ export async function inspectDatabaseFile(
   kind: DatabaseCandidateKind,
   opener: CandidateOpener,
   expectedVersion?: DataVersion,
-  files: CandidateFileDependencies = defaultCandidateFileDependencies
+  files: CandidateFileDependencies = defaultCandidateFileDependencies,
+  expectedGeneration?: DatabaseGeneration
 ): Promise<DatabaseCandidate> {
   let bytes: Uint8Array;
   try {
@@ -214,7 +254,7 @@ export async function inspectDatabaseFile(
   } catch (error) {
     return { path: filePath, kind, status: 'invalid', reason: 'read_error', error };
   }
-  return inspectDatabaseBytes(bytes, { path: filePath, kind }, opener, expectedVersion);
+  return inspectDatabaseBytes(bytes, { path: filePath, kind }, opener, expectedVersion, expectedGeneration);
 }
 
 export async function scanDatabaseCandidates(options: EnumerateCandidatesOptions): Promise<CandidateScanOutcome> {
@@ -241,7 +281,8 @@ export async function scanDatabaseCandidates(options: EnumerateCandidatesOptions
     identity.kind,
     options.opener,
     options.expectedVersion,
-    files
+    files,
+    options.expectedGeneration
   )));
   return { status: 'scanned', candidates };
 }
@@ -268,9 +309,15 @@ export function decideDatabaseCandidate(candidates: DatabaseCandidate[]): Candid
 
   const epochs = Array.from(new Set(versioned.map((candidate) => candidate.version.dataEpoch)));
   if (epochs.length > 1) return { status: 'ambiguous_epochs', epochs, candidates };
-  const highestRevision = Math.max(...versioned.map((candidate) => candidate.version.dataRevision));
+  const highestRevision = Math.max(...versioned.map((candidate) => candidate.generation.dataRevision));
+  const highestControlRevision = Math.max(...versioned
+    .filter((candidate) => candidate.generation.dataRevision === highestRevision)
+    .map((candidate) => candidate.generation.controlRevision));
   const highest = versioned
-    .filter((candidate) => candidate.version.dataRevision === highestRevision)
+    .filter((candidate) =>
+      candidate.generation.dataRevision === highestRevision &&
+      candidate.generation.controlRevision === highestControlRevision
+    )
     .sort((left, right) => kindPriority[left.kind] - kindPriority[right.kind] || left.path.localeCompare(right.path));
   return { status: 'selected', candidate: highest[0], candidates };
 }
