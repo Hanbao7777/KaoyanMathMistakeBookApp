@@ -25,8 +25,85 @@ CREATE TABLE IF NOT EXISTS control_metadata (
 );
 `;
 
+export const agentIdentitySchemaSql = `
+CREATE TABLE IF NOT EXISTS agent_control_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  external_control_enabled INTEGER NOT NULL DEFAULT 0 CHECK (external_control_enabled IN (0, 1)),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
+  catalog_hash TEXT NOT NULL CHECK (
+    substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74
+    AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  policy_version TEXT NOT NULL CHECK (length(trim(policy_version)) > 0),
+  policy_json TEXT NOT NULL CHECK (json_valid(policy_json) AND json_type(policy_json) = 'array'),
+  policy_hash TEXT NOT NULL CHECK (
+    substr(policy_hash, 1, 10) = 'sha256-v1:' AND length(policy_hash) = 74
+    AND substr(policy_hash, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  privacy_revision INTEGER NOT NULL DEFAULT 1 CHECK (typeof(privacy_revision) = 'integer' AND privacy_revision >= 1),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0),
+  UNIQUE (catalog_version, catalog_hash)
+);
+
+CREATE TABLE IF NOT EXISTS agent_clients (
+  client_id TEXT PRIMARY KEY CHECK (length(trim(client_id)) > 0),
+  subject_id TEXT NOT NULL CHECK (length(trim(subject_id)) > 0),
+  display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
+  credential_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(credential_fingerprint, 1, 10) = 'sha256-v1:' AND length(credential_fingerprint) = 74
+    AND substr(credential_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  trust TEXT NOT NULL CHECK (trust IN ('observer', 'collaborator', 'autonomous', 'full_control')),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0),
+  last_active_at TEXT,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_client_scopes (
+  client_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN (
+    'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
+    'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
+    'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
+    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.write', 'operations.batch', 'tasks.read',
+    'tasks.write', 'tasks.execute', 'focus.read', 'focus.control', 'files.images.read'
+  )),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  PRIMARY KEY (client_id, scope),
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  session_id TEXT PRIMARY KEY CHECK (length(trim(session_id)) > 0),
+  client_id TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL CHECK (length(trim(app_instance_id)) > 0),
+  session_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(session_fingerprint, 1, 10) = 'sha256-v1:' AND length(session_fingerprint) = 74
+    AND substr(session_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  credential_fingerprint TEXT NOT NULL CHECK (
+    substr(credential_fingerprint, 1, 10) = 'sha256-v1:' AND length(credential_fingerprint) = 74
+    AND substr(credential_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  expires_at TEXT NOT NULL CHECK (length(trim(expires_at)) > 0),
+  last_active_at TEXT NOT NULL CHECK (length(trim(last_active_at)) > 0),
+  terminated_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_clients_revoked_active ON agent_clients(revoked_at, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_agent_client_scopes_scope ON agent_client_scopes(scope, client_id);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_client_expiry ON agent_sessions(client_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_instance_active ON agent_sessions(app_instance_id, terminated_at);
+`;
+
 export const schemaSql = `
 ${controlMetadataSchemaSql}
+${agentIdentitySchemaSql}
 
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

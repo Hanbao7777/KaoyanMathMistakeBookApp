@@ -34,6 +34,10 @@ function indexExists(db, indexName) {
   return result.length > 0 && result[0].values.length === 1;
 }
 
+function tableExists(db, tableName) {
+  return one(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [tableName]) !== null;
+}
+
 function one(db, sql, params = []) {
   const stmt = db.prepare(sql);
   try {
@@ -176,6 +180,10 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_review_logs_reviewed_at'), true);
+  for (const tableName of ['agent_control_settings', 'agent_clients', 'agent_client_scopes', 'agent_sessions']) {
+    assert.equal(tableExists(db, tableName), true, `${tableName} should be added to an upgraded database`);
+  }
+  assert.equal(indexExists(db, 'idx_agent_sessions_client_expiry'), true);
   assert.equal(bootstrap.changed, false);
   const metadata = one(db, 'SELECT * FROM control_metadata');
   assert.equal(metadata.id, 1);

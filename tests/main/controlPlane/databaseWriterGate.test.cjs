@@ -173,6 +173,9 @@ function scanTransactionsAndMutators() {
       ...invocationRanges(source, /\.executeWrite\s*\(/g),
       ...invocationRanges(source, /\bexecuteWriteWithVerifiedSnapshot\s*\(/g)
     ];
+    const agentRegistryControlRanges = name === 'src/main/agent/clientRegistry.ts'
+      ? invocationRanges(source, /\bthis\.write\s*\(/g)
+      : [];
     const bootstrapRanges = name === 'src/main/services/databaseService.ts'
       ? [functionRange(source, 'async function initializeDatabaseOnce(', 'function migrateDatabase('), functionRange(source, 'function migrateDatabase(', 'export function runSql(')]
       : [];
@@ -198,6 +201,7 @@ function scanTransactionsAndMutators() {
       const token = match[0];
       let classification = null;
       if (inRanges(match.index, coordinatorRanges)) classification = 'coordinator invocation scope';
+      else if (inRanges(match.index, agentRegistryControlRanges)) classification = 'coordinator control invocation scope';
       else if (bootstrapRanges.some((range) => inRange(match.index, range))) classification = 'database bootstrap/migration';
       else if (replacementRanges.some((range) => inRange(match.index, range))) classification = 'coordinator-fenced identity replacement';
       else if (repositoryScoped) classification = 'capability-scoped question repository';
@@ -207,6 +211,8 @@ function scanTransactionsAndMutators() {
       else if (name === 'src/main/services/studySupervisorService.ts' && scopeName(source, match.index) === 'ensureColumn') classification = 'coordinator-only study bootstrap helper';
       else if (name === 'src/main/services/questionBankService.ts' && scopeName(source, match.index) === 'extractMarkdownImageRefs') continue;
       else if (name === 'src/main/application/queryBus.ts' && scopeName(source, match.index) === 'createReadOnlyDatabaseFacade') classification = 'validated read-only query facade';
+      else if (name === 'src/main/agent/clientRegistry.ts' && ['one', 'all'].includes(scopeName(source, match.index))
+        && isProvenReadOnlyBody(enclosingFunctionBody(source, match.index))) classification = 'control registry read helper';
       else if (['src/main/services/importBatchService.ts', 'src/main/services/knowledgeMapService.ts', 'src/main/services/questionBankService.ts'].includes(name)
         && scopeName(source, match.index) === 'mutateSql') classification = 'scope-asserting mutation helper';
       else if (/\b(?:operationJournal|journal)\.prepare\s*\(/.test(source.slice(Math.max(0, match.index - 30), match.index + 9))) continue;
@@ -276,10 +282,12 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'capability-scoped question repository': 2,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
+    'coordinator control invocation scope': 15,
     'coordinator invocation scope': 29,
     'coordinator transaction/revision primitive': 24,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
+    'control registry read helper': 2,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,
     'verified read-only database SQL call': 11

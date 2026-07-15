@@ -34,6 +34,10 @@ test('initializeDatabase creates critical application tables', async () => {
     'review_logs',
     'knowledge_points',
     'control_metadata',
+    'agent_control_settings',
+    'agent_clients',
+    'agent_client_scopes',
+    'agent_sessions',
     'ticktick_lists',
     'ticktick_tasks',
     'ticktick_bridge'
@@ -96,4 +100,13 @@ test('initializeDatabase creates critical TickTick indexes', async () => {
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_ticktick_bridge_task'), true);
+});
+
+test('initializeDatabase creates constrained agent identity indexes', async () => {
+  const db = await databaseService.getDatabase();
+
+  assert.equal(indexExists(db, 'idx_agent_clients_revoked_active'), true);
+  assert.equal(indexExists(db, 'idx_agent_client_scopes_scope'), true);
+  assert.equal(indexExists(db, 'idx_agent_sessions_client_expiry'), true);
+  assert.equal(indexExists(db, 'idx_agent_sessions_instance_active'), true);
 });
