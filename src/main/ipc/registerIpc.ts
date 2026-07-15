@@ -15,8 +15,7 @@ import {
   getReviewBuckets,
   getStats,
   importData,
-  initializeDatabase,
-  resetDatabaseConnection,
+  switchDataRoot,
 } from '../services/databaseService';
 import {
   addReviewFromRenderer,
@@ -34,9 +33,8 @@ import {
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
-import { copyExistingData, getPaths, setDataRoot } from '../services/pathService';
 import { checkImageExists, getImageUrl, openImage, revealImageInFolder } from '../services/imageService';
-import { createDatabaseBackup, deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
+import { createDatabaseBackupMaintained, deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
 import { exportQuestionsToPdf, openExportedPdf, openExportsFolder } from '../services/pdfExportService';
 import {
   cleanupStructuredImport,
@@ -399,15 +397,8 @@ export function registerIpc() {
   handle('settings:import', (filePath: string) => importData(filePath));
   handle('settings:clear', (deleteImages: boolean) => clearAllData(deleteImages));
   handle('settings:chooseRoot', () => chooseDataRoot());
-  handle('settings:setRoot', async (root: string, migrate: boolean) => {
-    const oldPaths = getPaths();
-    const newPaths = setDataRoot(root);
-    if (migrate) copyExistingData(oldPaths, newPaths);
-    resetDatabaseConnection();
-    await initializeDatabase();
-    return getPaths();
-  });
-  handle('backups:create', (type?: DatabaseBackupKind) => createDatabaseBackup(type || 'manual'));
+  handle('settings:setRoot', (root: string, migrate: boolean) => switchDataRoot(root, migrate));
+  handle('backups:create', (type?: DatabaseBackupKind) => createDatabaseBackupMaintained(type || 'manual'));
   handle('backups:ensureDaily', () => ensureDailyAutoBackup());
   handle('backups:list', () => listDatabaseBackups());
   handle('backups:restore', (fileName: string) => restoreDatabaseBackup(fileName));

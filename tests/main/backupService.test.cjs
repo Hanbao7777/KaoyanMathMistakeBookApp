@@ -34,7 +34,7 @@ test('createDatabaseBackup writes readable backup database file', async () => {
   const list = await ticktickService.createTickTickList({ name: '备份清单' });
   await ticktickService.createTickTickTask({ list_id: list.id, title: '备份前任务' });
 
-  const backup = backupService.createDatabaseBackup('manual');
+  const backup = await backupService.createDatabaseBackupMaintained('manual');
 
   assert.equal(fs.existsSync(backup.filePath), true);
   assert.ok(fs.statSync(backup.filePath).size > 0);
@@ -51,12 +51,12 @@ test('createDatabaseBackup writes readable backup database file', async () => {
 test('restoreDatabaseBackup restores readable database data', async () => {
   const list = await ticktickService.createTickTickList({ name: '恢复清单' });
   await ticktickService.createTickTickTask({ list_id: list.id, title: '恢复前任务' });
-  const backup = backupService.createDatabaseBackup('manual');
+  const backup = await backupService.createDatabaseBackupMaintained('manual');
 
   await ticktickService.createTickTickTask({ list_id: list.id, title: '备份后任务' });
   assert.equal((await ticktickService.listTickTickTasks({ includeCompleted: true })).length, 2);
 
-  const restored = backupService.restoreDatabaseBackup(path.basename(backup.filePath));
+  const restored = await backupService.restoreDatabaseBackup(path.basename(backup.filePath));
 
   assert.equal(restored.restored, true);
   assert.equal(fs.existsSync(restored.beforeRestoreBackup), true);
@@ -64,4 +64,21 @@ test('restoreDatabaseBackup restores readable database data', async () => {
   const tasks = await ticktickService.listTickTickTasks({ includeCompleted: true });
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].title, '恢复前任务');
+});
+
+test('deleteDatabaseBackup journals quarantine and advances one database revision', async () => {
+  const backup = await backupService.createDatabaseBackupMaintained('manual');
+  const before = (await databaseService.getDatabaseCoordinator()).currentVersion();
+
+  assert.equal(await backupService.deleteDatabaseBackup(path.basename(backup.filePath)), true);
+
+  const after = (await databaseService.getDatabaseCoordinator()).currentVersion();
+  assert.deepEqual(after, { dataEpoch: before.dataEpoch, dataRevision: before.dataRevision + 1 });
+  assert.equal(fs.existsSync(backup.filePath), false);
+  const paths = requireMain('services/pathService.js').getPaths();
+  const quarantine = fs.readdirSync(path.join(paths.backups, '.quarantine'));
+  assert.equal(quarantine.length, 1);
+  const manifests = fs.readdirSync(path.join(paths.data, 'operation-journal'));
+  const state = JSON.parse(fs.readFileSync(path.join(paths.data, 'operation-journal', manifests[0]), 'utf8')).state;
+  assert.equal(state, 'completed');
 });

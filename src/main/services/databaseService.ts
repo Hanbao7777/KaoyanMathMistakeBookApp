@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import initSqlJs, { type Database, type SqlJsStatic, type SqlValue } from 'sql.js';
 import { schemaSql } from '../database/schema';
@@ -13,17 +13,32 @@ import {
   createSqlJsCandidateOpener,
   DatabaseCoordinator,
   defaultAtomicFileDependencies,
+  createRevisionMutationCapability,
+  inspectDatabaseBytes,
   recoverStartupDatabase,
   RevisionStore,
+  type DatabaseWriteRequest,
+  type DatabaseWriteResult,
   type StartupDatabaseRecoveryResult
 } from '../persistence';
 import {
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
   OperationManifestStore,
   recoverOperationStores,
+  type OperationFile,
+  type OperationJournalDependencies,
+  type OperationManifest,
   type RecoveryScanOutcome
 } from '../persistence/operationJournal';
-import { deleteFiles } from './fileService';
-import { getPaths } from './pathService';
+import {
+  getPaths,
+  publishDataRootSwitch,
+  restoreDataRootAuthority,
+  stageDataRootSwitch,
+  type RootSwitchDependencies
+} from './pathService';
 import type {
   AppPaths,
   ImageType,
@@ -81,11 +96,44 @@ export interface DatabaseInitializationResult {
   readonly journalRecovery: RecoveryScanOutcome;
 }
 
+export const maintenanceOperationStages = [
+  'maintenance_entered',
+  'recovery_package_staged',
+  'candidate_validated',
+  'database_published',
+  'files_committed',
+  'runtime_reopened'
+] as const;
+
+export type MaintenanceOperationStage = (typeof maintenanceOperationStages)[number];
+
+export interface MaintenanceOperationDependencies {
+  createEpoch?: () => string;
+  randomId?: () => string;
+  now?: () => string;
+  atomicHook?: import('../persistence').AtomicPersistHook;
+  journal?: OperationJournalDependencies;
+  onStage?: (stage: MaintenanceOperationStage) => void | Promise<void>;
+}
+
+export class MaintenanceOperationError extends Error {
+  readonly code: string;
+  readonly phase: string;
+  readonly recoverable: boolean;
+
+  constructor(code: string, phase: string, message: string, recoverable = true, cause?: unknown) {
+    super(`[${code}:${phase}] ${message}`, cause === undefined ? undefined : { cause });
+    this.name = 'MaintenanceOperationError';
+    this.code = code;
+    this.phase = phase;
+    this.recoverable = recoverable;
+  }
+}
+
 export const legacyDatabaseCompatibilityInventory = Object.freeze({
   mutableHandle: Object.freeze([
     'databaseService.getDatabase/runSql',
     'registerIpc.ai:recordImport and ticktick:whiteNoise',
-    'backupService restore/reset paths',
     'bridgeService',
     'deepseekService',
     'importBatchService',
@@ -97,8 +145,6 @@ export const legacyDatabaseCompatibilityInventory = Object.freeze({
     'ticktickService'
   ]),
   rawPersistence: Object.freeze([
-    'databaseService question/review/import/clear writers',
-    'backupService.createBackup',
     'bridgeService sync writers',
     'importBatchService deletion writers',
     'knowledgeMapService import/bind/rematch writers',
@@ -110,7 +156,6 @@ export const legacyDatabaseCompatibilityInventory = Object.freeze({
   ]),
   localTransactions: Object.freeze([
     'databaseService.migrateCategoryValues/createQuestion/submitReviewResult/importData',
-    'importBatchService.deleteImportBatch/deleteLegacyExternalQuestionGroup',
     'knowledgeMapService.importKnowledgeMapZip/seedImportKnowledgeMap/rematchKnowledgePoints',
     'questionBankService.importQuestionBankZip/deleteExternalQuestionBatch',
     'ticktickService.deleteTickTickList/deleteTickTickTask'
@@ -118,10 +163,9 @@ export const legacyDatabaseCompatibilityInventory = Object.freeze({
   startupCompatibility: Object.freeze([
     'main.seedImportKnowledgeMap -> A10f',
     'main.migrateCategoryValues -> A10f',
-    'main.rematchKnowledgePoints -> A10f',
-    'main.ensureDailyAutoBackup -> A11'
+    'main.rematchKnowledgePoints -> A10f'
   ]),
-  migrationTasks: Object.freeze(['A10', 'A11', 'A12'])
+  migrationTasks: Object.freeze(['A10', 'A12'])
 });
 
 const DEFAULT_SUBJECT: MathSubject = '高等数学';
@@ -233,6 +277,255 @@ function safeLifecycleId(value: string): string {
   const safe = value.replace(/[^A-Za-z0-9_-]/g, '');
   if (!safe) throw new Error('Database lifecycle identifier is empty');
   return safe;
+}
+
+function isSameOrDescendant(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function durableWriteNew(filePath: string, bytes: Uint8Array): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const handle = fs.openSync(filePath, 'wx');
+  try {
+    fs.writeFileSync(handle, bytes);
+    fs.fsyncSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+}
+
+function fileEvidence(filePath: string) {
+  return evidenceForBytes(fs.readFileSync(filePath));
+}
+
+function managedFileInventory(paths: AppPaths) {
+  const roots = [paths.images, paths.textbooks, path.join(paths.root, 'question-bank-assets')];
+  const result: Array<{ path: string; size: number; sha256: string }> = [];
+  const visit = (directory: string) => {
+    if (!fs.existsSync(directory)) return;
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const target = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new MaintenanceOperationError('UNSAFE_MANAGED_FILE', 'recovery_package', `Managed file is a symbolic link: ${target}`);
+      if (entry.isDirectory()) visit(target);
+      else if (entry.isFile()) result.push({ path: path.relative(paths.root, target), ...fileEvidence(target) });
+    }
+  };
+  roots.forEach(visit);
+  return result.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+function journalError(error: unknown, phase: string) {
+  return {
+    code: error instanceof MaintenanceOperationError ? error.code : 'maintenance_operation_failed',
+    phase,
+    message: (error instanceof Error ? error.message : String(error)).slice(0, 1_000)
+  };
+}
+
+interface ReplacementRequest<T> {
+  commandType: string;
+  inputIdentity: unknown;
+  sourceBytes?: Uint8Array;
+  mutate?: (candidate: Database) => T | Promise<T>;
+  quarantinePaths?: string[] | ((candidate: Database) => string[]);
+  dependencies?: MaintenanceOperationDependencies;
+}
+
+async function prepareReplacementManifest(
+  request: ReplacementRequest<unknown>,
+  operationId: string,
+  versionBefore: import('../../shared/agent').DataVersion,
+  versionAfter: import('../../shared/agent').DataVersion
+): Promise<{ journal: OperationJournal; manifest: OperationManifest; recoveryDatabasePath: string; sourceInventoryPath: string }> {
+  const paths = getPaths();
+  const userRecoveryRoot = path.normalize(path.join(app.getPath('userData'), 'agent-recovery'));
+  const manifestRoot = path.normalize(path.join(userRecoveryRoot, 'operation-journal'));
+  const packageRoot = path.normalize(path.join(userRecoveryRoot, 'consistency-packages'));
+  const sourceRoot = path.normalize(path.join(userRecoveryRoot, 'package-sources'));
+  fs.mkdirSync(manifestRoot, { recursive: true });
+  fs.mkdirSync(packageRoot, { recursive: true });
+  fs.mkdirSync(sourceRoot, { recursive: true });
+  fs.mkdirSync(path.join(paths.temp, 'a11-quarantine'), { recursive: true });
+
+  const sourceInventoryPath = path.normalize(path.join(sourceRoot, `${operationId}.managed-files.json`));
+  const inventoryBytes = Buffer.from(`${JSON.stringify({
+    version: 1,
+    root: paths.root,
+    database: { path: path.relative(paths.root, paths.database), ...fileEvidence(paths.database) },
+    managedFiles: managedFileInventory(paths)
+  })}\n`, 'utf8');
+  durableWriteNew(sourceInventoryPath, inventoryBytes);
+
+  const recoveryDatabasePath = path.normalize(path.join(packageRoot, `${operationId}.before.db`));
+  const recoveryInventoryPath = path.normalize(path.join(packageRoot, `${operationId}.managed-files.json`));
+  const files: OperationFile[] = [
+    {
+      fileId: 'database-snapshot',
+      kind: 'create',
+      sourcePath: path.normalize(paths.database),
+      targetPath: recoveryDatabasePath,
+      stagingPath: path.normalize(path.join(packageRoot, `.${operationId}.before.db.staged`)),
+      content: fileEvidence(paths.database),
+      status: 'pending'
+    },
+    {
+      fileId: 'managed-files-inventory',
+      kind: 'create',
+      sourcePath: sourceInventoryPath,
+      targetPath: recoveryInventoryPath,
+      stagingPath: path.normalize(path.join(packageRoot, `.${operationId}.managed-files.staged`)),
+      content: evidenceForBytes(inventoryBytes),
+      status: 'pending'
+    }
+  ];
+  const quarantinePaths = typeof request.quarantinePaths === 'function'
+    ? request.quarantinePaths(db!)
+    : request.quarantinePaths ?? [];
+  for (const [index, candidate] of quarantinePaths.entries()) {
+    const targetPath = path.normalize(path.resolve(candidate));
+    if (!isSameOrDescendant(targetPath, paths.images)) {
+      throw new MaintenanceOperationError('UNSAFE_MANAGED_FILE', 'recovery_package', `Refusing to quarantine an image outside the managed image root: ${targetPath}`);
+    }
+    if (!fs.existsSync(targetPath)) continue;
+    files.push({
+      fileId: `managed-image-${index}`,
+      kind: 'quarantine_delete',
+      targetPath,
+      quarantinePath: path.normalize(path.join(paths.temp, 'a11-quarantine', `${operationId}-${index}.quarantine`)),
+      content: fileEvidence(targetPath),
+      status: 'pending'
+    });
+  }
+  const now = (request.dependencies?.now ?? (() => new Date().toISOString()))();
+  const manifest = createOperationManifest({
+    operationId,
+    requestId: operationId,
+    commandType: request.commandType,
+    source: 'internal',
+    clientId: 'maintenance-kernel',
+    traceId: operationId,
+    inputHash: createHash('sha256').update(JSON.stringify(request.inputIdentity)).digest('hex'),
+    storage: 'external_recovery',
+    versionBefore,
+    versionAfter,
+    affectedEntities: [{ entityType: 'database', entityId: paths.database }],
+    roots: {
+      manifestRoot,
+      managedRoots: [path.normalize(paths.root), packageRoot],
+      sourceRoots: [path.normalize(paths.root), sourceRoot]
+    },
+    files,
+    createdAt: now
+  });
+  return {
+    journal: new OperationJournal(new OperationManifestStore(manifestRoot), request.dependencies?.journal),
+    manifest,
+    recoveryDatabasePath,
+    sourceInventoryPath
+  };
+}
+
+async function replaceDatabaseIdentity<T>(request: ReplacementRequest<T>): Promise<{
+  value: T;
+  versionBefore: import('../../shared/agent').DataVersion;
+  versionAfter: import('../../shared/agent').DataVersion;
+  recoveryDatabasePath: string;
+}> {
+  const coordinator = await getDatabaseCoordinator();
+  const lease = await coordinator.beginMaintenance();
+  let versionBefore = coordinator.currentVersion();
+  let candidate: Database | null = null;
+  let staged: OperationManifest | null = null;
+  let journal: OperationJournal | null = null;
+  let databasePublished = false;
+  try {
+    await request.dependencies?.onStage?.('maintenance_entered');
+    versionBefore = coordinator.currentVersion();
+    const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+    const opener = createSqlJsCandidateOpener(SQL);
+    candidate = new SQL.Database(request.sourceBytes ?? fs.readFileSync(getPaths().database));
+    const operationId = safeLifecycleId((request.dependencies?.randomId ?? randomUUID)());
+    candidate.run('PRAGMA foreign_keys = ON;');
+    const sourceInspection = inspectDatabaseBytes(candidate.export(), { path: getPaths().database, kind: 'temp' }, opener);
+    if (sourceInspection.status !== 'valid' || sourceInspection.metadata !== 'present') {
+      throw new MaintenanceOperationError('DATABASE_CANDIDATE_INVALID', 'candidate_validation', 'Replacement database is corrupt or incompatible');
+    }
+    const value = request.mutate ? await request.mutate(candidate) : undefined as T;
+    const epoch = (request.dependencies?.createEpoch ?? randomUUID)();
+    const versionAfter = new RevisionStore(candidate, request.dependencies?.now).resetDatabaseIdentity(
+      createRevisionMutationCapability(candidate),
+      epoch
+    );
+    const bytes = candidate.export();
+    const inspection = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'temp' }, opener, versionAfter);
+    if (inspection.status !== 'valid' || inspection.metadata !== 'present') {
+      throw new MaintenanceOperationError('DATABASE_CANDIDATE_INVALID', 'candidate_validation', 'Replacement database failed integrity or version validation');
+    }
+    await request.dependencies?.onStage?.('candidate_validated');
+
+    const prepared = await prepareReplacementManifest(request, operationId, versionBefore, versionAfter);
+    journal = prepared.journal;
+    staged = await journal.stage(await journal.prepare(prepared.manifest));
+    await request.dependencies?.onStage?.('recovery_package_staged');
+
+    const publication = await atomicPersist({
+      livePath: getPaths().database,
+      requestId: operationId,
+      bytes,
+      expectedVersion: versionAfter,
+      dependencies: {
+        opener,
+        files: defaultAtomicFileDependencies,
+        randomId: request.dependencies?.randomId,
+        hook: request.dependencies?.atomicHook
+      }
+    });
+    if (publication.status === 'failed') {
+      await journal.compensate(staged, journalError(publication.error, publication.failure.phase));
+      coordinator.finishMaintenance(lease, 'writable');
+      throw new MaintenanceOperationError('DATABASE_PUBLICATION_FAILED', publication.failure.phase, 'Database replacement was not published', true, publication.error);
+    }
+    if (publication.status === 'indeterminate') {
+      await journal.needsRecovery(staged, journalError(publication.error, publication.failure.phase));
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+      throw new MaintenanceOperationError('DATABASE_PUBLICATION_INDETERMINATE', publication.failure.phase, 'Database replacement requires recovery before writes can resume', false, publication.error);
+    }
+    databasePublished = true;
+    await request.dependencies?.onStage?.('database_published');
+    try {
+      const completed = await journal.commitFiles(await journal.markDatabaseCommitted(staged));
+      if (completed.state !== 'completed') throw new Error('Replacement journal did not complete');
+    } catch (error) {
+      resetDatabaseConnection();
+      const recovered = await initializeDatabase();
+      if (recovered.state !== 'writable') {
+        throw new MaintenanceOperationError('RECOVERY_FENCE', 'journal_finalization', 'Published replacement could not be reconciled', false, error);
+      }
+    }
+    await request.dependencies?.onStage?.('files_committed');
+
+    resetDatabaseConnection();
+    await initializeDatabase();
+    await request.dependencies?.onStage?.('runtime_reopened');
+    return { value, versionBefore, versionAfter, recoveryDatabasePath: prepared.recoveryDatabasePath };
+  } catch (error) {
+    if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') {
+      if (databasePublished) {
+        resetDatabaseConnection();
+        await initializeDatabase().catch(() => undefined);
+      } else if (staged && journal) {
+        await journal.compensate(staged, journalError(error, 'replacement')).catch(async (compensationError) => {
+          await journal!.needsRecovery(staged!, journalError(compensationError, 'compensation')).catch(() => undefined);
+          coordinator.finishMaintenance(lease, 'needs_recovery');
+        });
+      }
+      if (coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
+    }
+    throw error;
+  } finally {
+    candidate?.close();
+  }
 }
 
 function hasCandidateRecoveryEvidence(livePath: string): boolean {
@@ -524,7 +817,6 @@ export function lastInsertId(database: Database) {
 }
 
 const getDb = getDatabase;
-const persist = persistDatabase;
 const run = runSql;
 const all = allSql;
 const one = oneSql;
@@ -979,16 +1271,24 @@ function assertImportPayload(payload: unknown) {
 }
 
 export async function importData(filePath: string) {
-  const database = await getDb();
   const raw = fs.readFileSync(filePath, 'utf8');
   const payload = JSON.parse(raw) as Record<string, Array<Record<string, unknown>>>;
   assertImportPayload(payload);
-
-  const backup = path.join(getPaths().backups, `before-import-${Date.now()}.db`);
-  if (fs.existsSync(getPaths().database)) fs.copyFileSync(getPaths().database, backup);
-
-  database.run('BEGIN TRANSACTION');
-  try {
+  const replacement = await replaceDatabaseIdentity({
+    commandType: 'database.import_json',
+    inputIdentity: { filePath: path.resolve(filePath), sha256: createHash('sha256').update(raw).digest('hex') },
+    async mutate(database) {
+      for (const image of payload.question_images) {
+        if (typeof image.file_path !== 'string' || image.file_path.trim().length === 0) {
+          throw new MaintenanceOperationError('IMPORT_MANAGED_FILE_INVALID', 'import_validation', 'Imported image path is missing or invalid');
+        }
+        const imagePath = path.normalize(path.resolve(image.file_path));
+        if (!isSameOrDescendant(imagePath, getPaths().images) || !fs.existsSync(imagePath)) {
+          throw new MaintenanceOperationError('IMPORT_MANAGED_FILE_MISSING', 'import_validation', 'Import references an unavailable managed image file');
+        }
+      }
+      database.run('BEGIN TRANSACTION');
+      try {
     for (const table of ['daily_reviews', 'study_sessions', 'study_tasks', 'study_materials', 'study_subjects', 'study_settings', 'import_assets', 'import_batch_items', 'import_batches', 'external_question_attempts', 'external_questions', 'question_knowledge_points', 'knowledge_points', 'textbooks', 'question_tags', 'tags', 'review_logs', 'question_images', 'questions']) {
       database.run(`DELETE FROM ${table}`);
     }
@@ -1371,25 +1671,271 @@ export async function importData(filePath: string) {
       );
     }
 
-    database.run('COMMIT');
-    persist();
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
-  }
+        database.run('COMMIT');
+      } catch (error) {
+        database.run('ROLLBACK');
+        throw error;
+      }
+      return true;
+    }
+  });
 
-  return { imported: true, backup };
+  return { imported: true, backup: replacement.recoveryDatabasePath };
 }
 
-export async function clearAllData(deleteImages: boolean) {
-  const database = await getDb();
-  const images = all<QuestionImage>(database, 'SELECT * FROM question_images');
-  for (const table of ['daily_reviews', 'study_sessions', 'study_tasks', 'study_materials', 'study_subjects', 'study_settings', 'import_assets', 'import_batch_items', 'import_batches', 'external_question_attempts', 'external_questions', 'question_knowledge_points', 'knowledge_points', 'textbooks', 'question_tags', 'tags', 'review_logs', 'question_images', 'questions']) {
-    database.run(`DELETE FROM ${table}`);
-  }
-  if (deleteImages) deleteFiles(images.map((image) => image.file_path));
-  persist();
+export async function clearAllData(deleteImages: boolean, dependencies: MaintenanceOperationDependencies = {}) {
+  await replaceDatabaseIdentity({
+    commandType: 'database.clear_all',
+    inputIdentity: { deleteImages },
+    quarantinePaths: deleteImages
+      ? (database) => all<QuestionImage>(database, 'SELECT * FROM question_images').map((image) => image.file_path)
+      : [],
+    dependencies,
+    mutate(candidate) {
+      for (const table of ['daily_reviews', 'study_sessions', 'study_tasks', 'study_materials', 'study_subjects', 'study_settings', 'import_assets', 'import_batch_items', 'import_batches', 'external_question_attempts', 'external_questions', 'question_knowledge_points', 'knowledge_points', 'textbooks', 'question_tags', 'tags', 'review_logs', 'question_images', 'questions']) {
+        candidate.run(`DELETE FROM ${table}`);
+      }
+      return true;
+    }
+  });
   return true;
+}
+
+export async function createVerifiedDatabaseSnapshot(
+  targetPath: string,
+  dependencies: MaintenanceOperationDependencies = {}
+) {
+  const coordinator = await getDatabaseCoordinator();
+  const lease = await coordinator.beginMaintenance();
+  try {
+    const expectedVersion = coordinator.currentVersion();
+    const bytes = fs.readFileSync(getPaths().database);
+    const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+    const opener = createSqlJsCandidateOpener(SQL);
+    const inspected = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'live' }, opener, expectedVersion);
+    if (inspected.status !== 'valid' || inspected.metadata !== 'present') {
+      throw new MaintenanceOperationError('LIVE_DATABASE_INVALID', 'backup_validation', 'Live database is not a verified backup candidate', false);
+    }
+    const normalizedTarget = path.normalize(path.resolve(targetPath));
+    const nonce = safeLifecycleId((dependencies.randomId ?? randomUUID)());
+    const tempPath = path.join(path.dirname(normalizedTarget), `.${path.basename(normalizedTarget)}.${nonce}.tmp`);
+    durableWriteNew(tempPath, bytes);
+    try {
+      const tempInspection = inspectDatabaseBytes(fs.readFileSync(tempPath), { path: tempPath, kind: 'temp' }, opener, expectedVersion);
+      if (tempInspection.status !== 'valid' || tempInspection.metadata !== 'present') {
+        throw new MaintenanceOperationError('BACKUP_VALIDATION_FAILED', 'backup_validation', 'Backup copy failed verification');
+      }
+      fs.renameSync(tempPath, normalizedTarget);
+      const finalInspection = inspectDatabaseBytes(fs.readFileSync(normalizedTarget), { path: normalizedTarget, kind: 'live' }, opener, expectedVersion);
+      if (finalInspection.status !== 'valid' || finalInspection.metadata !== 'present') {
+        throw new MaintenanceOperationError('BACKUP_VALIDATION_FAILED', 'backup_validation', 'Published backup failed verification');
+      }
+    } catch (error) {
+      fs.rmSync(tempPath, { force: true });
+      throw error;
+    }
+    return { filePath: normalizedTarget, version: expectedVersion, evidence: evidenceForBytes(bytes) };
+  } finally {
+    if (coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
+  }
+}
+
+function createVerifiedDatabaseSnapshotSyncInState(targetPath: string, allowedState: 'writable' | 'maintenance') {
+  if (!databaseCoordinator || !db || databaseCoordinator.state !== allowedState) {
+    throw new MaintenanceOperationError('DATABASE_NOT_WRITABLE', 'backup_admission', 'Database is not available for a synchronous recovery snapshot');
+  }
+  if (databaseCoordinator.pendingWrites !== 0 && allowedState === 'writable') {
+    throw new MaintenanceOperationError('DATABASE_BUSY', 'backup_admission', 'Synchronous recovery snapshot refused while writes are pending');
+  }
+  const quickCheck = db.exec('PRAGMA quick_check');
+  if (quickCheck[0]?.values[0]?.[0] !== 'ok') {
+    throw new MaintenanceOperationError('LIVE_DATABASE_INVALID', 'backup_validation', 'Live database failed quick_check', false);
+  }
+  const version = new RevisionStore(db).readCurrentVersion();
+  const memoryBytes = Buffer.from(db.export());
+  const diskBytes = fs.readFileSync(getPaths().database);
+  if (!memoryBytes.equals(diskBytes)) {
+    throw new MaintenanceOperationError('DATABASE_NOT_FLUSHED', 'backup_validation', 'Live database file does not match the coordinator-owned database');
+  }
+  const normalizedTarget = path.normalize(path.resolve(targetPath));
+  const tempPath = path.join(path.dirname(normalizedTarget), `.${path.basename(normalizedTarget)}.${safeLifecycleId(randomUUID())}.tmp`);
+  durableWriteNew(tempPath, diskBytes);
+  try {
+    if (!fs.readFileSync(tempPath).equals(diskBytes)) throw new Error('Synchronous recovery snapshot hash mismatch');
+    fs.renameSync(tempPath, normalizedTarget);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
+  return { filePath: normalizedTarget, version, evidence: evidenceForBytes(diskBytes) };
+}
+
+export function createVerifiedDatabaseSnapshotSync(targetPath: string) {
+  return createVerifiedDatabaseSnapshotSyncInState(targetPath, 'writable');
+}
+
+export async function executeWriteWithVerifiedSnapshot<T>(
+  targetPath: string,
+  request: DatabaseWriteRequest<T>
+): Promise<{ snapshot: ReturnType<typeof createVerifiedDatabaseSnapshotSync>; result: DatabaseWriteResult<T> }> {
+  const coordinator = await getDatabaseCoordinator();
+  const lease = await coordinator.beginMaintenance();
+  let snapshot: ReturnType<typeof createVerifiedDatabaseSnapshotSync>;
+  try {
+    snapshot = createVerifiedDatabaseSnapshotSyncInState(targetPath, 'maintenance');
+  } catch (error) {
+    coordinator.finishMaintenance(lease, 'writable');
+    throw error;
+  }
+  coordinator.finishMaintenance(lease, 'writable');
+  const admittedWrite = coordinator.executeWrite(request);
+  return { snapshot, result: await admittedWrite };
+}
+
+export async function restoreDatabaseFromFile(
+  backupPath: string,
+  dependencies: MaintenanceOperationDependencies = {}
+) {
+  const normalized = path.normalize(path.resolve(backupPath));
+  if (!fs.existsSync(normalized)) throw new MaintenanceOperationError('BACKUP_NOT_FOUND', 'restore_validation', `Backup file does not exist: ${normalized}`);
+  const bytes = fs.readFileSync(normalized);
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  const opener = createSqlJsCandidateOpener(SQL);
+  const inspected = inspectDatabaseBytes(bytes, { path: normalized, kind: 'temp' }, opener);
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
+  const validationDatabase = new SQL.Database(bytes);
+  try {
+    const requiredTables = ['questions', 'question_images', 'tags', 'question_tags', 'review_logs', 'question_knowledge_points'];
+    const tables = new Set(all<{ name: string }>(validationDatabase, "SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name));
+    if (requiredTables.some((table) => !tables.has(table))) {
+      throw new MaintenanceOperationError('BACKUP_INCOMPATIBLE', 'restore_validation', 'Backup does not contain the required question schema');
+    }
+    for (const row of all<{ file_path: string }>(validationDatabase, 'SELECT file_path FROM question_images')) {
+      const imagePath = path.normalize(path.resolve(row.file_path));
+      if (!isSameOrDescendant(imagePath, getPaths().images) || !fs.existsSync(imagePath)) {
+        throw new MaintenanceOperationError('BACKUP_MANAGED_FILES_MISSING', 'restore_validation', 'Backup references managed image files that are not available');
+      }
+    }
+  } finally {
+    validationDatabase.close();
+  }
+  return replaceDatabaseIdentity({
+    commandType: 'database.restore_backup',
+    inputIdentity: { backupPath: normalized, ...evidenceForBytes(bytes) },
+    sourceBytes: bytes,
+    dependencies
+  });
+}
+
+export interface DataRootSwitchDependencies {
+  maintenance?: MaintenanceOperationDependencies;
+  root?: RootSwitchDependencies;
+}
+
+export async function switchDataRoot(
+  root: string,
+  migrate: boolean,
+  dependencies: DataRootSwitchDependencies = {}
+) {
+  const coordinator = await getDatabaseCoordinator();
+  const lease = await coordinator.beginMaintenance();
+  const oldPaths = getPaths();
+  let plan: Awaited<ReturnType<typeof stageDataRootSwitch>> | null = null;
+  let staged: OperationManifest | null = null;
+  let journal: OperationJournal | null = null;
+  let configPublished = false;
+  try {
+    plan = await stageDataRootSwitch(oldPaths, root, migrate, dependencies.root);
+    const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+    const opener = createSqlJsCandidateOpener(SQL);
+    let candidate: Database;
+    if (migrate) {
+      if (!fs.existsSync(plan.newPaths.database)) throw new MaintenanceOperationError('ROOT_DATABASE_MISSING', 'root_stage', 'Migrated root does not contain a database');
+      candidate = new SQL.Database(fs.readFileSync(plan.newPaths.database));
+    } else {
+      candidate = new SQL.Database();
+      candidate.run('PRAGMA foreign_keys = ON;');
+      candidate.exec(schemaSql);
+      migrateDatabase(candidate);
+      bootstrapControlMetadata(candidate, {
+        createEpoch: dependencies.maintenance?.createEpoch,
+        now: dependencies.maintenance?.now
+      });
+    }
+    try {
+      candidate.run('PRAGMA foreign_keys = ON;');
+      let versionAfter = new RevisionStore(candidate).readCurrentVersion();
+      if (versionAfter.dataEpoch === coordinator.currentVersion().dataEpoch || versionAfter.dataRevision !== 0) {
+        versionAfter = new RevisionStore(candidate, dependencies.maintenance?.now).resetDatabaseIdentity(
+          createRevisionMutationCapability(candidate),
+          (dependencies.maintenance?.createEpoch ?? randomUUID)()
+        );
+      }
+      const request: ReplacementRequest<unknown> = {
+        commandType: 'database.switch_root',
+        inputIdentity: { root: plan.newPaths.root, migrate, files: plan.copiedFiles },
+        dependencies: dependencies.maintenance
+      };
+      const prepared = await prepareReplacementManifest(
+        request,
+        safeLifecycleId((dependencies.maintenance?.randomId ?? randomUUID)()),
+        coordinator.currentVersion(),
+        versionAfter
+      );
+      journal = prepared.journal;
+      staged = await journal.stage(await journal.prepare(prepared.manifest));
+      const publication = await atomicPersist({
+        livePath: plan.newPaths.database,
+        requestId: staged.requestId,
+        bytes: candidate.export(),
+        expectedVersion: versionAfter,
+        dependencies: {
+          opener,
+          files: defaultAtomicFileDependencies,
+          randomId: dependencies.maintenance?.randomId,
+          hook: dependencies.maintenance?.atomicHook
+        }
+      });
+      if (publication.status !== 'success') {
+        throw new MaintenanceOperationError(
+          publication.status === 'indeterminate' ? 'ROOT_DATABASE_INDETERMINATE' : 'ROOT_DATABASE_PUBLICATION_FAILED',
+          publication.failure.phase,
+          'New-root database could not be verified',
+          publication.status !== 'indeterminate',
+          publication.error
+        );
+      }
+    } finally {
+      candidate.close();
+    }
+
+    await publishDataRootSwitch(plan, dependencies.root);
+    configPublished = true;
+    resetDatabaseConnection();
+    const initialized = await initializeDatabase();
+    if (initialized.state !== 'writable') throw new MaintenanceOperationError('RECOVERY_FENCE', 'root_reopen', 'New data root requires recovery', false);
+    const rootRecovery = initialized.journalRecovery.outcomes.find((outcome) => outcome.operationId === staged?.operationId);
+    if (!rootRecovery || rootRecovery.terminalState !== 'completed' || rootRecovery.manifest?.state !== 'completed') {
+      throw new MaintenanceOperationError('ROOT_JOURNAL_INCOMPLETE', 'root_reopen', 'Root-switch recovery manifest did not complete', false);
+    }
+    return getPaths();
+  } catch (error) {
+    if (configPublished || getPaths().root !== oldPaths.root) {
+      try {
+        restoreDataRootAuthority(oldPaths, dependencies.root?.randomId);
+      } catch (rollbackError) {
+        if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'needs_recovery');
+        throw new MaintenanceOperationError('ROOT_CONFIG_ROLLBACK_FAILED', 'config_rollback', 'Data-root configuration could not be restored', false, rollbackError);
+      }
+    }
+    if (staged && journal) await journal.compensate(staged, journalError(error, 'root_switch')).catch(() => undefined);
+    if (databaseCoordinator !== coordinator) resetDatabaseConnection();
+    if (!databaseCoordinator) await initializeDatabase().catch(() => undefined);
+    if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
+    throw error;
+  }
 }
 
 export function resetDatabaseConnection() {

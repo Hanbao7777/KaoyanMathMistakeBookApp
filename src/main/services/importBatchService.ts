@@ -6,13 +6,14 @@ import type { Database, SqlValue } from 'sql.js';
 import { AgentError } from '../../shared/agent/errors';
 import {
   allSql,
+  executeWriteWithVerifiedSnapshot,
   getDatabase,
   getDatabaseCoordinator,
+  getQuestionsApplication,
+  getReadOnlyDatabase,
   oneSql,
-  persistDatabase,
   runSql
 } from './databaseService';
-import { createDatabaseBackup } from './backupService';
 import { getPaths } from './pathService';
 import type {
   DeleteImportBatchOptions,
@@ -382,9 +383,8 @@ export async function deleteImportBatch(batchId: string, options: DeleteImportBa
 }
 
 export async function listLegacyExternalQuestionGroups(): Promise<LegacyExternalQuestionGroup[]> {
-  const database = await getDatabase();
-  return allSql<LegacyExternalQuestionGroup>(
-    database,
+  const database = await getReadOnlyDatabase();
+  return [...database.select<Record<string, unknown>>(
     `SELECT
       COALESCE(NULLIF(eq.source, ''), '未知来源') || '|' || COALESCE(NULLIF(eq.exam_type, ''), '未知考试') || '|' || COALESCE(CAST(eq.year AS TEXT), '未知年份') AS groupKey,
       COALESCE(NULLIF(eq.source, ''), '未知来源') AS source,
@@ -397,53 +397,68 @@ export async function listLegacyExternalQuestionGroups(): Promise<LegacyExternal
      LEFT JOIN external_question_attempts a ON a.external_question_id = eq.id
      WHERE COALESCE(eq.import_batch_id, '') = ''
      GROUP BY eq.source, eq.exam_type, eq.year
-     ORDER BY eq.year DESC, eq.source ASC`
-  );
+      ORDER BY eq.year DESC, eq.source ASC`
+  )] as unknown as LegacyExternalQuestionGroup[];
 }
 
 export async function deleteLegacyExternalQuestionGroup(groupKey: string): Promise<DeleteLegacyExternalQuestionGroupResult> {
   const [source, examType, yearText] = groupKey.split('|');
   if (!source || !examType || !yearText) throw new Error('历史题库分组不合法');
-  const database = await getDatabase();
-  const backup = createDatabaseBackup('before_delete_import');
-  const result: DeleteLegacyExternalQuestionGroupResult = {
-    backupPath: backup.filePath,
-    deletedQuestions: 0,
-    deletedAttempts: 0,
-    movedAssets: 0,
-    failedAssets: []
-  };
   const year = yearText === '未知年份' ? null : Number(yearText);
   const params = [source === '未知来源' ? '' : source, examType === '未知考试' ? '' : examType];
   const yearSql = year === null ? 'eq.year IS NULL' : 'eq.year = ?';
   const finalParams = year === null ? params : [...params, year];
-  const ids = allSql<{ id: number; raw_file_path: string; paper_pdf_path: string }>(
-    database,
-    `SELECT eq.id, eq.raw_file_path, eq.paper_pdf_path FROM external_questions eq
-     WHERE COALESCE(eq.import_batch_id, '') = ''
-       AND COALESCE(eq.source, '') = ?
-       AND COALESCE(eq.exam_type, '') = ?
-       AND ${yearSql}`,
-    finalParams
+  const date = new Date();
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const timestamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  const backupPath = path.join(getPaths().backups, `mistakes_before_delete_import_${timestamp}.db`);
+  const requestId = crypto.randomUUID();
+  const application = await getQuestionsApplication();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation: 'import-batch-delete-legacy-external-group' } }],
+    { requestId, traceId: crypto.randomUUID(), source: 'internal' }
   );
-  if (!ids.length) return result;
-  const idValues = ids.map((row) => String(row.id));
-  const ph = idValues.map(() => '?').join(', ');
-
-  database.run('BEGIN TRANSACTION');
-  try {
-    result.deletedAttempts = oneSql<{ count: number }>(database, `SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (${ph})`, idValues)?.count ?? 0;
-    runSql(database, `DELETE FROM external_question_attempts WHERE external_question_id IN (${ph})`, idValues);
-    result.deletedQuestions = ids.length;
-    runSql(database, `DELETE FROM external_questions WHERE id IN (${ph})`, idValues);
-    database.run('COMMIT');
-    persistDatabase();
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
+  const { result: write } = await executeWriteWithVerifiedSnapshot(backupPath, {
+    requestId,
+    concurrency: 'none',
+    execute(database, scope) {
+      const result: DeleteLegacyExternalQuestionGroupResult = {
+        backupPath,
+        deletedQuestions: 0,
+        deletedAttempts: 0,
+        movedAssets: 0,
+        failedAssets: []
+      };
+      const ids = allSql<{ id: number }>(
+        database,
+        `SELECT eq.id FROM external_questions eq
+         WHERE COALESCE(eq.import_batch_id, '') = ''
+           AND COALESCE(eq.source, '') = ?
+           AND COALESCE(eq.exam_type, '') = ?
+           AND ${yearSql}`,
+        finalParams
+      );
+      if (!ids.length) return { changed: false, value: result };
+      const idValues = ids.map((row) => String(row.id));
+      const placeholders = idValues.map(() => '?').join(', ');
+      result.deletedAttempts = oneSql<{ count: number }>(
+        database,
+        `SELECT COUNT(*) AS count FROM external_question_attempts WHERE external_question_id IN (${placeholders})`,
+        idValues
+      )?.count ?? 0;
+      mutateSql(database, scope, `DELETE FROM external_question_attempts WHERE external_question_id IN (${placeholders})`, idValues);
+      result.deletedQuestions = ids.length;
+      mutateSql(database, scope, `DELETE FROM external_questions WHERE id IN (${placeholders})`, idValues);
+      return { changed: true, value: result };
+    }
+  });
+  if (write.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: write.versionBefore,
+      versionAfter: write.versionAfter
+    }));
   }
-
-  return result;
+  return write.value;
 }
 
 export async function openTrashFolder() {
