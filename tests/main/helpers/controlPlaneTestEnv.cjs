@@ -8,6 +8,10 @@ const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-control-plane-'))
 const dataRoot = path.join(testRoot, 'data-root');
 const userDataRoot = path.join(testRoot, 'user-data');
 const recoveryRoot = path.join(userDataRoot, 'agent-recovery');
+const agentDatabaseRoot = path.join(testRoot, 'agent-database');
+const agentDatabasePath = path.join(agentDatabaseRoot, 'agent-control.db');
+const ledgerRoot = path.join(testRoot, 'agent-ledger');
+const resultRoot = path.join(testRoot, 'electron-results');
 
 function normalizedPath(value) {
   return path.resolve(value).toLowerCase();
@@ -29,6 +33,41 @@ function assertOwnedPath(target) {
     throw new Error('Control-plane test path escapes the owned temporary root');
   }
   return path.resolve(target);
+}
+
+function createDeterministicClock(initialTime = '2026-01-01T00:00:00.000Z') {
+  let currentTime = new Date(initialTime);
+  if (Number.isNaN(currentTime.getTime())) {
+    throw new Error('Deterministic clock requires a valid ISO timestamp');
+  }
+
+  return {
+    now() {
+      return currentTime.toISOString();
+    },
+    advance(milliseconds) {
+      if (!Number.isFinite(milliseconds)) {
+        throw new Error('Deterministic clock advance requires a finite millisecond value');
+      }
+      currentTime = new Date(currentTime.getTime() + milliseconds);
+      return currentTime.toISOString();
+    }
+  };
+}
+
+function createDeterministicUuid() {
+  let sequence = 0;
+  return function randomUUID() {
+    sequence += 1;
+    return `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`;
+  };
+}
+
+function prepareAgentTestEnvironment() {
+  for (const target of [agentDatabaseRoot, ledgerRoot, resultRoot, recoveryRoot, userDataRoot]) {
+    fs.mkdirSync(assertOwnedPath(target), { recursive: true });
+  }
+  return getControlPlanePaths();
 }
 
 function installElectronStub() {
@@ -74,7 +113,11 @@ function getControlPlanePaths() {
     testRoot,
     dataRoot,
     userDataRoot,
-    recoveryRoot
+    recoveryRoot,
+    agentDatabaseRoot,
+    agentDatabasePath,
+    ledgerRoot,
+    resultRoot
   };
 }
 
@@ -107,8 +150,15 @@ module.exports = {
   dataRoot,
   userDataRoot,
   recoveryRoot,
+  agentDatabaseRoot,
+  agentDatabasePath,
+  ledgerRoot,
+  resultRoot,
   databaseService,
   assertOwnedPath,
+  createDeterministicClock,
+  createDeterministicUuid,
+  prepareAgentTestEnvironment,
   getControlPlanePaths,
   resetControlPlaneEnvironment,
   cleanupControlPlaneRoot,
