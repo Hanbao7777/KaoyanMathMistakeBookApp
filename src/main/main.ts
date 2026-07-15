@@ -3,18 +3,26 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
-import { initializeDatabase } from './services/databaseService';
-import { persistDatabase, resetDatabaseConnection } from './services/databaseService';
+import {
+  assertDatabaseReadyForRuntimeIpc,
+  getDatabase,
+  initializeDatabase,
+  migrateCategoryValues,
+  resetDatabaseConnection,
+  shutdownDatabase,
+  type DatabaseInitializationResult
+} from './services/databaseService';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
 import { seedImportKnowledgeMap, rematchKnowledgePoints } from './services/knowledgeMapService';
-import { getDatabase, migrateCategoryValues } from './services/databaseService';
 import { ensureDailyAutoBackup } from './services/backupService';
 
 const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
+let shutdownComplete = false;
+let mainShutdownPromise: Promise<void> | null = null;
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -126,6 +134,75 @@ function reportStartupError(error: unknown) {
   dialog.showErrorBox('考研数学错题本启动失败', `${error instanceof Error ? error.message : String(error)}\n\n错误日志：${logPath}`);
 }
 
+async function runCompatibilityStartupWriters() {
+  try {
+    const database = await getDatabase();
+    const countResult = database.exec('SELECT COUNT(*) as c FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = ""');
+    const count = countResult.length && countResult[0].values.length ? Number(countResult[0].values[0][0]) : 0;
+
+    if (count === 0) {
+      console.log('[Seed] knowledge_points table empty, importing bundled exam points...');
+      const seedResult = await seedImportKnowledgeMap();
+      console.log(`[Seed] Imported ${seedResult.importedCount} exam points, ${seedResult.failedCount} failed`);
+    }
+
+    console.log('[Migration] Migrating old category values...');
+    const migrateResult = await migrateCategoryValues();
+    console.log(`[Migration] Processed ${migrateResult.migrated} category mappings`);
+
+    console.log('[Rematch] Re-matching questions to exam points...');
+    const rematchResult = await rematchKnowledgePoints();
+    console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
+  } catch (error) {
+    console.warn('[StartupSeed]', error);
+  }
+}
+
+export interface MainStartupDependencies {
+  initializePaths(): unknown;
+  initializeDatabase(): Promise<DatabaseInitializationResult>;
+  assertDatabaseReadyForRuntimeIpc(): void;
+  runCompatibilityStartupWriters(): Promise<void>;
+  ensureDailyAutoBackup(): void;
+  registerImageProtocol(): void;
+  registerWindowStateIpc(): void;
+  registerRuntimeIpc(): void;
+  createWindow(): void;
+}
+
+const defaultMainStartupDependencies: MainStartupDependencies = {
+  initializePaths,
+  initializeDatabase,
+  assertDatabaseReadyForRuntimeIpc,
+  runCompatibilityStartupWriters,
+  ensureDailyAutoBackup,
+  registerImageProtocol,
+  registerWindowStateIpc() {
+    ipcMain.on('window:saveState', () => saveWindowState());
+    ipcMain.handle('window:loadState', () => loadWindowState());
+  },
+  registerRuntimeIpc: registerIpc,
+  createWindow
+};
+
+export async function runMainStartup(
+  dependencies: MainStartupDependencies = defaultMainStartupDependencies
+): Promise<void> {
+  dependencies.initializePaths();
+  await dependencies.initializeDatabase();
+  dependencies.assertDatabaseReadyForRuntimeIpc();
+  await dependencies.runCompatibilityStartupWriters();
+  try {
+    dependencies.ensureDailyAutoBackup();
+  } catch (error) {
+    console.warn('[AutoBackup]', error);
+  }
+  dependencies.registerImageProtocol();
+  dependencies.registerWindowStateIpc();
+  dependencies.registerRuntimeIpc();
+  dependencies.createWindow();
+}
+
 process.on('uncaughtException', reportStartupError);
 process.on('unhandledRejection', reportStartupError);
 
@@ -138,42 +215,7 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   try {
-    initializePaths();
-    await initializeDatabase();
-
-    // Seed exam points on first launch, then migrate categories and re-match questions
-    try {
-      const database = await getDatabase();
-      const countResult = database.exec('SELECT COUNT(*) as c FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = ""');
-      const count = countResult.length && countResult[0].values.length ? Number(countResult[0].values[0][0]) : 0;
-
-      if (count === 0) {
-        console.log('[Seed] knowledge_points table empty, importing bundled exam points...');
-        const seedResult = await seedImportKnowledgeMap();
-        console.log(`[Seed] Imported ${seedResult.importedCount} exam points, ${seedResult.failedCount} failed`);
-      }
-
-      console.log('[Migration] Migrating old category values...');
-      const migrateResult = await migrateCategoryValues();
-      console.log(`[Migration] Processed ${migrateResult.migrated} category mappings`);
-
-      console.log('[Rematch] Re-matching questions to exam points...');
-      const rematchResult = await rematchKnowledgePoints();
-      console.log(`[Rematch] Scanned ${rematchResult.scannedQuestions} questions, ${rematchResult.insertedCount} new links, ${rematchResult.unmatchedQuestions} unmatched`);
-    } catch (error) {
-      console.warn('[StartupSeed]', error);
-    }
-
-    try {
-      ensureDailyAutoBackup();
-    } catch (error) {
-      console.warn('[AutoBackup]', error);
-    }
-    registerImageProtocol();
-    ipcMain.on('window:saveState', () => saveWindowState());
-    ipcMain.handle('window:loadState', () => loadWindowState());
-    registerIpc();
-    createWindow();
+    await runMainStartup();
   } catch (error) {
     reportStartupError(error);
     app.quit();
@@ -190,15 +232,20 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
   isQuitting = true;
-  try {
-    persistDatabase();
-  } catch (error) {
-    console.warn('[ShutdownPersist]', error);
-  }
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.destroy();
+  }
+  if (shutdownComplete) return;
+  event.preventDefault();
+  if (!mainShutdownPromise) {
+    mainShutdownPromise = shutdownDatabase()
+      .catch((error) => console.warn('[ShutdownPersist]', error))
+      .finally(() => {
+        shutdownComplete = true;
+        app.quit();
+      });
   }
 });
 

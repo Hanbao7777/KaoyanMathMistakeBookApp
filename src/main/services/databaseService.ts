@@ -1,7 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import initSqlJs, { type Database, type SqlValue } from 'sql.js';
+import { randomUUID } from 'node:crypto';
+import { app } from 'electron';
+import initSqlJs, { type Database, type SqlJsStatic, type SqlValue } from 'sql.js';
 import { schemaSql } from '../database/schema';
+import { createReadOnlyDatabaseFacade, type ReadOnlyDatabaseFacade } from '../application/queryBus';
+import {
+  atomicPersist,
+  bootstrapControlMetadata,
+  createSqlJsCandidateOpener,
+  DatabaseCoordinator,
+  defaultAtomicFileDependencies,
+  recoverStartupDatabase,
+  RevisionStore,
+  type StartupDatabaseRecoveryResult
+} from '../persistence';
+import {
+  OperationManifestStore,
+  recoverOperationStores,
+  type RecoveryScanOutcome
+} from '../persistence/operationJournal';
 import { copyImageToStore, deleteFiles } from './fileService';
 import { getPaths } from './pathService';
 import type {
@@ -24,6 +42,83 @@ import type {
 } from '../../shared/types';
 
 let db: Database | null = null;
+let databaseCoordinator: DatabaseCoordinator | null = null;
+let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
+let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
+let initializationResult: DatabaseInitializationResult | null = null;
+let shutdownPromise: Promise<void> | null = null;
+
+export const databaseLifecycleStages = [
+  'candidate_recovery_started',
+  'candidate_recovery_completed',
+  'metadata_bootstrap_published',
+  'coordinator_created',
+  'operation_journal_recovered',
+  'ready',
+  'needs_recovery'
+] as const;
+
+export type DatabaseLifecycleStage = (typeof databaseLifecycleStages)[number];
+
+export interface DatabaseInitializationDependencies {
+  createEpoch?: () => string;
+  now?: () => string;
+  randomId?: () => string;
+  dataJournalRoot?: string;
+  externalJournalRoot?: string;
+  recoverOperations?: typeof recoverOperationStores;
+  onStage?: (stage: DatabaseLifecycleStage) => void;
+}
+
+export interface DatabaseInitializationResult {
+  readonly state: 'writable' | 'needs_recovery';
+  readonly bootstrapChanged: boolean;
+  readonly databaseRecovery: StartupDatabaseRecoveryResult | { readonly status: 'empty' };
+  readonly journalRecovery: RecoveryScanOutcome;
+}
+
+export const legacyDatabaseCompatibilityInventory = Object.freeze({
+  mutableHandle: Object.freeze([
+    'databaseService.getDatabase/runSql',
+    'registerIpc.ai:recordImport and ticktick:whiteNoise',
+    'backupService restore/reset paths',
+    'bridgeService',
+    'deepseekService',
+    'importBatchService',
+    'knowledgeMapService',
+    'questionBankService',
+    'structuredImportService',
+    'studySupervisorService',
+    'ticktickAiService',
+    'ticktickService'
+  ]),
+  rawPersistence: Object.freeze([
+    'databaseService question/review/import/clear writers',
+    'backupService.createBackup',
+    'bridgeService sync writers',
+    'importBatchService deletion writers',
+    'knowledgeMapService import/bind/rematch writers',
+    'questionBankService import/attempt/add/delete writers',
+    'registerIpc.ticktick:whiteNoise:set',
+    'structuredImportService.confirmStructuredImport',
+    'studySupervisorService bootstrap and domain writers',
+    'ticktickService list/task/tag/focus/bridge/settings/habit writers'
+  ]),
+  localTransactions: Object.freeze([
+    'databaseService.migrateCategoryValues/createQuestion/submitReviewResult/importData',
+    'importBatchService.deleteImportBatch/deleteLegacyExternalQuestionGroup',
+    'knowledgeMapService.importKnowledgeMapZip/seedImportKnowledgeMap/rematchKnowledgePoints',
+    'questionBankService.importQuestionBankZip/deleteExternalQuestionBatch',
+    'ticktickService.deleteTickTickList/deleteTickTickTask'
+  ]),
+  startupCompatibility: Object.freeze([
+    'main.seedImportKnowledgeMap -> A10f',
+    'main.migrateCategoryValues -> A10f',
+    'main.rematchKnowledgePoints -> A10f',
+    'main.ensureDailyAutoBackup -> A11'
+  ]),
+  migrationTasks: Object.freeze(['A10', 'A11', 'A12'])
+});
 
 const DEFAULT_SUBJECT: MathSubject = '高等数学';
 const SUBJECT_VALUES = new Set<MathSubject>(['高等数学', '线性代数', '概率论', '其他']);
@@ -77,30 +172,30 @@ function addDaysIso(date: Date, days: number) {
 
 export function persistDatabase() {
   if (!db) return;
+  if (databaseCoordinator?.pendingWrites) {
+    throw new Error('Legacy persistence cannot run while a coordinator write is active');
+  }
   const bytes = db.export();
   fs.mkdirSync(path.dirname(getPaths().database), { recursive: true });
   fs.writeFileSync(getPaths().database, Buffer.from(bytes));
 }
 
 export async function getDatabase() {
-  if (db) return db;
-
-  const SQL = await initSqlJs({
-    locateFile: () => resolveSqlWasmPath()
-  });
-
-  const dbPath = getPaths().database;
-  if (fs.existsSync(dbPath)) {
-    db = new SQL.Database(fs.readFileSync(dbPath));
-  } else {
-    db = new SQL.Database();
-  }
-
-  db.run('PRAGMA foreign_keys = ON;');
-  db.exec(schemaSql);
-  migrateDatabase(db);
-  persistDatabase();
+  if (!db) await initializeDatabase();
+  if (!db) throw new Error('Database initialization did not install an active handle');
   return db;
+}
+
+export async function getDatabaseCoordinator(): Promise<DatabaseCoordinator> {
+  if (!databaseCoordinator) await initializeDatabase();
+  if (!databaseCoordinator) throw new Error('Database coordinator is unavailable');
+  return databaseCoordinator;
+}
+
+export async function getReadOnlyDatabase(): Promise<ReadOnlyDatabaseFacade> {
+  if (!readOnlyDatabase) await initializeDatabase();
+  if (!readOnlyDatabase) throw new Error('Read-only database access is unavailable');
+  return readOnlyDatabase;
 }
 
 function resolveSqlWasmPath() {
@@ -117,6 +212,142 @@ function resolveSqlWasmPath() {
   if (resourcesCandidate && fs.existsSync(resourcesCandidate)) return resourcesCandidate;
 
   return unpacked;
+}
+
+function safeLifecycleId(value: string): string {
+  const safe = value.replace(/[^A-Za-z0-9_-]/g, '');
+  if (!safe) throw new Error('Database lifecycle identifier is empty');
+  return safe;
+}
+
+function hasCandidateRecoveryEvidence(livePath: string): boolean {
+  const liveName = path.basename(livePath);
+  return fs.readdirSync(path.dirname(livePath)).some((name) =>
+    name.includes(liveName) && name.endsWith('.quarantine')
+  );
+}
+
+async function publishInitializedDatabase(
+  database: Database,
+  livePath: string,
+  SQL: SqlJsStatic,
+  dependencies: DatabaseInitializationDependencies
+): Promise<void> {
+  const version = new RevisionStore(database).readCurrentVersion();
+  const opener = createSqlJsCandidateOpener(SQL);
+  const publication = await atomicPersist({
+    livePath,
+    requestId: 'startup-bootstrap',
+    bytes: database.export(),
+    expectedVersion: version,
+    dependencies: {
+      opener,
+      files: defaultAtomicFileDependencies,
+      randomId: () => safeLifecycleId((dependencies.randomId ?? randomUUID)())
+    }
+  });
+  if (publication.status !== 'success') {
+    throw new Error(`Database bootstrap publication failed: ${publication.failure.code}`);
+  }
+}
+
+async function initializeDatabaseOnce(
+  dependencies: DatabaseInitializationDependencies = {}
+): Promise<DatabaseInitializationResult> {
+  const onStage = dependencies.onStage ?? (() => undefined);
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const randomId = dependencies.randomId ?? randomUUID;
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  const opener = createSqlJsCandidateOpener(SQL);
+  const paths = getPaths();
+  fs.mkdirSync(path.dirname(paths.database), { recursive: true });
+
+  onStage('candidate_recovery_started');
+  const recovered = await recoverStartupDatabase({
+    livePath: paths.database,
+    opener,
+    randomId: () => safeLifecycleId(randomId())
+  });
+  const noCandidates = recovered.status === 'needs_recovery' &&
+    recovered.reason === 'no_valid_candidate' && recovered.decision.candidates.length === 0 &&
+    !hasCandidateRecoveryEvidence(paths.database);
+  if (recovered.status === 'needs_recovery' && !noCandidates) {
+    onStage('needs_recovery');
+    throw new Error(`Database candidate recovery failed: ${recovered.reason}`);
+  }
+  onStage('candidate_recovery_completed');
+
+  const workingDatabase = recovered.status === 'ready' || recovered.status === 'legacy_ready'
+    ? new SQL.Database(recovered.bytes)
+    : new SQL.Database();
+  let bootstrapChanged = false;
+  try {
+    workingDatabase.run('PRAGMA foreign_keys = ON;');
+    workingDatabase.exec(schemaSql);
+    migrateDatabase(workingDatabase);
+    const bootstrap = bootstrapControlMetadata(workingDatabase, {
+      createEpoch: dependencies.createEpoch,
+      now
+    });
+    bootstrapChanged = bootstrap.changed;
+    await publishInitializedDatabase(workingDatabase, paths.database, SQL, dependencies);
+  } finally {
+    workingDatabase.close();
+  }
+  onStage('metadata_bootstrap_published');
+
+  const activeDatabase = new SQL.Database(fs.readFileSync(paths.database));
+  activeDatabase.run('PRAGMA foreign_keys = ON;');
+  db = activeDatabase;
+  const coordinator = new DatabaseCoordinator({
+    database: activeDatabase,
+    livePath: paths.database,
+    opener,
+    openDatabase: (bytes) => new SQL.Database(bytes),
+    persistDependencies: {
+      opener,
+      files: defaultAtomicFileDependencies,
+      randomId: () => safeLifecycleId(randomId())
+    },
+    replaceDatabase(next, previous) {
+      if (db !== previous) throw new Error('Database service handle changed outside the coordinator');
+      db = next;
+    },
+    now
+  });
+  databaseCoordinator = coordinator;
+  readOnlyDatabase = createReadOnlyDatabaseFacade(() => {
+    if (!db) throw new Error('Database connection is closed');
+    return db;
+  });
+  onStage('coordinator_created');
+
+  const dataJournalRoot = path.normalize(dependencies.dataJournalRoot ?? path.join(paths.data, 'operation-journal'));
+  const externalJournalRoot = path.normalize(
+    dependencies.externalJournalRoot ?? path.join(app.getPath('userData'), 'agent-recovery', 'operation-journal')
+  );
+  const journalRecovery = await (dependencies.recoverOperations ?? recoverOperationStores)(
+    [new OperationManifestStore(dataJournalRoot), new OperationManifestStore(externalJournalRoot)],
+    () => coordinator.currentVersion()
+  );
+  onStage('operation_journal_recovered');
+
+  if (journalRecovery.needsRecovery > 0) {
+    const lease = await coordinator.beginMaintenance();
+    coordinator.finishMaintenance(lease, 'needs_recovery');
+    onStage('needs_recovery');
+  } else {
+    onStage('ready');
+  }
+
+  const result: DatabaseInitializationResult = Object.freeze({
+    state: journalRecovery.needsRecovery > 0 ? 'needs_recovery' : 'writable',
+    bootstrapChanged,
+    databaseRecovery: noCandidates ? { status: 'empty' as const } : recovered,
+    journalRecovery
+  });
+  initializationResult = result;
+  return result;
 }
 
 function migrateDatabase(database: Database) {
@@ -399,8 +630,15 @@ function insertImages(database: Database, questionId: number, imageType: ImageTy
   }
 }
 
-export async function initializeDatabase() {
-  await getDb();
+export async function initializeDatabase(dependencies: DatabaseInitializationDependencies = {}) {
+  if (initializationResult) return initializationResult;
+  if (!initializationPromise) initializationPromise = initializeDatabaseOnce(dependencies);
+  try {
+    return await initializationPromise;
+  } catch (error) {
+    initializationPromise = null;
+    throw error;
+  }
 }
 
 /**
@@ -1379,10 +1617,50 @@ export async function clearAllData(deleteImages: boolean) {
 }
 
 export function resetDatabaseConnection() {
+  if (databaseCoordinator?.pendingWrites) {
+    throw new Error('Cannot reset the database while coordinator writes are pending');
+  }
   if (db) {
     db.close();
     db = null;
   }
+  databaseCoordinator = null;
+  readOnlyDatabase = null;
+  initializationPromise = null;
+  initializationResult = null;
+  shutdownPromise = null;
+}
+
+export function assertDatabaseReadyForRuntimeIpc(): void {
+  if (!databaseCoordinator || databaseCoordinator.state !== 'writable') {
+    throw new Error('Database recovery requires attention before runtime IPC can be registered');
+  }
+}
+
+export function shutdownDatabase(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = shutdownDatabaseOnce();
+  return shutdownPromise;
+}
+
+async function shutdownDatabaseOnce(): Promise<void> {
+  const coordinator = databaseCoordinator;
+  if (!coordinator) return;
+  let finalPersistence: Promise<unknown> | null = null;
+  if (coordinator.state === 'writable') {
+    finalPersistence = coordinator.executeWrite({
+      requestId: 'shutdown-final-persist',
+      concurrency: 'none',
+      execute: () => ({ changed: true, value: undefined })
+    });
+  }
+  const drain = coordinator.shutdown();
+  const [persistenceResult, shutdownResult] = await Promise.allSettled([
+    finalPersistence ?? Promise.resolve(),
+    drain
+  ]);
+  if (persistenceResult.status === 'rejected') throw persistenceResult.reason;
+  if (shutdownResult.status === 'rejected') throw shutdownResult.reason;
 }
 
 export function getCurrentPaths(): AppPaths {
