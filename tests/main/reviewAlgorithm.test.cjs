@@ -1,15 +1,14 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {
-  cleanupTestRoot,
+  cleanupControlPlaneRoot,
   databaseService,
-  requireMain,
-  resetTestDatabase
-} = require('./helpers/mainTestEnv.cjs');
+  resetControlPlaneEnvironment
+} = require('./helpers/controlPlaneTestEnv.cjs');
 
-test.after(cleanupTestRoot);
+test.after(() => cleanupControlPlaneRoot());
 
-test.beforeEach(resetTestDatabase);
+test.beforeEach(resetControlPlaneEnvironment);
 
 async function createQuestion(overrides = {}) {
   return databaseService.createQuestion({

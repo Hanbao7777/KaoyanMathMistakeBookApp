@@ -5,6 +5,8 @@ import { app } from 'electron';
 import initSqlJs, { type Database, type SqlJsStatic, type SqlValue } from 'sql.js';
 import { schemaSql } from '../database/schema';
 import { createReadOnlyDatabaseFacade, type ReadOnlyDatabaseFacade } from '../application/queryBus';
+import { createInternalExecutionContext } from '../application/executionContext';
+import { registerQuestions, type QuestionsApplication } from '../application/questions';
 import {
   atomicPersist,
   bootstrapControlMetadata,
@@ -20,7 +22,7 @@ import {
   recoverOperationStores,
   type RecoveryScanOutcome
 } from '../persistence/operationJournal';
-import { copyImageToStore, deleteFiles } from './fileService';
+import { deleteFiles } from './fileService';
 import { getPaths } from './pathService';
 import type {
   AppPaths,
@@ -44,6 +46,8 @@ import type {
 let db: Database | null = null;
 let databaseCoordinator: DatabaseCoordinator | null = null;
 let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
+let questionsApplication: QuestionsApplication | null = null;
+const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
 let initializationResult: DatabaseInitializationResult | null = null;
 let shutdownPromise: Promise<void> | null = null;
@@ -198,6 +202,17 @@ export async function getReadOnlyDatabase(): Promise<ReadOnlyDatabaseFacade> {
   return readOnlyDatabase;
 }
 
+export async function getQuestionsApplication(): Promise<QuestionsApplication> {
+  if (!questionsApplication) await initializeDatabase();
+  if (!questionsApplication) throw new Error('Questions application is unavailable');
+  return questionsApplication;
+}
+
+async function executeLegacyQuestionCommand<C extends import('../../shared/agent').AppCommand>(command: C) {
+  const application = await getQuestionsApplication();
+  return application.execute(command, createInternalExecutionContext({ concurrency: 'none' }));
+}
+
 function resolveSqlWasmPath() {
   const resolved = require.resolve('sql.js/dist/sql-wasm.wasm');
   if (fs.existsSync(resolved)) return resolved;
@@ -311,6 +326,10 @@ async function initializeDatabaseOnce(
     },
     replaceDatabase(next, previous) {
       if (db !== previous) throw new Error('Database service handle changed outside the coordinator');
+      // A9/A10 still contain legacy flows that cache getDatabase() across an
+      // awaited question command. Their exported SQL helpers must follow the
+      // coordinator's replacement until those callers are migrated.
+      retiredCoordinatorHandles.add(previous);
       db = next;
     },
     now
@@ -320,6 +339,7 @@ async function initializeDatabaseOnce(
     if (!db) throw new Error('Database connection is closed');
     return db;
   });
+  questionsApplication = registerQuestions({ coordinator, readOnlyDatabase });
   onStage('coordinator_created');
 
   const dataJournalRoot = path.normalize(dependencies.dataJournalRoot ?? path.join(paths.data, 'operation-journal'));
@@ -471,7 +491,8 @@ function migrateDatabase(database: Database) {
 }
 
 export function runSql(database: Database, sql: string, params: unknown[] = []) {
-  const stmt = database.prepare(sql);
+  const active = retiredCoordinatorHandles.has(database) && db ? db : database;
+  const stmt = active.prepare(sql);
   try {
     stmt.bind(params as SqlValue[]);
     stmt.step();
@@ -481,7 +502,8 @@ export function runSql(database: Database, sql: string, params: unknown[] = []) 
 }
 
 export function allSql<T>(database: Database, sql: string, params: unknown[] = []) {
-  const stmt = database.prepare(sql);
+  const active = retiredCoordinatorHandles.has(database) && db ? db : database;
+  const stmt = active.prepare(sql);
   const rows: T[] = [];
   try {
     stmt.bind(params as SqlValue[]);
@@ -506,18 +528,6 @@ const persist = persistDatabase;
 const run = runSql;
 const all = allSql;
 const one = oneSql;
-
-async function replaceTags(database: Database, questionId: number, tags: string[]) {
-  run(database, 'DELETE FROM question_tags WHERE question_id = ?', [questionId]);
-  const uniqueTags = Array.from(new Set(tags.map((tag) => tag.trim()).filter(Boolean)));
-  for (const tag of uniqueTags) {
-    run(database, 'INSERT OR IGNORE INTO tags (name, created_at) VALUES (?, ?)', [tag, nowIso()]);
-    const tagRow = one<{ id: number }>(database, 'SELECT id FROM tags WHERE name = ?', [tag]);
-    if (tagRow) {
-      run(database, 'INSERT OR IGNORE INTO question_tags (question_id, tag_id) VALUES (?, ?)', [questionId, tagRow.id]);
-    }
-  }
-}
 
 function hydrateQuestions(database: Database, rows: Array<Omit<Question, 'tags' | 'question_images' | 'solution_images'>>) {
   return rows.map((row) => hydrateQuestion(database, row));
@@ -618,18 +628,6 @@ function buildFilterSql(filters: QuestionFilters = {}) {
   return { whereSql, params, orderSql: `ORDER BY ${sortBy} ${sortOrder}, id DESC` };
 }
 
-function insertImages(database: Database, questionId: number, imageType: ImageType, sourcePaths: string[]) {
-  for (const sourcePath of sourcePaths) {
-    const savedPath = copyImageToStore(questionId, imageType, sourcePath);
-    run(database, 'INSERT INTO question_images (question_id, image_type, file_path, created_at) VALUES (?, ?, ?, ?)', [
-      questionId,
-      imageType,
-      savedPath,
-      nowIso()
-    ]);
-  }
-}
-
 export async function initializeDatabase(dependencies: DatabaseInitializationDependencies = {}) {
   if (initializationResult) return initializationResult;
   if (!initializationPromise) initializationPromise = initializeDatabaseOnce(dependencies);
@@ -646,86 +644,17 @@ export async function initializeDatabase(dependencies: DatabaseInitializationDep
  * Called once on startup after seed import, before knowledge point re-matching.
  */
 export async function migrateCategoryValues(): Promise<{ migrated: number }> {
-  const database = await getDb();
-
-  const CATEGORY_MAP: Record<string, string> = {
-    '函数、极限与连续': '函数、极限、连续',
-    '多元函数微分学': '多元函数微积分学',
-    '重积分': '多元函数微积分学',
-    '曲线曲面积分': '多元函数微积分学',
-    '微分方程': '常微分方程',
-    '线性代数': '其他'
-  };
-
   let migrated = 0;
-  database.run('BEGIN TRANSACTION');
-  try {
-    for (const [oldValue, newValue] of Object.entries(CATEGORY_MAP)) {
-      run(
-        database,
-        "UPDATE questions SET category = ?, updated_at = ? WHERE category = ? AND (deleted_at IS NULL OR deleted_at = '')",
-        [newValue, nowIso(), oldValue]
-      );
-      migrated += 1;
-    }
-    database.run('COMMIT');
-    persist();
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
+  while (true) {
+    const result = await executeLegacyQuestionCommand({ type: 'questions.migrate_categories', payload: { limit: 500 } });
+    migrated += result.value.migrated;
+    if (result.value.migrated < 500) break;
   }
-
   return { migrated };
 }
 
 export async function createQuestion(input: QuestionInput) {
-  const database = await getDb();
-  const createdAt = nowIso();
-
-  database.run('BEGIN TRANSACTION');
-  try {
-    run(
-      database,
-      `INSERT INTO questions (
-        title, content, wrong_thinking, wrong_solution, correct_solution, answer, subject, category, question_type,
-        error_reason, source, difficulty, mastery_level, note, review_count, correct_count, wrong_count,
-        no_idea_count, consecutive_correct,
-        last_reviewed_at, next_review_at, import_batch_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, NULL, NULL, ?, ?, ?)`,
-      [
-        input.title,
-        input.content,
-        input.wrong_thinking,
-        input.wrong_solution || input.wrong_thinking,
-        input.correct_solution,
-        input.answer,
-        normalizeSubject(input.subject, inferSubjectFromCategory(input.category)),
-        input.category,
-        input.question_type,
-        input.error_reason,
-        input.source,
-        input.difficulty,
-        normalizeMastery(input.mastery_level),
-        input.note,
-        input.import_batch_id ?? null,
-        createdAt,
-        createdAt
-      ]
-    );
-
-    const id = lastInsertId(database);
-    insertImages(database, id, 'original', input.questionImageSources);
-    insertImages(database, id, 'solution', input.solutionImageSources);
-    await replaceTags(database, id, input.tags);
-    database.run('COMMIT');
-    persist();
-    const saved = await getQuestion(id);
-    if (!saved) throw new Error('错题保存后读取失败');
-    return saved;
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
-  }
+  return (await executeLegacyQuestionCommand({ type: 'questions.create', payload: { input } })).value;
 }
 
 export async function listQuestions(filters: QuestionFilters = {}) {
@@ -760,39 +689,7 @@ export async function getQuestionsByIds(ids: number[]) {
 }
 
 export async function updateQuestion(id: number, input: QuestionInput) {
-  const database = await getDb();
-  run(
-    database,
-    `UPDATE questions SET
-      title = ?, content = ?, wrong_thinking = ?, wrong_solution = ?, correct_solution = ?, answer = ?,
-      subject = ?, category = ?, question_type = ?, error_reason = ?, source = ?,
-      difficulty = ?, mastery_level = ?, note = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      input.title,
-      input.content,
-      input.wrong_thinking,
-      input.wrong_solution || input.wrong_thinking,
-      input.correct_solution,
-      input.answer,
-      normalizeSubject(input.subject, inferSubjectFromCategory(input.category)),
-      input.category,
-      input.question_type,
-      input.error_reason,
-      input.source,
-      input.difficulty,
-      normalizeMastery(input.mastery_level),
-      input.note,
-      nowIso(),
-      id
-    ]
-  );
-
-  insertImages(database, id, 'original', input.questionImageSources);
-  insertImages(database, id, 'solution', input.solutionImageSources);
-  await replaceTags(database, id, input.tags);
-  persist();
-  return getQuestion(id);
+  return (await executeLegacyQuestionCommand({ type: 'questions.update', payload: { questionId: id, input } })).value;
 }
 
 function splitKnowledgeTokens(values: string[]) {
@@ -806,46 +703,27 @@ export async function linkQuestionKnowledgePoints(questionId: number, values: st
   const database = await getDb();
   const warnings: string[] = [];
   const tokens = Array.from(new Set(splitKnowledgeTokens(values)));
-
   for (const token of tokens) {
     const byNodeId = one<KnowledgePoint>(database, 'SELECT * FROM knowledge_points WHERE node_id = ?', [token]);
-    const matches = byNodeId ? [byNodeId] : all<KnowledgePoint>(database, 'SELECT * FROM knowledge_points WHERE title = ? ORDER BY level ASC, sort_order ASC', [token]);
-
-    if (!matches.length) {
-      warnings.push(`未匹配到知识点：${token}`);
-      continue;
-    }
-    if (!byNodeId && matches.length > 1) {
-      warnings.push(`知识点标题重复，已使用第一个匹配项：${token}`);
-    }
-
-    run(
-      database,
-      'INSERT OR IGNORE INTO question_knowledge_points (question_id, knowledge_node_id, match_type, created_at) VALUES (?, ?, ?, ?)',
-      [questionId, matches[0].node_id, matchType, nowIso()]
-    );
+    const matches = byNodeId
+      ? [byNodeId]
+      : all<KnowledgePoint>(database, 'SELECT * FROM knowledge_points WHERE title = ? ORDER BY level ASC, sort_order ASC', [token]);
+    if (!matches.length) warnings.push(`未匹配到知识点：${token}`);
+    else if (!byNodeId && matches.length > 1) warnings.push(`知识点标题重复，已使用第一个匹配项：${token}`);
   }
-
-  persist();
+  await executeLegacyQuestionCommand({
+    type: 'questions.link_knowledge',
+    payload: { questionId, knowledgeNodeIds: tokens, matchType }
+  });
   return warnings;
 }
 
 export async function deleteQuestion(id: number, deleteImages: boolean) {
-  const database = await getDb();
-  const images = all<QuestionImage>(database, 'SELECT * FROM question_images WHERE question_id = ?', [id]);
-  run(database, 'DELETE FROM questions WHERE id = ?', [id]);
-  if (deleteImages) deleteFiles(images.map((image) => image.file_path));
-  persist();
-  return true;
+  return (await executeLegacyQuestionCommand({ type: 'questions.delete', payload: { questionId: id, deleteImages } })).value;
 }
 
 export async function removeImage(imageId: number, deleteFile: boolean) {
-  const database = await getDb();
-  const image = one<QuestionImage>(database, 'SELECT * FROM question_images WHERE id = ?', [imageId]);
-  run(database, 'DELETE FROM question_images WHERE id = ?', [imageId]);
-  if (image && deleteFile) deleteFiles([image.file_path]);
-  persist();
-  return true;
+  return (await executeLegacyQuestionCommand({ type: 'questions.remove_image', payload: { imageId, deleteFile } })).value;
 }
 
 export async function listReviewLogs(questionId: number) {
@@ -861,28 +739,6 @@ function normalizeMastery(value: string | null | undefined): MasteryLevel {
   return OLD_MASTERY_MAP[value || ''] ?? '一般';
 }
 
-function masteryAfterResult(current: MasteryLevel, result: ReviewResultV2): MasteryLevel {
-  const index = MASTERY_ORDER.indexOf(normalizeMastery(current));
-  if (result === 'correct') return MASTERY_ORDER[Math.min(index + 1, MASTERY_ORDER.length - 1)];
-  if (result === 'wrong') return MASTERY_ORDER[Math.max(index - 1, 0)];
-  if (current === '已掌握') return '一般';
-  if (current === '较好') return '较弱';
-  if (current === '一般') return '较弱';
-  return '未掌握';
-}
-
-function nextReviewForResult(reviewedAt: Date, result: ReviewResultV2, consecutiveCorrect: number) {
-  if (result !== 'correct') return addDaysIso(reviewedAt, 1);
-  const days = consecutiveCorrect === 1 ? 2 : consecutiveCorrect === 2 ? 4 : consecutiveCorrect === 3 ? 7 : consecutiveCorrect === 4 ? 15 : 30;
-  return addDaysIso(reviewedAt, days);
-}
-
-function resultLabel(result: ReviewResultV2) {
-  if (result === 'correct') return '做对了';
-  if (result === 'wrong') return '做错了';
-  return '没思路';
-}
-
 function toReviewResultV2(result: ReviewResult): ReviewResultV2 {
   if (result === '做对了') return 'correct';
   if (result === '做错了') return 'wrong';
@@ -890,79 +746,7 @@ function toReviewResultV2(result: ReviewResult): ReviewResultV2 {
 }
 
 export async function submitReviewResult(input: ReviewSubmitInput): Promise<ReviewSubmitResult> {
-  const database = await getDb();
-  const question = await getQuestion(input.questionId);
-  if (!question) throw new Error('错题不存在');
-
-  const reviewedAtDate = new Date();
-  const reviewedAt = reviewedAtDate.toISOString();
-  const masteryBefore = normalizeMastery(question.mastery_level);
-  const nextConsecutive = input.result === 'correct' ? (question.consecutive_correct || 0) + 1 : 0;
-  const masteryAfter = masteryAfterResult(masteryBefore, input.result);
-  const nextReviewAt = nextReviewForResult(reviewedAtDate, input.result, nextConsecutive);
-  const nextRound = (question.review_count || 0) + 1;
-  const nextCorrectCount = (question.correct_count || 0) + (input.result === 'correct' ? 1 : 0);
-  const nextWrongCount = (question.wrong_count || 0) + (input.result === 'wrong' || input.result === 'no_idea' ? 1 : 0);
-  const nextNoIdeaCount = (question.no_idea_count || 0) + (input.result === 'no_idea' ? 1 : 0);
-
-  database.run('BEGIN TRANSACTION');
-  try {
-    run(
-      database,
-      `INSERT INTO review_logs (
-        question_id, result, mastery_before, mastery_after, reviewed_at, next_review_at,
-        note, review_date, review_round, duration_minutes, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
-      [
-        input.questionId,
-        input.result,
-        masteryBefore,
-        masteryAfter,
-        reviewedAt,
-        nextReviewAt,
-        input.note || '',
-        dateOnly(reviewedAtDate),
-        nextRound,
-        reviewedAt
-      ]
-    );
-
-    run(
-      database,
-      `UPDATE questions SET
-        review_count = ?, correct_count = ?, wrong_count = ?, no_idea_count = ?,
-        consecutive_correct = ?, last_reviewed_at = ?, next_review_at = ?,
-        mastery_level = ?, updated_at = ?
-       WHERE id = ?`,
-      [
-        nextRound,
-        nextCorrectCount,
-        nextWrongCount,
-        nextNoIdeaCount,
-        nextConsecutive,
-        reviewedAt,
-        nextReviewAt,
-        masteryAfter,
-        nowIso(),
-        input.questionId
-      ]
-    );
-    database.run('COMMIT');
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
-  }
-
-  persist();
-  const updated = await getQuestion(input.questionId);
-  if (!updated) throw new Error('复习结果保存后读取失败');
-  const log = one<ReviewLog>(database, 'SELECT * FROM review_logs WHERE question_id = ? ORDER BY id DESC LIMIT 1', [input.questionId]);
-  if (!log) throw new Error('复习日志保存后读取失败');
-  return {
-    question: updated,
-    log,
-    message: `已记录：${resultLabel(input.result)}，下次复习：${dateOnly(new Date(nextReviewAt))}`
-  };
+  return (await executeLegacyQuestionCommand({ type: 'questions.submit_review', payload: input })).value;
 }
 
 export async function addReviewLog(input: ReviewInput) {
@@ -975,15 +759,7 @@ export async function addReviewLog(input: ReviewInput) {
 }
 
 export async function markMastery(id: number, mastery: MasteryLevel) {
-  const database = await getDb();
-  run(database, 'UPDATE questions SET mastery_level = ?, next_review_at = ?, updated_at = ? WHERE id = ?', [
-    mastery,
-    mastery === '已掌握' ? null : addDays(dateOnly(), 1),
-    nowIso(),
-    id
-  ]);
-  persist();
-  return getQuestion(id);
+  return (await executeLegacyQuestionCommand({ type: 'questions.mark_mastery', payload: { questionId: id, mastery } })).value;
 }
 
 export async function getDashboard() {
@@ -1626,6 +1402,7 @@ export function resetDatabaseConnection() {
   }
   databaseCoordinator = null;
   readOnlyDatabase = null;
+  questionsApplication = null;
   initializationPromise = null;
   initializationResult = null;
   shutdownPromise = null;

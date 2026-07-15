@@ -10,11 +10,35 @@ function sanitizeFileName(name: string) {
   return name.replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').replace(/\s+/g, '_');
 }
 
-export function copyImageToStore(questionId: number, imageType: ImageType, sourcePath: string) {
+export function assertSupportedImagePath(sourcePath: string) {
   const ext = path.extname(sourcePath).toLowerCase();
   if (!ALLOWED_IMAGE_EXTENSIONS.has(ext)) {
     throw new Error('仅支持 jpg、jpeg、png、webp 图片格式');
   }
+  return ext;
+}
+
+export function createManagedImagePath(questionId: number, imageType: ImageType, sourcePath: string, nonce: string) {
+  assertSupportedImagePath(sourcePath);
+  const original = sanitizeFileName(path.basename(sourcePath));
+  const safeNonce = nonce.replace(/[^A-Za-z0-9_-]/g, '');
+  if (!safeNonce) throw new Error('图片操作标识无效');
+  const fileName = `${imageType}_${questionId}_${safeNonce}_${original}`;
+  return {
+    absolutePath: path.normalize(path.join(getPaths().images, fileName)),
+    storedPath: path.posix.join('images', fileName)
+  };
+}
+
+export function resolveManagedImagePath(filePath: string) {
+  const normalized = filePath.replace(/\//g, path.sep);
+  return path.isAbsolute(normalized)
+    ? path.normalize(normalized)
+    : path.normalize(path.join(getPaths().root, normalized.toLowerCase().startsWith(`images${path.sep}`) ? normalized : path.join('images', normalized)));
+}
+
+export function copyImageToStore(questionId: number, imageType: ImageType, sourcePath: string) {
+  assertSupportedImagePath(sourcePath);
 
   const original = sanitizeFileName(path.basename(sourcePath));
   const fileName = `${imageType}_${questionId}_${Date.now()}_${original}`;
@@ -26,10 +50,7 @@ export function copyImageToStore(questionId: number, imageType: ImageType, sourc
 export function deleteFiles(filePaths: string[]) {
   for (const filePath of filePaths) {
     try {
-      const normalized = filePath.replace(/\//g, path.sep);
-      const target = path.isAbsolute(normalized)
-        ? path.normalize(normalized)
-        : path.join(getPaths().root, normalized.toLowerCase().startsWith(`images${path.sep}`) ? normalized : path.join('images', normalized));
+      const target = resolveManagedImagePath(filePath);
       if (fs.existsSync(target)) fs.unlinkSync(target);
     } catch {
       // 删除图片失败不应阻断错题删除，调用方仍可继续。

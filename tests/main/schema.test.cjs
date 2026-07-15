@@ -48,6 +48,7 @@ test('control_metadata enforces singleton and safe metadata constraints', async 
   const db = await databaseService.getDatabase();
   const columns = tableColumns(db, 'control_metadata');
   assert.deepEqual(columns, ['id', 'data_epoch', 'data_revision', 'schema_version', 'updated_at']);
+  db.run('DELETE FROM control_metadata');
 
   assert.throws(
     () => db.run("INSERT INTO control_metadata VALUES (2, 'epoch', 0, 1, '2026-07-15T00:00:00.000Z')"),

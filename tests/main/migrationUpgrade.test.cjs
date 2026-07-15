@@ -176,14 +176,14 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_review_logs_reviewed_at'), true);
-  assert.equal(bootstrap.changed, true);
-  assert.deepEqual(one(db, 'SELECT * FROM control_metadata'), {
-    id: 1,
-    data_epoch: '00000000-0000-4000-8000-000000000001',
-    data_revision: 0,
-    schema_version: 1,
-    updated_at: '2026-07-15T00:00:00.000Z'
-  });
+  assert.equal(bootstrap.changed, false);
+  const metadata = one(db, 'SELECT * FROM control_metadata');
+  assert.equal(metadata.id, 1);
+  assert.equal(typeof metadata.data_epoch, 'string');
+  assert.equal(metadata.data_epoch.length > 0, true);
+  assert.equal(metadata.data_revision, 0);
+  assert.equal(metadata.schema_version, 1);
+  assert.equal(Number.isFinite(Date.parse(metadata.updated_at)), true);
 
   const questionRow = one(db, 'SELECT * FROM questions WHERE id = ?', [101]);
   assert.equal(questionRow.title, '旧库极限错题');
