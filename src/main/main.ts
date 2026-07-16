@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol } from 'electron';
 import {
   assertDatabaseReadyForRuntimeIpc,
   getQuestionsApplication,
@@ -20,6 +20,7 @@ import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
 import { ensureDailyAutoBackup } from './services/backupService';
+import { McpLoopbackHost } from './mcp/server';
 import type {
   QuestionCategoryMigrationCommand,
   QuestionRematchCommand
@@ -35,6 +36,12 @@ let shutdownComplete = false;
 let mainShutdownPromise: Promise<void> | null = null;
 let e2eResultChannelRegistered = false;
 let e2eResultSubmitted = false;
+let mcpLoopbackHost: McpLoopbackHost | null = null;
+let agentStartupNotificationShown = false;
+
+export function isAgentStartupMode(argumentsList: readonly string[] = process.argv): boolean {
+  return argumentsList.includes('--agent-startup');
+}
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -97,6 +104,7 @@ function createWindow() {
     minHeight: 680,
     title: '考研高数错题本',
     backgroundColor: '#f6f7f9',
+    show: !isAgentStartupMode(),
     webPreferences: {
       preload: path.join(__dirname, '../preload/preload.js'),
       nodeIntegration: false,
@@ -132,6 +140,12 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, '../../renderer/index.html'), e2eHarnessEnabled ? { hash: '/e2e-agent-control' } : undefined);
   }
+}
+
+function notifyAgentStartupReady(): void {
+  if (agentStartupNotificationShown || !isAgentStartupMode() || mcpLoopbackHost?.status().state !== 'ready' || !Notification.isSupported()) return;
+  agentStartupNotificationShown = true;
+  new Notification({ title: '考研高数错题本', body: '外部智能体连接服务已在后台准备就绪。' }).show();
 }
 
 interface E2eHarnessPaths {
@@ -365,6 +379,7 @@ export interface MainStartupDependencies {
   registerImageProtocol(): void;
   registerWindowStateIpc(): void;
   registerRuntimeIpc(): void;
+  startMcpHost?(): Promise<void>;
   createWindow(): void;
 }
 
@@ -382,6 +397,17 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
     ipcMain.handle('window:loadState', () => loadWindowState());
   },
   registerRuntimeIpc: registerIpc,
+  async startMcpHost() {
+    // C3 supplies the authenticated admission and enablement adapter. Until then the
+    // App must remain locally usable without opening an external listener.
+    const host = new McpLoopbackHost({
+      discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
+      externalControlEnabled: () => false,
+      authenticatedReady: () => false
+    });
+    mcpLoopbackHost = host;
+    await host.start();
+  },
   createWindow
 };
 
@@ -416,6 +442,8 @@ export async function runMainStartup(
   dependencies.registerImageProtocol();
   dependencies.registerWindowStateIpc();
   dependencies.registerRuntimeIpc();
+  if (initialization.state === 'writable') await dependencies.startMcpHost?.();
+  notifyAgentStartupReady();
   if (harnessPaths) {
     const { applyAgentControlCenterFixture } = await import('./e2e/agentControlCenterFixture');
     await applyAgentControlCenterFixture(harnessPaths.fixtureFile);
@@ -428,11 +456,12 @@ process.on('uncaughtException', reportStartupError);
 process.on('unhandledRejection', reportStartupError);
 
 if (singleInstanceLock) {
-app.on('second-instance', () => {
-  if (!mainWindow) return;
-  if (mainWindow.isMinimized()) mainWindow.restore();
-  mainWindow.focus();
-});
+  app.on('second-instance', (_event, commandLine) => {
+    if (isAgentStartupMode(commandLine)) return;
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
 
 app.whenReady().then(async () => {
   try {
@@ -461,7 +490,13 @@ app.on('before-quit', (event) => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (!mainShutdownPromise) {
-    mainShutdownPromise = shutdownDatabase()
+    mainShutdownPromise = Promise.resolve()
+      .then(async () => {
+        const host = mcpLoopbackHost;
+        mcpLoopbackHost = null;
+        await host?.stop();
+      })
+      .then(() => shutdownDatabase())
       .catch((error) => console.warn('[ShutdownPersist]', error))
       .finally(() => {
         shutdownComplete = true;

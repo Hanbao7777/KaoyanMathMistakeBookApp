@@ -483,6 +483,8 @@ test('main startup seam registers runtime IPC only after recovery and compatibil
   global.setInterval = () => ({ unref() {} });
   const main = environment.requireMain('main.js');
   global.setInterval = originalSetInterval;
+  assert.equal(main.isAgentStartupMode(['--agent-startup']), true);
+  assert.equal(main.isAgentStartupMode(['agent-startup']), false);
   const trace = [];
   await main.runMainStartup({
     initializePaths: () => trace.push('paths'),
@@ -499,12 +501,13 @@ test('main startup seam registers runtime IPC only after recovery and compatibil
     registerImageProtocol: () => trace.push('protocol'),
     registerWindowStateIpc: () => trace.push('window-ipc'),
     registerRuntimeIpc: () => trace.push('runtime-ipc'),
+    startMcpHost: async () => trace.push('mcp-host'),
     createWindow: () => trace.push('window')
   });
 
   assert.deepEqual(trace, [
     'paths', 'candidate', 'metadata', 'coordinator', 'journal', 'admission',
-    'seed-migrate-rematch', 'backup', 'protocol', 'window-ipc', 'runtime-ipc', 'window'
+    'seed-migrate-rematch', 'backup', 'protocol', 'window-ipc', 'runtime-ipc', 'mcp-host', 'window'
   ]);
 });
 
