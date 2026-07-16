@@ -1,5 +1,6 @@
 import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { mcpProtocolVersions } from '../../../shared/mcp/v1/versions';
+import type { AgentPrincipal } from '../../../shared/agent/v1/gatewayContracts';
 
 const MAX_BODY_BYTES = 64 * 1024;
 export const loopbackMcpEndpoint = '/mcp';
@@ -12,6 +13,7 @@ export interface McpSessionAdmission {
 
 export interface AuthenticatedLoopbackRequest {
   readonly session: McpSessionAdmission;
+  readonly principal: AgentPrincipal;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly request: Readonly<Record<string, unknown>>;
 }
@@ -23,8 +25,9 @@ export interface LoopbackHttpResponse {
 }
 
 export interface LoopbackSessionAuthenticator {
+  challengeInitialize?(request: { readonly headers: Readonly<Record<string, string | undefined>>; readonly protocolVersion: string }): Promise<object | null>;
   admitInitialize(request: { readonly headers: Readonly<Record<string, string | undefined>>; readonly protocolVersion: string }): Promise<McpSessionAdmission | null>;
-  validateSession(sessionId: string, protocolVersion: string): Promise<boolean>;
+  validateSession(sessionId: string, protocolVersion: string): Promise<AgentPrincipal | null>;
   invalidateAll(): Promise<void> | void;
 }
 
@@ -111,8 +114,8 @@ function isNotification(value: Record<string, unknown>): boolean {
   return value.id === undefined;
 }
 
-function errorBody(id: unknown, code: number, message: string): object {
-  return { jsonrpc: '2.0', ...(isRequestId(id) ? { id } : { id: null }), error: { code, message } };
+function errorBody(id: unknown, code: number, message: string, data?: unknown): object {
+  return { jsonrpc: '2.0', ...(isRequestId(id) ? { id } : { id: null }), error: { code, message, ...(data === undefined ? {} : { data }) } };
 }
 
 function requestHeaders(request: IncomingMessage): Readonly<Record<string, string | undefined>> {
@@ -137,7 +140,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
   const now = options.now ?? (() => new Date());
 
   const invalidateSessions = () => { sessions.clear(); };
-  const validateSession = async (sessionId: string | undefined, protocolVersion: string | undefined): Promise<McpSessionAdmission | null> => {
+  const validateSession = async (sessionId: string | undefined, protocolVersion: string | undefined): Promise<{ admission: McpSessionAdmission; principal: AgentPrincipal } | null> => {
     if (!sessionId || !protocolVersion) return null;
     const local = sessions.get(sessionId);
     if (!local || local.admission.protocolVersion !== protocolVersion || Date.parse(local.admission.expiresAt) <= now().getTime()) {
@@ -145,15 +148,16 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       return null;
     }
     try {
-      if (!await options.authenticator.validateSession(sessionId, protocolVersion)) {
+      const principal = await options.authenticator.validateSession(sessionId, protocolVersion);
+      if (!principal) {
         sessions.delete(sessionId);
         return null;
       }
+      return { admission: local.admission, principal };
     } catch {
       sessions.delete(sessionId);
       return null;
     }
-    return local.admission;
   };
 
   const handler = (async (request: IncomingMessage, response: ServerResponse) => {
@@ -176,7 +180,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
     const sessionProtocol = header(request, 'mcp-protocol-version');
     if (request.method === 'GET') {
       const session = await validateSession(sessionId, sessionProtocol);
-      if (!session || !sessions.get(session.sessionId)?.initialized) { respond(response, 401); return; }
+      if (!session || !sessions.get(session.admission.sessionId)?.initialized) { respond(response, 401); return; }
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-store', connection: 'close' });
       response.end();
       return;
@@ -197,6 +201,13 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
         respond(response, 400, errorBody(payload.id, -32602, 'Unsupported MCP protocol version'));
         return;
       }
+      if (!header(request, 'x-kaoyan-challenge-id') && options.authenticator.challengeInitialize) {
+        const challenge = await options.authenticator.challengeInitialize({ headers: requestHeaders(request), protocolVersion: requested }).catch(() => null);
+        if (challenge) {
+          respond(response, 401, errorBody(payload.id, -32002, 'Authentication challenge required', { challenge }));
+          return;
+        }
+      }
       let admission: McpSessionAdmission | null = null;
       try {
         admission = await options.authenticator.admitInitialize({ headers: requestHeaders(request), protocolVersion: requested });
@@ -214,7 +225,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
     const session = await validateSession(sessionId, sessionProtocol);
     if (!session) { respond(response, 401); return; }
     if (!isJsonRpcMessage(payload)) { respond(response, 400, errorBody(null, -32600, 'Invalid JSON-RPC request')); return; }
-    const localSession = sessions.get(session.sessionId);
+    const localSession = sessions.get(session.admission.sessionId);
     if (!localSession) { respond(response, 401); return; }
     if (isInitializedNotification(payload)) {
       localSession.initialized = true;
@@ -235,7 +246,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       return;
     }
     try {
-      const result = await options.onAuthenticatedRequest(Object.freeze({ session, headers: requestHeaders(request), request: Object.freeze({ ...payload }) }));
+      const result = await options.onAuthenticatedRequest(Object.freeze({ session: session.admission, principal: session.principal, headers: requestHeaders(request), request: Object.freeze({ ...payload }) }));
       if (!result) { respond(response, 501, errorBody(payload.id, -32601, 'MCP capability is not available')); return; }
       respond(response, result.status ?? 200, result.body, result.headers);
     } catch {
@@ -253,7 +264,7 @@ function isUuid(value: string): boolean {
 export function createDenyAllLoopbackAuthenticator(): LoopbackSessionAuthenticator {
   return Object.freeze({
     async admitInitialize() { return null; },
-    async validateSession() { return false; },
+    async validateSession() { return null; },
     async invalidateAll() { return undefined; }
   });
 }

@@ -32,7 +32,7 @@ function authenticator() {
   const sessions = new Set();
   return {
     async admitInitialize({ protocolVersion }) { const sessionId = '00000000-0000-4000-8000-000000000777'; sessions.add(sessionId); return { sessionId, protocolVersion, expiresAt: new Date(Date.now() + 60_000).toISOString() }; },
-    async validateSession(sessionId, protocolVersion) { return sessions.has(sessionId) && protocolVersion === '2025-11-25'; },
+    async validateSession(sessionId, protocolVersion) { return sessions.has(sessionId) && protocolVersion === '2025-11-25' ? Object.freeze({ clientId: 'test-client' }) : null; },
     async invalidateAll() { sessions.clear(); }
   };
 }
@@ -103,6 +103,38 @@ test('strict boundary rejects Host Origin content type size and unauthenticated 
   const accepted = await request(status.port, {}, initialize);
   assert.equal(accepted.status, 200);
   assert.equal(typeof accepted.headers['mcp-session-id'], 'string');
+  await host.stop();
+});
+
+test('challenge discovery is bounded and authenticated requests receive the live principal only', async () => {
+  const discoveryRoot = root('challenge');
+  const challenge = Object.freeze({
+    version: 'kaoyan-stdio-auth-v1', challengeId: '00000000-0000-4000-8000-000000000778', nonce: 'A'.repeat(43),
+    appInstanceId: 'instance', clientId: 'test-client', mcpProtocolVersion: '2025-11-25', launcherVersion: '1.0.0',
+    audience: 'kaoyan-mcp-loopback', transport: 'stdio-bridge', expiresAt: new Date(Date.now() + 60_000).toISOString()
+  });
+  const auth = authenticator();
+  auth.challengeInitialize = async ({ headers }) => headers['x-kaoyan-client-id'] === 'test-client' ? challenge : null;
+  let seenPrincipal;
+  const host = new hostModule.McpLoopbackHost({
+    discoveryRoot, externalControlEnabled: () => true, authenticatedReady: () => true, authenticator: auth,
+    discoveryOwnershipCheck: () => true,
+    onAuthenticatedRequest(input) { seenPrincipal = input.principal; return { body: { jsonrpc: '2.0', id: input.request.id, result: { ok: true } } }; }
+  });
+  const status = await host.start();
+  const initialize = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } });
+  const challenged = await request(status.port, { headers: { 'x-kaoyan-client-id': 'test-client', 'x-kaoyan-launcher-version': '1.0.0' } }, initialize);
+  assert.equal(challenged.status, 401);
+  assert.deepEqual(JSON.parse(challenged.body).error.data.challenge, challenge);
+  assert.equal(JSON.stringify(challenged.body).includes('private'), false);
+
+  const accepted = await request(status.port, { headers: { 'x-kaoyan-challenge-id': challenge.challengeId, 'x-kaoyan-challenge-signature': 'A'.repeat(64) } }, initialize);
+  assert.equal(accepted.status, 200);
+  const sessionHeaders = { 'mcp-session-id': accepted.headers['mcp-session-id'], 'mcp-protocol-version': '2025-11-25' };
+  assert.equal((await request(status.port, { headers: sessionHeaders }, JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }))).status, 202);
+  const called = await request(status.port, { headers: sessionHeaders }, JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }));
+  assert.equal(called.status, 200);
+  assert.equal(seenPrincipal.clientId, 'test-client');
   await host.stop();
 });
 

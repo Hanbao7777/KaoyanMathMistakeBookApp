@@ -14,8 +14,10 @@ import {
 import {
   canonicalizeJson,
   hashCanonicalJson,
+  validateGatewayManagementCommand,
   validateOperationPolicyOverride
 } from '../../shared/agent/v1/gatewaySchemas';
+import type { PublicKeyBindingInput, SafeClientKeyBindingResult } from '../../shared/agent/v1/gatewayContracts';
 import { resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
 import {
   assertDatabaseMutationScope,
@@ -53,6 +55,14 @@ export interface RegisteredAgentSession {
   readonly credentialFingerprint: string;
   readonly expiresAt: string;
   readonly terminatedAt?: string;
+}
+
+export interface ActiveClientKeyBinding {
+  readonly clientId: string;
+  readonly publicKey: string;
+  readonly publicKeyFingerprint: string;
+  readonly keyGeneration: number;
+  readonly registryGeneration: number;
 }
 
 export interface AgentClientSummary {
@@ -313,6 +323,71 @@ export class ClientRegistry {
     });
   }
 
+  registerPublicKeyInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    binding: PublicKeyBindingInput,
+    rotation: boolean
+  ): DatabaseMutationResult<SafeClientKeyBindingResult> {
+    assertDatabaseMutationScope(scope, database);
+    validateGatewayManagementCommand({ type: rotation ? 'agent.clients.rotate_key' : 'agent.clients.register_key', payload: binding });
+    const timestamp = this.timestamp();
+    const existingClient = one(database, 'SELECT * FROM agent_clients WHERE client_id = ?', [binding.clientId]);
+    const existingKey = one(database, 'SELECT * FROM agent_client_keys WHERE client_id = ?', [binding.clientId]);
+    if (rotation !== !!existingKey) throw new AgentError('CLIENT_REVOKED');
+    if (!rotation) {
+      if (existingClient || binding.expectedRegistryGeneration !== 0) throw new AgentError('IDEMPOTENCY_CONFLICT');
+      const duplicate = one(database, 'SELECT client_id FROM agent_client_keys WHERE public_key_fingerprint = ?', [binding.publicKeyFingerprint]);
+      if (duplicate) throw new AgentError('IDEMPOTENCY_CONFLICT');
+      database.run(`INSERT INTO agent_clients (
+        client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'observer', ?, ?)`, [
+        binding.clientId, binding.clientId, binding.clientId, binding.publicKeyFingerprint, timestamp, timestamp
+      ]);
+      database.run('INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)', [
+        binding.clientId, 'system.read', this.catalog.version, timestamp
+      ]);
+      database.run(`INSERT INTO agent_client_keys (
+        client_id, public_key_format, public_key, public_key_fingerprint, signature_algorithm,
+        key_generation, registry_generation, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)`, [
+        binding.clientId, binding.publicKeyFormat, binding.publicKey, binding.publicKeyFingerprint,
+        binding.signatureAlgorithm, timestamp, timestamp
+      ]);
+      return { changed: true, value: this.safeKeyResult(binding, 1, 1, 'registered') };
+    }
+    if (!existingClient || existingClient.revoked_at !== null || Number(existingKey!.registry_generation) !== binding.expectedRegistryGeneration) {
+      throw new AgentError('IDEMPOTENCY_CONFLICT');
+    }
+    const duplicate = one(database, 'SELECT client_id FROM agent_client_keys WHERE public_key_fingerprint = ? AND client_id <> ?', [binding.publicKeyFingerprint, binding.clientId]);
+    if (duplicate || existingKey!.public_key_fingerprint === binding.publicKeyFingerprint) throw new AgentError('IDEMPOTENCY_CONFLICT');
+    const keyGeneration = Number(existingKey!.key_generation) + 1;
+    const registryGeneration = Number(existingKey!.registry_generation) + 1;
+    database.run(`UPDATE agent_client_keys SET public_key = ?, public_key_fingerprint = ?, key_generation = ?, registry_generation = ?, updated_at = ?
+      WHERE client_id = ? AND registry_generation = ?`, [
+      binding.publicKey, binding.publicKeyFingerprint, keyGeneration, registryGeneration, timestamp, binding.clientId, binding.expectedRegistryGeneration
+    ]);
+    if (database.getRowsModified() !== 1) throw new AgentError('IDEMPOTENCY_CONFLICT');
+    database.run('UPDATE agent_clients SET credential_fingerprint = ?, updated_at = ? WHERE client_id = ?', [binding.publicKeyFingerprint, timestamp, binding.clientId]);
+    database.run('UPDATE agent_sessions SET terminated_at = ? WHERE client_id = ? AND terminated_at IS NULL', [timestamp, binding.clientId]);
+    return { changed: true, value: this.safeKeyResult(binding, keyGeneration, registryGeneration, 'rotated') };
+  }
+
+  async getActivePublicKey(clientId: string): Promise<ActiveClientKeyBinding> {
+    assertSafeIdentifier(clientId, 'clientId');
+    return this.read(`agent-client-key-${clientId}`, (database) => {
+      const row = one(database, `SELECT k.* FROM agent_client_keys k JOIN agent_clients c ON c.client_id = k.client_id
+        WHERE k.client_id = ? AND c.revoked_at IS NULL`, [clientId]);
+      if (!row) throw new AgentError('CLIENT_REVOKED');
+      return Object.freeze({ clientId, publicKey: String(row.public_key), publicKeyFingerprint: String(row.public_key_fingerprint), keyGeneration: Number(row.key_generation), registryGeneration: Number(row.registry_generation) });
+    });
+  }
+
+  async hasActivePublicKeys(): Promise<boolean> {
+    return this.read('agent-client-key-ready', (database) => !!one(database, `SELECT k.client_id FROM agent_client_keys k
+      JOIN agent_clients c ON c.client_id = k.client_id WHERE c.revoked_at IS NULL LIMIT 1`));
+  }
+
   async updateClientAccess(clientId: string, scopesInput: readonly AgentScope[], trust: TrustProfile): Promise<void> {
     await this.write(`agent-client-access-${clientId}`, (database, scope) => this.updateClientAccessInTransaction(database, scope, clientId, scopesInput, trust));
   }
@@ -516,5 +591,13 @@ export class ClientRegistry {
     const value = this.now();
     canonicalTimestampMs(value, 'now');
     return value;
+  }
+
+  private safeKeyResult(binding: PublicKeyBindingInput, keyGeneration: number, registryGeneration: number, status: 'registered' | 'rotated'): SafeClientKeyBindingResult {
+    return Object.freeze({
+      apiVersion: agentApiVersion, kind: 'client-key-binding', clientId: binding.clientId,
+      publicKeyFormat: binding.publicKeyFormat, publicKeyFingerprint: binding.publicKeyFingerprint,
+      signatureAlgorithm: binding.signatureAlgorithm, keyGeneration, registryGeneration, status
+    });
   }
 }

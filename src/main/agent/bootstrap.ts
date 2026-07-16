@@ -13,6 +13,7 @@ import {
   type ClientAuthenticator,
   type GatewayWorkflowCommand,
   type GatewayWorkflowQuery,
+  type GatewayManagementCommand,
   type JsonObject,
   type JsonValue,
   type OperationDescriptor,
@@ -27,6 +28,8 @@ import {
   assertCatalogIdentity,
   hashCanonicalJson,
   validateR4Grant,
+  validateGatewayManagementCommand,
+  validateGatewayManagementQuery,
   validateGatewayWorkflowCommand,
   validateGatewayWorkflowQuery
 } from '../../shared/agent/v1/gatewaySchemas';
@@ -57,6 +60,7 @@ import { AuditLedger } from './auditLedger';
 import {
   assertIssuedAgentPrincipal,
   createAuthenticationAdapters,
+  createRegistryPrincipalAuthenticator,
   type RawCredentialVerifier,
   type VerifiedCredentialBindings
 } from './clientAuthenticator';
@@ -66,6 +70,7 @@ import { IdempotencyStore, type ReceiptRecoveryEvidence } from './idempotencySto
 import { PaginationService, redactSensitiveValue } from './pagination';
 import { PolicyEngine } from './policyEngine';
 import type { RendererIdentityAdapter } from './rendererAdapter';
+import { StdioPublicKeyAuthenticator } from '../mcp/auth/stdioAuthenticator';
 import { WorkflowStore, type ChangeSetApplyBinding, type WorkflowBinding } from './workflows';
 
 export interface AgentB3BootstrapOptions {
@@ -107,6 +112,8 @@ export interface AgentGatewayComposition {
   readonly gateway: AgentGateway;
   readonly authenticator: ClientAuthenticator;
   readonly renderer: RendererIdentityAdapter;
+  readonly stdioAuthenticator: StdioPublicKeyAuthenticator;
+  readonly externalControlEnabled: () => Promise<boolean>;
 }
 
 function normalizedAffectedEntities(payload: JsonObject): readonly EntityRef[] {
@@ -417,11 +424,13 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   const managementMutation = (
     database: Database,
     scope: DatabaseMutationScope,
-    command: GatewayWorkflowCommand,
+    command: GatewayWorkflowCommand | GatewayManagementCommand,
     principal: AgentPrincipal,
     decision: PolicyDecision
   ): DatabaseMutationResult<unknown> => {
     switch (command.type) {
+      case 'agent.clients.register_key': return registry.registerPublicKeyInTransaction(database, scope, command.payload, false);
+      case 'agent.clients.rotate_key': return registry.registerPublicKeyInTransaction(database, scope, command.payload, true);
       case 'agent.control.set_enabled': return controlValue(registry.setExternalControlEnabledInTransaction(database, scope, command.payload.enabled), { enabled: command.payload.enabled });
       case 'agent.clients.update_access': return controlValue(registry.updateClientAccessInTransaction(database, scope, command.payload.clientId, command.payload.scopes, command.payload.trust), { clientId: command.payload.clientId, scopes: command.payload.scopes, trust: command.payload.trust });
       case 'agent.clients.revoke': return controlValue(registry.revokeClientInTransaction(database, scope, command.payload.clientId), { clientId: command.payload.clientId, revoked: true });
@@ -510,11 +519,19 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       localApprovedChangeSet: input.localApprovedChangeSet
     }),
     validateCommand(envelope, descriptor) {
-      if (descriptor.domain === 'management') validateGatewayWorkflowCommand({ type: envelope.operation, payload: envelope.payload });
+      if (descriptor.domain === 'management') {
+        if ((['agent.clients.register_key', 'agent.clients.rotate_key'] as readonly string[]).includes(envelope.operation)) {
+          validateGatewayManagementCommand({ type: envelope.operation as GatewayManagementCommand['type'], payload: envelope.payload });
+        } else validateGatewayWorkflowCommand({ type: envelope.operation as GatewayWorkflowCommand['type'], payload: envelope.payload });
+      }
       else validateBusinessCommand(envelope);
     },
     validateQuery(envelope, descriptor) {
-      if (descriptor.domain === 'management') validateGatewayWorkflowQuery({ type: envelope.operation, payload: envelope.payload });
+      if (descriptor.domain === 'management') {
+        if (envelope.operation === 'agent.receipts.get_status') {
+          validateGatewayManagementQuery({ type: envelope.operation, payload: envelope.payload });
+        } else validateGatewayWorkflowQuery({ type: envelope.operation as GatewayWorkflowQuery['type'], payload: envelope.payload });
+      }
       else validateBusinessQuery(envelope);
     },
     admit: (request) => idempotency.admit(request),
@@ -540,7 +557,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       return options.executeBusinessCommand ? options.executeBusinessCommand(command, context, dispatch) : dispatch();
     },
     async dispatchManagement(envelope, principal, decision, prepared) {
-      const command = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowCommand;
+      const command = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowCommand | GatewayManagementCommand;
       const result = await executeControlWrite({
         requestId: `agent-control-command-${envelope.requestId}`,
         execute: (database, scope) => {
@@ -638,7 +655,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         }));
       },
       async queryManagement(envelope, principal) {
-        const query = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowQuery;
+        const query = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowQuery | import('../../shared/agent/v1/gatewayContracts').GatewayManagementQuery;
         let value: unknown;
         switch (query.type) {
           case 'agent.status.get': value = Object.freeze({ settings: await registry.getSettings(), runtimeState: options.coordinator.state }); break;
@@ -705,6 +722,15 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
           case 'agent.policy.get': value = await registry.getSettings(); break;
           case 'agent.catalog.get': value = operationCatalog; break;
           case 'agent.privacy.get': value = Object.freeze({ revision: (await registry.getSettings()).privacyRevision, externalModelDataDisclosureRequired: true }); break;
+          case 'agent.receipts.get_status': {
+            if (!principal.renderer && query.payload.clientId !== principal.clientId) throw new AgentError('SCOPE_DENIED');
+            const found = await idempotency.get(query.payload.clientId, query.payload.requestId);
+            if (!found) throw new AgentError('HANDLER_NOT_FOUND');
+            value = Object.freeze({ apiVersion: agentApiVersion, kind: 'receipt-status', clientId: query.payload.clientId,
+              requestId: query.payload.requestId, status: found.receipt.status, receipt: found.receipt,
+              ...(found.outcome ? { terminal: 'changed' in found.outcome ? { kind: 'command-result', result: found.outcome } : { kind: 'serialized-agent-error', error: found.outcome } } : {}) });
+            break;
+          }
         }
         return immutableQuery(value ?? null, options.coordinator.currentVersion());
       }
@@ -738,5 +764,12 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     randomUUID: uuid
   });
 
-  return Object.freeze({ gateway, authenticator, renderer: authentication.renderer });
+  const stdioAuthenticator = new StdioPublicKeyAuthenticator({
+    registry,
+    authenticatePrincipal: createRegistryPrincipalAuthenticator(registry),
+    appInstanceId: options.appInstanceId,
+    now: () => new Date(now()),
+    randomUUID: uuid
+  });
+  return Object.freeze({ gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled });
 }

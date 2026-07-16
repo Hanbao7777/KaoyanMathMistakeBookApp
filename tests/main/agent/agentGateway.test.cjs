@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const { constants, generateKeyPairSync, sign } = require('node:crypto');
 const initSqlJs = require('sql.js');
 const environment = require('../helpers/controlPlaneTestEnv.cjs');
 
@@ -15,6 +16,7 @@ const { WorkflowStore } = environment.requireMain('agent/workflows.js');
 const { IdempotencyStore } = environment.requireMain('agent/idempotencyStore.js');
 const { ExecutionReceipts } = environment.requireMain('agent/executionReceipts.js');
 const { ClientRegistry } = environment.requireMain('agent/clientRegistry.js');
+const stdioAuth = environment.requireMain('mcp/auth/stdioAuthenticator.js');
 const atomic = environment.requireMain('persistence/atomicPersist.js');
 const candidates = environment.requireMain('persistence/databaseCandidate.js');
 const persistenceBootstrap = environment.requireMain('persistence/databaseBootstrap.js');
@@ -703,4 +705,58 @@ test('stale change-set base is rejected before admission or business dispatch', 
   assert.equal(outcome.error.code, 'APPROVAL_INVALID');
   assert.equal(current.executions(), 0);
   assert.equal((await workflows.getChangeSet(changeSetId)).status, 'approved');
+});
+
+test('public-key registration and rotation are durable Gateway mutations and invalidate old stdio sessions', async () => {
+  const current = await realComposition({ scopes: ['clients.manage', 'system.read'] });
+  const firstPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const firstPublicKey = firstPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const firstBinding = {
+    clientId: 'stdio-client', publicKeyFormat: 'spki-der-base64url', publicKey: firstPublicKey,
+    publicKeyFingerprint: agent.publicKeyFingerprintForSpki(firstPublicKey), signatureAlgorithm: 'rsa-pss-sha256',
+    expectedRegistryGeneration: 0
+  };
+  const registerEnvelope = managementCommand('agent.clients.register_key', firstBinding);
+  const registered = await current.gateway.execute(registerEnvelope, current.principal);
+  assert.equal(registered.kind, 'completed');
+  assert.deepEqual(
+    { status: registered.result.value.status, keyGeneration: registered.result.value.keyGeneration, registryGeneration: registered.result.value.registryGeneration },
+    { status: 'registered', keyGeneration: 1, registryGeneration: 1 }
+  );
+  assert.equal(await current.stdioAuthenticator.ready(), true);
+  const duplicate = await current.gateway.execute(managementCommand('agent.clients.register_key', { ...firstBinding, clientId: 'stdio-client-two' }), current.principal);
+  assert.equal(duplicate.error.code, 'IDEMPOTENCY_CONFLICT');
+  const receipt = await current.gateway.query(managementQuery('agent.receipts.get_status', {
+    clientId: current.principal.clientId, requestId: registerEnvelope.requestId
+  }), current.principal);
+  assert.equal(receipt.kind, 'completed');
+  assert.equal(receipt.result.value.status, 'completed');
+  assert.equal(receipt.result.value.terminal.kind, 'command-result');
+
+  const challenge = await current.stdioAuthenticator.issueChallenge({ clientId: 'stdio-client', mcpProtocolVersion: '2025-11-25', launcherVersion: '1.0.0' });
+  const signature = sign('sha256', stdioAuth.canonicalStdioChallengeBytes(challenge), {
+    key: firstPair.privateKey, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32
+  }).toString('base64url');
+  const admission = await current.stdioAuthenticator.admitInitialize({
+    protocolVersion: '2025-11-25',
+    headers: { 'x-kaoyan-challenge-id': challenge.challengeId, 'x-kaoyan-challenge-signature': signature }
+  });
+  assert.ok(admission);
+  assert.equal((await current.stdioAuthenticator.validateSession(admission.sessionId, '2025-11-25')).clientId, 'stdio-client');
+
+  const secondPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const secondPublicKey = secondPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const rotated = await current.gateway.execute(managementCommand('agent.clients.rotate_key', {
+    ...firstBinding, publicKey: secondPublicKey, publicKeyFingerprint: agent.publicKeyFingerprintForSpki(secondPublicKey), expectedRegistryGeneration: 1
+  }), current.principal);
+  assert.equal(rotated.kind, 'completed');
+  assert.deepEqual(
+    { status: rotated.result.value.status, keyGeneration: rotated.result.value.keyGeneration, registryGeneration: rotated.result.value.registryGeneration },
+    { status: 'rotated', keyGeneration: 2, registryGeneration: 2 }
+  );
+  assert.equal(await current.stdioAuthenticator.validateSession(admission.sessionId, '2025-11-25'), null);
+  const stale = await current.gateway.execute(managementCommand('agent.clients.rotate_key', {
+    ...firstBinding, publicKey: firstPublicKey, publicKeyFingerprint: agent.publicKeyFingerprintForSpki(firstPublicKey), expectedRegistryGeneration: 1
+  }), current.principal);
+  assert.equal(stale.error.code, 'IDEMPOTENCY_CONFLICT');
 });

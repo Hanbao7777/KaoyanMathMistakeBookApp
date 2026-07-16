@@ -304,7 +304,7 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'coordinator invocation scope': 29,
     'coordinator transaction/revision primitive': 24,
     'coordinator-scoped agent durability collaborator': 25,
-    'coordinator-scoped registry mutation seam': 8,
+    'coordinator-scoped registry mutation seam': 14,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
     'database bootstrap/migration schema': 2,

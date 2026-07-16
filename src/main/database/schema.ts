@@ -76,6 +76,23 @@ CREATE TABLE IF NOT EXISTS agent_client_scopes (
   FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
 );
 
+-- The App stores only the public SPKI binding. The launcher owns the CNG private key.
+CREATE TABLE IF NOT EXISTS agent_client_keys (
+  client_id TEXT PRIMARY KEY,
+  public_key_format TEXT NOT NULL CHECK (public_key_format = 'spki-der-base64url'),
+  public_key TEXT NOT NULL CHECK (length(public_key) BETWEEN 64 AND 16384),
+  public_key_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(public_key_fingerprint, 1, 10) = 'sha256-v1:' AND length(public_key_fingerprint) = 74
+    AND substr(public_key_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  signature_algorithm TEXT NOT NULL CHECK (signature_algorithm = 'rsa-pss-sha256'),
+  key_generation INTEGER NOT NULL CHECK (typeof(key_generation) = 'integer' AND key_generation >= 1),
+  registry_generation INTEGER NOT NULL CHECK (typeof(registry_generation) = 'integer' AND registry_generation >= 1),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z'),
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS agent_sessions (
   session_id TEXT PRIMARY KEY CHECK (length(trim(session_id)) > 0),
   client_id TEXT NOT NULL,
@@ -97,6 +114,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 
 CREATE INDEX IF NOT EXISTS idx_agent_clients_revoked_active ON agent_clients(revoked_at, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_agent_client_scopes_scope ON agent_client_scopes(scope, client_id);
+CREATE INDEX IF NOT EXISTS idx_agent_client_keys_fingerprint ON agent_client_keys(public_key_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_client_expiry ON agent_sessions(client_id, expires_at);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_instance_active ON agent_sessions(app_instance_id, terminated_at);
 `;

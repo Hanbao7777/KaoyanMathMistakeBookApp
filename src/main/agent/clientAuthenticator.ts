@@ -25,6 +25,16 @@ export function assertIssuedAgentPrincipal(principal: AgentPrincipal): void {
   }
 }
 
+/** Authenticates live registry bindings before issuing an opaque principal. */
+export function createRegistryPrincipalAuthenticator(registry: ClientRegistry): (
+  credentialFingerprint: string,
+  sessionFingerprint: string
+) => Promise<AgentPrincipal> {
+  return async (credentialFingerprint, sessionFingerprint) => issuePrincipal(
+    await registry.authenticate(credentialFingerprint, sessionFingerprint)
+  );
+}
+
 export interface VerifiedCredentialBindings {
   readonly credentialFingerprint: string;
   readonly sessionFingerprint: string;

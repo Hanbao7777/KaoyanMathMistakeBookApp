@@ -6,6 +6,7 @@ import { app, BrowserWindow, dialog, ipcMain, net, Notification, protocol } from
 import {
   assertDatabaseReadyForRuntimeIpc,
   getQuestionsApplication,
+  getAgentControlPlane,
   getReadOnlyDatabase,
   initializeDatabase,
   resetDatabaseConnection,
@@ -398,12 +399,12 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
   },
   registerRuntimeIpc: registerIpc,
   async startMcpHost() {
-    // C3 supplies the authenticated admission and enablement adapter. Until then the
-    // App must remain locally usable without opening an external listener.
+    const controlPlane = await getAgentControlPlane();
     const host = new McpLoopbackHost({
       discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
-      externalControlEnabled: () => false,
-      authenticatedReady: () => false
+      externalControlEnabled: controlPlane.externalControlEnabled,
+      authenticatedReady: () => controlPlane.stdioAuthenticator.ready(),
+      authenticator: controlPlane.stdioAuthenticator
     });
     mcpLoopbackHost = host;
     await host.start();

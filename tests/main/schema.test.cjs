@@ -114,6 +114,11 @@ test('initializeDatabase creates constrained agent identity indexes', async () =
 
   assert.equal(indexExists(db, 'idx_agent_clients_revoked_active'), true);
   assert.equal(indexExists(db, 'idx_agent_client_scopes_scope'), true);
+  assert.equal(indexExists(db, 'idx_agent_client_keys_fingerprint'), true);
+  assert.deepEqual(tableColumns(db, 'agent_client_keys'), [
+    'client_id', 'public_key_format', 'public_key', 'public_key_fingerprint', 'signature_algorithm',
+    'key_generation', 'registry_generation', 'created_at', 'updated_at'
+  ]);
   assert.equal(indexExists(db, 'idx_agent_sessions_client_expiry'), true);
   assert.equal(indexExists(db, 'idx_agent_sessions_instance_active'), true);
   assert.equal(indexExists(db, 'idx_agent_idempotency_status_updated'), true);
