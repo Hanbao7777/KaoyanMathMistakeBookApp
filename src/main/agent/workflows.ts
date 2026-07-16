@@ -27,7 +27,7 @@ import {
   validateR4Grant,
   validateR4Reservation
 } from '../../shared/agent/v1/gatewaySchemas';
-import { assertDatabaseMutationScope, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
+import { assertDatabaseMutationScope, type DatabaseMutationResult, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
 import { AuditLedger, type AgentControlWriteExecutor } from './auditLedger';
 
 type SqlParameter = string | number | null | Uint8Array;
@@ -63,6 +63,10 @@ export interface WorkflowBinding {
   readonly catalog: CatalogIdentity;
 }
 
+export interface ChangeSetApplyBinding extends WorkflowBinding {
+  readonly changeSetId: string;
+}
+
 const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const hashPattern = /^sha256-v1:[0-9a-f]{64}$/;
 const safeEntityType = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
@@ -73,6 +77,13 @@ const changeSetTransitions = {
   applied: ['rolled_back'],
   rejected: [], expired: [], rolled_back: []
 } satisfies Readonly<Record<ChangeSetStatus, readonly ChangeSetStatus[]>>;
+
+function windowParts(value: string | undefined): readonly [string, string] | undefined {
+  if (value === undefined) return undefined;
+  const separator = value.indexOf('\0');
+  if (separator < 1 || separator === value.length - 1) throw new AgentError('CURSOR_INVALID');
+  return [value.slice(0, separator), value.slice(separator + 1)];
+}
 
 function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
   const statement = database.prepare(sql);
@@ -256,28 +267,30 @@ export class WorkflowStore {
   }
 
   async createR4Grant(grant: R4Grant): Promise<R4Grant> {
+    const result = await this.executeControlWrite({
+      requestId: `agent-r4-create-${grant.grantId}`,
+      execute: (database, scope) => this.createR4GrantInTransaction(database, scope, grant)
+    });
+    return result.value;
+  }
+
+  createR4GrantInTransaction(database: Database, scope: DatabaseMutationScope, grant: R4Grant): DatabaseMutationResult<R4Grant> {
+    assertDatabaseMutationScope(scope, database);
     validateR4Grant(grant);
     if (grant.status !== 'active' || grant.consumedAt || grant.revokedAt) throw new AgentError('R4_GRANT_INVALID');
     if (Date.parse(grant.expiresAt) - Date.parse(grant.issuedAt) > gatewayMaxR4GrantLifetimeMs) throw new AgentError('R4_GRANT_INVALID');
-    const result = await this.executeControlWrite({
-      requestId: `agent-r4-create-${grant.grantId}`,
-      execute: (database, scope) => {
-        assertDatabaseMutationScope(scope, database);
-        database.run(`INSERT INTO agent_r4_grants (
-          grant_id, client_id, operation, payload_hash, target_hash, catalog_version, catalog_hash,
-          recovery, max_affected_entities, max_uses, status, issued_at, expires_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`, [
-          grant.grantId, grant.clientId, grant.operation, grant.payloadHash, grant.targetHash,
-          grant.catalog.version, grant.catalog.hash, grant.recovery, grant.maxAffectedEntities, grant.issuedAt, grant.expiresAt
-        ]);
-        this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-          clientId: grant.clientId, operation: 'agent.r4_grants.create', risk: 'R4',
-          summary: Object.freeze({ action: 'r4_grant_created', grantId: grant.grantId, boundOperation: grant.operation })
-        }));
-        return { changed: true, value: grantFromRow(one(database, 'SELECT * FROM agent_r4_grants WHERE grant_id = ?', [grant.grantId])!) };
-      }
-    });
-    return result.value;
+    database.run(`INSERT INTO agent_r4_grants (
+      grant_id, client_id, operation, payload_hash, target_hash, catalog_version, catalog_hash,
+      recovery, max_affected_entities, max_uses, status, issued_at, expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?)`, [
+      grant.grantId, grant.clientId, grant.operation, grant.payloadHash, grant.targetHash,
+      grant.catalog.version, grant.catalog.hash, grant.recovery, grant.maxAffectedEntities, grant.issuedAt, grant.expiresAt
+    ]);
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId: grant.clientId, operation: 'agent.r4_grants.create', risk: 'R4',
+      summary: Object.freeze({ action: 'r4_grant_created', grantId: grant.grantId, boundOperation: grant.operation })
+    }));
+    return { changed: true, value: grantFromRow(one(database, 'SELECT * FROM agent_r4_grants WHERE grant_id = ?', [grant.grantId])!) };
   }
 
   async getR4Grant(grantId: string): Promise<R4Grant | undefined> {
@@ -288,13 +301,15 @@ export class WorkflowStore {
     return result.value;
   }
 
-  async listR4Grants(filter: { readonly clientId?: string; readonly status?: R4GrantStatus; readonly limit: number }): Promise<readonly R4Grant[]> {
+  async listR4Grants(filter: { readonly clientId?: string; readonly status?: R4GrantStatus; readonly afterKey?: string; readonly limit: number }): Promise<readonly R4Grant[]> {
     this.assertListLimit(filter.limit);
     const result = await this.executeControlWrite({ requestId: 'agent-r4-list', execute: (database) => {
       const clauses: string[] = [];
       const parameters: SqlParameter[] = [];
       if (filter.clientId) { clauses.push('client_id = ?'); parameters.push(filter.clientId); }
       if (filter.status) { clauses.push('status = ?'); parameters.push(filter.status); }
+      const after = windowParts(filter.afterKey);
+      if (after) { clauses.push('(issued_at > ? OR (issued_at = ? AND grant_id > ?))'); parameters.push(after[0], after[0], after[1]); }
       parameters.push(filter.limit);
       return { changed: false, value: Object.freeze(all(database, `SELECT * FROM agent_r4_grants ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY issued_at, grant_id LIMIT ?`, parameters).map(grantFromRow)) };
     } });
@@ -302,19 +317,20 @@ export class WorkflowStore {
   }
 
   async revokeR4Grant(grantId: string, clientId: string): Promise<void> {
-    const now = this.currentTimestamp();
-    await this.executeControlWrite({ requestId: `agent-r4-revoke-${grantId}`, execute: (database, scope) => {
-      assertDatabaseMutationScope(scope, database);
-      const row = one(database, 'SELECT * FROM agent_r4_grants WHERE grant_id = ?', [grantId]);
-      if (!row || row.client_id !== clientId || row.status === 'consumed') throw new AgentError('R4_GRANT_CONSUMED');
-      if (row.status === 'revoked') return { changed: false, value: undefined };
-      if (row.status === 'reserved') throw new AgentError('R4_GRANT_RESERVED');
-      database.run("UPDATE agent_r4_grants SET status = 'revoked', revoked_at = ? WHERE grant_id = ?", [now, grantId]);
-      this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-        clientId, operation: 'agent.r4_grants.revoke', risk: 'R4', summary: Object.freeze({ action: 'r4_grant_revoked', grantId })
-      }));
-      return { changed: true, value: undefined };
-    } });
+    await this.executeControlWrite({ requestId: `agent-r4-revoke-${grantId}`, execute: (database, scope) => this.revokeR4GrantInTransaction(database, scope, grantId, clientId) });
+  }
+
+  revokeR4GrantInTransaction(database: Database, scope: DatabaseMutationScope, grantId: string, clientId: string): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
+    const row = one(database, 'SELECT * FROM agent_r4_grants WHERE grant_id = ?', [grantId]);
+    if (!row || row.client_id !== clientId || row.status === 'consumed') throw new AgentError('R4_GRANT_CONSUMED');
+    if (row.status === 'revoked') return { changed: false, value: undefined };
+    if (row.status === 'reserved') throw new AgentError('R4_GRANT_RESERVED');
+    database.run("UPDATE agent_r4_grants SET status = 'revoked', revoked_at = ? WHERE grant_id = ?", [this.currentTimestamp(), grantId]);
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId, operation: 'agent.r4_grants.revoke', risk: 'R4', summary: Object.freeze({ action: 'r4_grant_revoked', grantId })
+    }));
+    return { changed: true, value: undefined };
   }
 
   reserveR4GrantInTransaction(database: Database, scope: DatabaseMutationScope, request: R4ReservationRequest): R4Reservation {
@@ -418,13 +434,15 @@ export class WorkflowStore {
     return result.value;
   }
 
-  async listApprovals(filter: { readonly clientId?: string; readonly status?: ApprovalStatus; readonly limit: number }): Promise<readonly ApprovalRecord[]> {
+  async listApprovals(filter: { readonly clientId?: string; readonly status?: ApprovalStatus; readonly afterKey?: string; readonly limit: number }): Promise<readonly ApprovalRecord[]> {
     this.assertListLimit(filter.limit);
     const result = await this.executeControlWrite({ requestId: 'agent-approval-list', execute: (database) => {
       const clauses: string[] = [];
       const parameters: SqlParameter[] = [];
       if (filter.clientId) { clauses.push('client_id = ?'); parameters.push(filter.clientId); }
       if (filter.status) { clauses.push('status = ?'); parameters.push(filter.status); }
+      const after = windowParts(filter.afterKey);
+      if (after) { clauses.push('(created_at > ? OR (created_at = ? AND approval_id > ?))'); parameters.push(after[0], after[0], after[1]); }
       parameters.push(filter.limit);
       return { changed: false, value: Object.freeze(all(database, `SELECT * FROM agent_approvals ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY created_at, approval_id LIMIT ?`, parameters).map(approvalFromRow)) };
     } });
@@ -432,35 +450,50 @@ export class WorkflowStore {
   }
 
   async decideApproval(approvalId: string, status: 'approved' | 'rejected', source: ApprovalSource): Promise<ApprovalRecord> {
-    const now = this.currentTimestamp();
-    const result = await this.executeControlWrite({ requestId: `agent-approval-decide-${approvalId}`, execute: (database, scope) => {
-      assertDatabaseMutationScope(scope, database);
-      const row = one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId]);
-      if (!row || row.status !== 'pending' || String(row.expires_at) <= now) throw new AgentError('APPROVAL_INVALID');
-      database.run('UPDATE agent_approvals SET status = ?, source = ?, decided_at = ? WHERE approval_id = ? AND status = ?', [status, source, now, approvalId, 'pending']);
-      this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-        clientId: String(row.client_id), operation: status === 'approved' ? 'agent.approvals.approve' : 'agent.approvals.reject', risk: row.risk as ApprovalRecord['risk'],
-        summary: Object.freeze({ action: `approval_${status}`, approvalId })
-      }));
-      return { changed: true, value: approvalFromRow(one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId])!) };
-    } });
+    const result = await this.executeControlWrite({ requestId: `agent-approval-decide-${approvalId}`, execute: (database, scope) => this.decideApprovalInTransaction(database, scope, approvalId, status, source) });
     return result.value;
   }
 
-  async consumeApproval(approvalId: string, binding: WorkflowBinding): Promise<ApprovalRecord> {
+  decideApprovalInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    approvalId: string,
+    status: 'approved' | 'rejected',
+    source: ApprovalSource
+  ): DatabaseMutationResult<ApprovalRecord> {
+    assertDatabaseMutationScope(scope, database);
     const now = this.currentTimestamp();
-    const result = await this.executeControlWrite({ requestId: `agent-approval-consume-${approvalId}`, execute: (database, scope) => {
-      assertDatabaseMutationScope(scope, database);
-      const row = one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId]);
-      if (!row || row.status !== 'approved' || String(row.expires_at) <= now) throw new AgentError('APPROVAL_INVALID');
-      assertBinding(row, binding);
-      database.run("UPDATE agent_approvals SET status = 'consumed', consumed_at = ?, decided_at = NULL WHERE approval_id = ? AND status = 'approved'", [now, approvalId]);
-      this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-        clientId: binding.clientId, operation: 'agent.approvals.approve', summary: Object.freeze({ action: 'approval_consumed', approvalId })
-      }));
-      return { changed: true, value: approvalFromRow(one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId])!) };
-    } });
+    const row = one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId]);
+    if (!row || row.status !== 'pending' || String(row.expires_at) <= now) throw new AgentError('APPROVAL_INVALID');
+    database.run('UPDATE agent_approvals SET status = ?, source = ?, decided_at = ? WHERE approval_id = ? AND status = ?', [status, source, now, approvalId, 'pending']);
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId: String(row.client_id), operation: status === 'approved' ? 'agent.approvals.approve' : 'agent.approvals.reject', risk: row.risk as ApprovalRecord['risk'],
+      summary: Object.freeze({ action: `approval_${status}`, approvalId })
+    }));
+    return { changed: true, value: approvalFromRow(one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId])!) };
+  }
+
+  async consumeApproval(approvalId: string, binding: WorkflowBinding): Promise<ApprovalRecord> {
+    const result = await this.executeControlWrite({ requestId: `agent-approval-consume-${approvalId}`, execute: (database, scope) => this.consumeApprovalInTransaction(database, scope, approvalId, binding) });
     return result.value;
+  }
+
+  consumeApprovalInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    approvalId: string,
+    binding: WorkflowBinding
+  ): DatabaseMutationResult<ApprovalRecord> {
+    assertDatabaseMutationScope(scope, database);
+    const now = this.currentTimestamp();
+    const row = one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId]);
+    if (!row || row.status !== 'approved' || String(row.expires_at) <= now) throw new AgentError('APPROVAL_INVALID');
+    assertBinding(row, binding);
+    database.run("UPDATE agent_approvals SET status = 'consumed', consumed_at = ?, decided_at = NULL WHERE approval_id = ? AND status = 'approved'", [now, approvalId]);
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId: binding.clientId, operation: 'agent.approvals.approve', summary: Object.freeze({ action: 'approval_consumed', approvalId })
+    }));
+    return { changed: true, value: approvalFromRow(one(database, 'SELECT * FROM agent_approvals WHERE approval_id = ?', [approvalId])!) };
   }
 
   async createChangeSet(changeSet: ChangeSet): Promise<ChangeSet> {
@@ -504,13 +537,15 @@ export class WorkflowStore {
     return result.value;
   }
 
-  async listChangeSets(filter: { readonly clientId?: string; readonly status?: ChangeSetStatus; readonly limit: number }): Promise<readonly ChangeSet[]> {
+  async listChangeSets(filter: { readonly clientId?: string; readonly status?: ChangeSetStatus; readonly afterKey?: string; readonly limit: number }): Promise<readonly ChangeSet[]> {
     this.assertListLimit(filter.limit);
     const result = await this.executeControlWrite({ requestId: 'agent-changeset-list', execute: (database) => {
       const clauses: string[] = [];
       const parameters: SqlParameter[] = [];
       if (filter.clientId) { clauses.push('client_id = ?'); parameters.push(filter.clientId); }
       if (filter.status) { clauses.push('status = ?'); parameters.push(filter.status); }
+      const after = windowParts(filter.afterKey);
+      if (after) { clauses.push('(created_at > ? OR (created_at = ? AND change_set_id > ?))'); parameters.push(after[0], after[0], after[1]); }
       parameters.push(filter.limit);
       const rows = all(database, `SELECT * FROM agent_changesets ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY created_at, change_set_id LIMIT ?`, parameters);
       return { changed: false, value: Object.freeze(rows.map((row) => this.readChangeSet(database, String(row.change_set_id))!)) };
@@ -519,28 +554,64 @@ export class WorkflowStore {
   }
 
   async transitionChangeSet(changeSetId: string, nextStatus: ChangeSetStatus, binding?: WorkflowBinding): Promise<ChangeSet> {
-    const now = this.currentTimestamp();
-    const result = await this.executeControlWrite({ requestId: `agent-changeset-transition-${changeSetId}`, execute: (database, scope) => {
-      assertDatabaseMutationScope(scope, database);
-      const row = one(database, 'SELECT * FROM agent_changesets WHERE change_set_id = ?', [changeSetId]);
-      if (!row || !(changeSetTransitions[row.status as ChangeSetStatus] as readonly ChangeSetStatus[] | undefined)?.includes(nextStatus)) {
-        throw new AgentError('APPROVAL_INVALID');
-      }
-      if (String(row.expires_at) <= now && nextStatus !== 'expired') throw new AgentError('APPROVAL_INVALID');
-      if (nextStatus === 'applied') {
-        if (!binding) throw new AgentError('APPROVAL_INVALID');
-        assertBinding(row, binding);
-      }
-      database.run('UPDATE agent_changesets SET status = ?, applied_at = ? WHERE change_set_id = ? AND status = ?', [
-        nextStatus, nextStatus === 'applied' ? now : null, changeSetId, String(row.status)
-      ]);
-      this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-        clientId: String(row.client_id), operation: 'agent.changesets.apply', risk: row.risk as ChangeSet['risk'],
-        summary: Object.freeze({ action: `changeset_${nextStatus}`, changeSetId })
-      }));
-      return { changed: true, value: this.readChangeSet(database, changeSetId)! };
-    } });
+    if (nextStatus === 'applied') {
+      if (!binding) throw new AgentError('APPROVAL_INVALID');
+      const result = await this.executeControlWrite({ requestId: `agent-changeset-transition-${changeSetId}`, execute: (database, scope) =>
+        this.applyChangeSetInTransaction(database, scope, { ...binding, changeSetId }) });
+      return result.value;
+    }
+    const result = await this.executeControlWrite({ requestId: `agent-changeset-transition-${changeSetId}`, execute: (database, scope) =>
+      this.transitionChangeSetInTransaction(database, scope, changeSetId, nextStatus) });
     return result.value;
+  }
+
+  transitionChangeSetInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    changeSetId: string,
+    nextStatus: Exclude<ChangeSetStatus, 'applied'>
+  ): DatabaseMutationResult<ChangeSet> {
+    assertDatabaseMutationScope(scope, database);
+    const now = this.currentTimestamp();
+    const row = one(database, 'SELECT * FROM agent_changesets WHERE change_set_id = ?', [changeSetId]);
+    if (!row || !(changeSetTransitions[row.status as ChangeSetStatus] as readonly ChangeSetStatus[] | undefined)?.includes(nextStatus)) {
+      throw new AgentError('APPROVAL_INVALID');
+    }
+    if (String(row.expires_at) <= now && nextStatus !== 'expired') throw new AgentError('APPROVAL_INVALID');
+    database.run('UPDATE agent_changesets SET status = ?, applied_at = NULL WHERE change_set_id = ? AND status = ?', [
+      nextStatus, changeSetId, String(row.status)
+    ]);
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId: String(row.client_id), operation: 'agent.changesets.apply', risk: row.risk as ChangeSet['risk'],
+      summary: Object.freeze({ action: `changeset_${nextStatus}`, changeSetId })
+    }));
+    return { changed: true, value: this.readChangeSet(database, changeSetId)! };
+  }
+
+  applyChangeSetInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    binding: ChangeSetApplyBinding
+  ): DatabaseMutationResult<ChangeSet> {
+    assertDatabaseMutationScope(scope, database);
+    const now = this.currentTimestamp();
+    const row = one(database, 'SELECT * FROM agent_changesets WHERE change_set_id = ?', [binding.changeSetId]);
+    if (!row || row.status !== 'approved' || String(row.expires_at) <= now) throw new AgentError('APPROVAL_INVALID');
+    const changeSet = this.readChangeSet(database, binding.changeSetId);
+    if (
+      !changeSet || changeSet.clientId !== binding.clientId || changeSet.operations.length !== 1 ||
+      changeSet.catalog.version !== binding.catalog.version || !equalHash(changeSet.catalog.hash, binding.catalog.hash) ||
+      changeSet.baseVersion.dataEpoch !== binding.baseVersion.dataEpoch || changeSet.baseVersion.dataRevision !== binding.baseVersion.dataRevision ||
+      !equalHash(changeSet.affectedSetHash, binding.affectedSetHash) ||
+      changeSet.operations[0].operation !== binding.operation || !equalHash(changeSet.operations[0].payloadHash, binding.payloadHash)
+    ) throw new AgentError('APPROVAL_INVALID');
+    database.run("UPDATE agent_changesets SET status = 'applied', applied_at = ? WHERE change_set_id = ? AND status = 'approved'", [now, binding.changeSetId]);
+    if (database.getRowsModified() !== 1) throw new AgentError('APPROVAL_INVALID');
+    this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
+      clientId: binding.clientId, operation: 'agent.changesets.apply', risk: changeSet.risk,
+      summary: Object.freeze({ action: 'changeset_applied', changeSetId: binding.changeSetId, plannedOperation: binding.operation })
+    }));
+    return { changed: true, value: this.readChangeSet(database, binding.changeSetId)! };
   }
 
   private readChangeSet(database: Database, changeSetId: string): ChangeSet | undefined {
@@ -557,7 +628,7 @@ export class WorkflowStore {
   }
 
   private assertListLimit(limit: number): void {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new AgentError('VALIDATION_ERROR', { field: 'limit' });
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 201) throw new AgentError('VALIDATION_ERROR', { field: 'limit' });
   }
 
   private currentTimestamp(): string {

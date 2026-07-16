@@ -227,6 +227,8 @@ function scanTransactionsAndMutators() {
       else if (name === 'src/main/application/queryBus.ts' && scopeName(source, match.index) === 'createReadOnlyDatabaseFacade') classification = 'validated read-only query facade';
       else if (name === 'src/main/agent/clientRegistry.ts' && ['one', 'all'].includes(scopeName(source, match.index))
         && isProvenReadOnlyBody(enclosingFunctionBody(source, match.index))) classification = 'control registry read helper';
+      else if (name === 'src/main/agent/clientRegistry.ts' && scopeName(source, match.index) === 'ClientRegistry'
+        && /assertDatabaseMutationScope\(/.test(source)) classification = 'coordinator-scoped registry mutation seam';
       else if (['src/main/services/importBatchService.ts', 'src/main/services/knowledgeMapService.ts', 'src/main/services/questionBankService.ts'].includes(name)
         && scopeName(source, match.index) === 'mutateSql') classification = 'scope-asserting mutation helper';
       else if (/\b(?:operationJournal|journal)\.prepare\s*\(/.test(source.slice(Math.max(0, match.index - 30), match.index + 9))) continue;
@@ -271,7 +273,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 224,
+    line: 231,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -297,10 +299,11 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'control ledger read helper': 7,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
-    'coordinator control invocation scope': 15,
+    'coordinator control invocation scope': 10,
     'coordinator invocation scope': 29,
     'coordinator transaction/revision primitive': 24,
-    'coordinator-scoped agent durability collaborator': 24,
+    'coordinator-scoped agent durability collaborator': 25,
+    'coordinator-scoped registry mutation seam': 5,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
     'database bootstrap/migration schema': 2,

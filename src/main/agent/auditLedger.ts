@@ -22,7 +22,7 @@ import {
   validateCatalogIdentity,
   validateJsonObject
 } from '../../shared/agent/v1/gatewaySchemas';
-import { assertDatabaseMutationScope, type DatabaseControlWriteRequest, type DatabaseMutationScope, type DatabaseWriteResult } from '../persistence/databaseCoordinator';
+import { assertDatabaseMutationScope, type DatabaseControlWriteRequest, type DatabaseMutationResult, type DatabaseMutationScope, type DatabaseWriteResult } from '../persistence/databaseCoordinator';
 
 type SqlParameter = string | number | null | Uint8Array;
 
@@ -64,6 +64,10 @@ export interface AuditVerificationResult {
 }
 
 export interface AuditExportResult extends AuditVerificationResult {
+  readonly records: readonly AuditRecord[];
+}
+
+export interface AuditExportPage extends AuditVerificationResult {
   readonly records: readonly AuditRecord[];
 }
 
@@ -273,6 +277,13 @@ export class AuditLedger {
     if (!Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 200) {
       throw new AgentError('VALIDATION_ERROR', { field: 'pageSize' });
     }
+    return this.searchWindow(request);
+  }
+
+  async searchWindow(request: AuditSearchRequest): Promise<AuditSearchResult> {
+    if (!Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > 201) {
+      throw new AgentError('VALIDATION_ERROR', { field: 'pageSize' });
+    }
     if (request.afterSequence !== undefined && (!Number.isSafeInteger(request.afterSequence) || request.afterSequence < 0)) {
       throw new AgentError('VALIDATION_ERROR', { field: 'afterSequence' });
     }
@@ -312,6 +323,23 @@ export class AuditLedger {
     return result.value;
   }
 
+  exportVerifiedPageInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    afterSequence: number | undefined,
+    limit: number,
+    clientId?: string
+  ): AuditExportPage {
+    assertDatabaseMutationScope(scope, database);
+    if (afterSequence !== undefined && (!Number.isSafeInteger(afterSequence) || afterSequence < 0)) throw new AgentError('CURSOR_INVALID');
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 201) throw new AgentError('VALIDATION_ERROR', { field: 'limit' });
+    const verification = this.verifyDatabase(database);
+    const records = clientId
+      ? all(database, 'SELECT event_json FROM agent_audit_events WHERE sequence > ? AND client_id = ? ORDER BY sequence LIMIT ?', [afterSequence ?? -1, clientId, limit]).map(parseRecord)
+      : all(database, 'SELECT event_json FROM agent_audit_events WHERE sequence > ? ORDER BY sequence LIMIT ?', [afterSequence ?? -1, limit]).map(parseRecord);
+    return Object.freeze({ ...verification, records: Object.freeze(records) });
+  }
+
   async rotateAndApplyRetention(input: AuditEventInput & { readonly before: string }): Promise<void> {
     if (input.operation !== 'agent.audit.cleanup' || input.risk !== 'R4') throw new AgentError('POLICY_DENIED');
     const before = timestamp(input.before, 'before');
@@ -321,23 +349,34 @@ export class AuditLedger {
     try {
       await this.executeControlWrite({
         requestId: `agent-audit-retention-${input.requestId ?? this.randomUUID()}`,
-        execute: (database, scope) => {
-          this.rotateInTransaction(database, scope, cleanupInput);
-          const candidates = all(database, `SELECT segment_id FROM agent_audit_segments
-            WHERE closed_at IS NOT NULL AND pruned_at IS NULL
-            AND NOT EXISTS (SELECT 1 FROM agent_audit_events e WHERE e.segment_id = agent_audit_segments.segment_id AND e.retain_until > ?)`, [before]);
-          for (const candidate of candidates) {
-            const segmentId = String(candidate.segment_id);
-            database.run('DELETE FROM agent_audit_events WHERE segment_id = ?', [segmentId]);
-            database.run('UPDATE agent_audit_segments SET pruned_at = ? WHERE segment_id = ?', [trustedNow, segmentId]);
-          }
-          return { changed: true, value: undefined };
-        }
+        execute: (database, scope) => this.rotateAndApplyRetentionInTransaction(database, scope, cleanupInput)
       });
     } catch (error) {
       if (error instanceof AgentError && ['PERSISTENCE_INDETERMINATE', 'RECOVERY_FENCE', 'AUDIT_INTEGRITY_FAILURE'].includes(error.code)) throw error;
       throw new AgentError('AUDIT_UNAVAILABLE');
     }
+  }
+
+  rotateAndApplyRetentionInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    input: AuditEventInput & { readonly before: string }
+  ): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
+    if (input.operation !== 'agent.audit.cleanup' || input.risk !== 'R4') throw new AgentError('POLICY_DENIED');
+    const before = timestamp(input.before, 'before');
+    const trustedNow = this.currentTimestamp();
+    if (before > trustedNow) throw new AgentError('VALIDATION_ERROR', { field: 'before' });
+    this.rotateInTransaction(database, scope, Object.freeze({ ...input, occurredAt: trustedNow }));
+    const candidates = all(database, `SELECT segment_id FROM agent_audit_segments
+      WHERE closed_at IS NOT NULL AND pruned_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM agent_audit_events e WHERE e.segment_id = agent_audit_segments.segment_id AND e.retain_until > ?)`, [before]);
+    for (const candidate of candidates) {
+      const segmentId = String(candidate.segment_id);
+      database.run('DELETE FROM agent_audit_events WHERE segment_id = ?', [segmentId]);
+      database.run('UPDATE agent_audit_segments SET pruned_at = ? WHERE segment_id = ?', [trustedNow, segmentId]);
+    }
+    return { changed: true, value: undefined };
   }
 
   private async recordControl(kind: AuditKind, input: AuditEventInput): Promise<AuditRecord> {

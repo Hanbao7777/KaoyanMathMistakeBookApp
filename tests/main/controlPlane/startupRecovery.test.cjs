@@ -101,8 +101,51 @@ test('starts an existing versioned database in recovery-first order', async () =
     'metadata_bootstrap_published',
     'coordinator_created',
     'operation_journal_recovered',
+    'audit_ledger_verified',
+    'agent_receipts_reconciled',
+    'agent_gateway_ready',
     'ready'
   ]);
+});
+
+test('fresh database composes the recovered Gateway before publishing ready', async () => {
+  await assert.rejects(databaseService.getAgentControlPlane(), /unavailable pending database recovery/);
+  const { result, trace } = await initializeWithTrace();
+  assert.equal(result.databaseRecovery.status, 'empty');
+  assert.equal(result.bootstrapChanged, true);
+  assert.deepEqual(trace, [
+    'candidate_recovery_started',
+    'candidate_recovery_completed',
+    'metadata_bootstrap_published',
+    'coordinator_created',
+    'operation_journal_recovered',
+    'audit_ledger_verified',
+    'agent_receipts_reconciled',
+    'agent_gateway_ready',
+    'ready'
+  ]);
+  assert.ok(await databaseService.getAgentControlPlane());
+});
+
+test('Gateway composition failure fences the coordinator and never publishes ready', async () => {
+  const trace = [];
+  await assert.rejects(databaseService.initializeDatabase({
+    databasePath: currentPaths().database,
+    tickTickDatabasePath: currentPaths().ticktick,
+    epochTransitionEvidencePath: currentPaths().transition,
+    dataJournalRoot: currentPaths().dataJournal,
+    externalJournalRoot: currentPaths().externalJournal,
+    createEpoch: () => 'startup-created-epoch',
+    now: () => '2026-07-15T12:00:00.000Z',
+    randomId: () => 'startup-random-id',
+    agent: { appInstanceId: 'startup-agent-instance', cursorSecret: 'too-short' },
+    onStage: (stage) => trace.push(stage)
+  }), (error) => error?.code === 'VALIDATION_ERROR');
+  assert.equal(trace.includes('agent_gateway_ready'), false);
+  assert.equal(trace.includes('ready'), false);
+  assert.equal(trace.at(-1), 'needs_recovery');
+  assert.equal((await databaseService.getDatabaseCoordinator()).state, 'needs_recovery');
+  await assert.rejects(databaseService.getAgentControlPlane(), /unavailable pending database recovery/);
 });
 
 test('bootstraps a sole legacy database and durably publishes metadata before coordinator creation', async () => {
@@ -113,6 +156,11 @@ test('bootstraps a sole legacy database and durably publishes metadata before co
   assert.equal(result.bootstrapChanged, true);
   assert.deepEqual(readDiskVersion(), { dataEpoch: 'startup-created-epoch', dataRevision: 0 });
   assert.ok(trace.indexOf('metadata_bootstrap_published') < trace.indexOf('coordinator_created'));
+  assert.ok(trace.indexOf('operation_journal_recovered') < trace.indexOf('audit_ledger_verified'));
+  assert.ok(trace.indexOf('audit_ledger_verified') < trace.indexOf('agent_receipts_reconciled'));
+  assert.ok(trace.indexOf('agent_receipts_reconciled') < trace.indexOf('agent_gateway_ready'));
+  assert.ok(trace.indexOf('agent_gateway_ready') < trace.indexOf('ready'));
+  assert.ok(await databaseService.getAgentControlPlane());
 });
 
 test('recovers a pending data-root manifest against the verified database version', async () => {

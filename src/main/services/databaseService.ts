@@ -4,24 +4,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { app } from 'electron';
 import initSqlJs, { type Database, type SqlJsStatic, type SqlValue } from 'sql.js';
 import { schemaSql } from '../database/schema';
-import { createReadOnlyDatabaseFacade, type ReadOnlyDatabaseFacade } from '../application/queryBus';
+import { createReadOnlyDatabaseFacade, QueryBus, type ReadOnlyDatabaseFacade } from '../application/queryBus';
+import { CommandBus, DomainEventBus } from '../application';
 import { createInternalExecutionContext } from '../application/executionContext';
 import { registerQuestions, type QuestionsApplication } from '../application/questions';
+import { bootstrapAgentGateway, type AgentGatewayBootstrapOptions, type AgentGatewayComposition } from '../agent/bootstrap';
 import {
-  atomicPersist,
-  bootstrapControlMetadata,
-  createSqlJsCandidateOpener,
-  DatabaseCoordinator,
-  EpochTransitionStore,
-  createEpochTransitionEvidence,
-  defaultAtomicFileDependencies,
-  createRevisionMutationCapability,
-  inspectDatabaseBytes,
-  scanDatabaseCandidates,
-  recoverStartupDatabase,
-  RevisionStore,
-  type DatabaseWriteRequest,
-  type DatabaseWriteResult,
+  atomicPersist, bootstrapControlMetadata,
+  createSqlJsCandidateOpener, DatabaseCoordinator,
+  EpochTransitionStore, createEpochTransitionEvidence,
+  defaultAtomicFileDependencies, createRevisionMutationCapability,
+  inspectDatabaseBytes, scanDatabaseCandidates,
+  recoverStartupDatabase, RevisionStore,
+  type DatabaseWriteRequest, type DatabaseWriteResult,
   type StartupDatabaseRecoveryResult
 } from '../persistence';
 import {
@@ -65,10 +60,12 @@ let db: Database | null = null;
 let databaseCoordinator: DatabaseCoordinator | null = null;
 let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
 let questionsApplication: QuestionsApplication | null = null;
+let agentControlPlane: AgentGatewayComposition | null = null;
 const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
 let initializationResult: DatabaseInitializationResult | null = null;
 let shutdownPromise: Promise<void> | null = null;
+const defaultAgentInstanceId = `app-${randomUUID()}`;
 
 export const databaseLifecycleStages = [
   'candidate_recovery_started',
@@ -76,6 +73,9 @@ export const databaseLifecycleStages = [
   'metadata_bootstrap_published',
   'coordinator_created',
   'operation_journal_recovered',
+  'audit_ledger_verified',
+  'agent_receipts_reconciled',
+  'agent_gateway_ready',
   'ready',
   'needs_recovery'
 ] as const;
@@ -89,6 +89,13 @@ export interface DatabaseInitializationDependencies {
   dataJournalRoot?: string;
   externalJournalRoot?: string;
   recoverOperations?: typeof recoverOperationStores;
+  agent?: {
+    readonly appInstanceId?: string;
+    readonly credentialVerifier?: AgentGatewayBootstrapOptions['credentialVerifier'];
+    readonly cursorSecret?: Uint8Array | string;
+    readonly commandBus?: CommandBus;
+    readonly queryBus?: QueryBus;
+  };
   onStage?: (stage: DatabaseLifecycleStage) => void;
 }
 
@@ -253,6 +260,11 @@ export async function getQuestionsApplication(): Promise<QuestionsApplication> {
   if (!questionsApplication) await initializeDatabase();
   if (!questionsApplication) throw new Error('Questions application is unavailable');
   return questionsApplication;
+}
+
+export async function getAgentControlPlane(): Promise<AgentGatewayComposition> {
+  if (!agentControlPlane) throw new Error('Agent Gateway is unavailable pending database recovery');
+  return agentControlPlane;
 }
 
 async function executeLegacyQuestionCommand<C extends import('../../shared/agent').AppCommand>(command: C) {
@@ -608,6 +620,40 @@ async function publishInitializedDatabase(
   }
 }
 
+async function createAgentControlPlane(
+  coordinator: DatabaseCoordinator,
+  readDatabase: ReadOnlyDatabaseFacade,
+  dependencies: DatabaseInitializationDependencies = {},
+  onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
+): Promise<AgentGatewayComposition> {
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const randomId = dependencies.randomId ?? randomUUID;
+  const commandBus = dependencies.agent?.commandBus ?? new CommandBus(coordinator, new DomainEventBus());
+  const queryBus = dependencies.agent?.queryBus ?? new QueryBus(readDatabase, coordinator);
+  const appInstanceId = dependencies.agent?.appInstanceId ?? defaultAgentInstanceId;
+  const credentialVerifier = dependencies.agent?.credentialVerifier ?? Object.freeze({
+    verify(): never {
+      throw new Error('No external credential adapter is installed');
+    }
+  });
+  const composition = await bootstrapAgentGateway({
+    coordinator,
+    commandBus,
+    queryBus,
+    selectedCandidateEvidence: true,
+    appInstanceId,
+    credentialVerifier,
+    cursorSecret: dependencies.agent?.cursorSecret ?? createHash('sha256').update(appInstanceId).digest(),
+    now,
+    randomUUID: randomId,
+    onRecoveryStage(stage) {
+      onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : 'agent_receipts_reconciled');
+    }
+  });
+  onStage('agent_gateway_ready');
+  return composition;
+}
+
 async function initializeDatabaseOnce(
   dependencies: DatabaseInitializationDependencies = {}
 ): Promise<DatabaseInitializationResult> {
@@ -715,6 +761,16 @@ async function initializeDatabaseOnce(
     coordinator.finishMaintenance(lease, 'needs_recovery');
     onStage('needs_recovery');
   } else {
+    try {
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, dependencies, onStage);
+    } catch (error) {
+      if (coordinator.state !== 'needs_recovery') {
+        const gatewayFailureLease = await coordinator.beginMaintenance();
+        coordinator.finishMaintenance(gatewayFailureLease, 'needs_recovery');
+      }
+      onStage('needs_recovery');
+      throw error;
+    }
     onStage('ready');
   }
 
@@ -2008,6 +2064,7 @@ export function resetDatabaseConnection() {
   databaseCoordinator = null;
   readOnlyDatabase = null;
   questionsApplication = null;
+  agentControlPlane = null;
   initializationPromise = null;
   initializationResult = null;
   shutdownPromise = null;

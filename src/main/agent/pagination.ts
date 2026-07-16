@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, createHmac } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { AgentError } from '../../shared/agent/errors';
 import type { JsonValue, PageInfo, RedactionProfile } from '../../shared/agent/v1/gatewayContracts';
 import { canonicalizeJson, hashCanonicalJson } from '../../shared/agent/v1/gatewaySchemas';
@@ -26,6 +26,12 @@ export interface PaginatedResult<T> {
   readonly page: PageInfo;
 }
 
+export interface PaginationWindow {
+  readonly queryHash: string;
+  readonly pageSize: number;
+  readonly afterKey?: string;
+}
+
 export class PaginationService {
   private readonly secret: Buffer;
 
@@ -36,25 +42,35 @@ export class PaginationService {
   }
 
   paginate<T>(items: readonly T[], request: PaginationRequest, keyOf: (item: T) => string): PaginatedResult<T> {
+    const window = this.createWindow(request);
+    const ordered = [...items].sort((left, right) => keyOf(left).localeCompare(keyOf(right)));
+    const windowed = window.afterKey === undefined ? ordered : ordered.filter((item) => keyOf(item) > window.afterKey!);
+    return this.complete(windowed, window, keyOf);
+  }
+
+  createWindow(request: PaginationRequest): PaginationWindow {
     if (!Number.isSafeInteger(request.pageSize) || request.pageSize < 1 || request.pageSize > request.maxPageSize) {
       throw new AgentError('VALIDATION_ERROR', { field: 'pageSize' });
     }
     const queryHash = hashCanonicalJson(request.query);
-    const lastKey = request.cursor ? this.parseCursor(request.cursor, queryHash, request.pageSize).lastKey : undefined;
+    const afterKey = request.cursor ? this.parseCursor(request.cursor, queryHash, request.pageSize).lastKey : undefined;
+    return Object.freeze({ queryHash, pageSize: request.pageSize, ...(afterKey ? { afterKey } : {}) });
+  }
+
+  complete<T>(items: readonly T[], window: PaginationWindow, keyOf: (item: T) => string): PaginatedResult<T> {
     const ordered = [...items].sort((left, right) => keyOf(left).localeCompare(keyOf(right)));
     for (let index = 1; index < ordered.length; index += 1) {
       if (keyOf(ordered[index - 1]) === keyOf(ordered[index])) throw new AgentError('CURSOR_INVALID');
     }
-    const start = lastKey === undefined ? 0 : ordered.findIndex((item) => keyOf(item) > lastKey);
-    const effectiveStart = start < 0 ? ordered.length : start;
-    const pageItems = ordered.slice(effectiveStart, effectiveStart + request.pageSize);
-    const hasMore = effectiveStart + pageItems.length < ordered.length;
+    if (window.afterKey !== undefined && ordered.some((item) => keyOf(item) <= window.afterKey!)) throw new AgentError('CURSOR_INVALID');
+    const pageItems = ordered.slice(0, window.pageSize);
+    const hasMore = ordered.length > window.pageSize;
     const nextCursor = hasMore && pageItems.length
-      ? this.createCursor({ version: 1, queryHash, lastKey: keyOf(pageItems[pageItems.length - 1]), pageSize: request.pageSize })
+      ? this.createCursor({ version: 1, queryHash: window.queryHash, lastKey: keyOf(pageItems[pageItems.length - 1]), pageSize: window.pageSize })
       : undefined;
     return Object.freeze({
       items: Object.freeze(pageItems),
-      page: Object.freeze({ pageSize: request.pageSize, hasMore, ...(nextCursor ? { nextCursor } : {}) })
+      page: Object.freeze({ pageSize: window.pageSize, hasMore, ...(nextCursor ? { nextCursor } : {}) })
     });
   }
 
@@ -63,17 +79,22 @@ export class PaginationService {
     const nonce = createHmac('sha256', this.secret).update(plaintext).digest().subarray(0, 12);
     const cipher = createCipheriv('aes-256-gcm', this.secret, nonce);
     const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-    return `${nonce.toString('base64url')}.${encrypted.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}`;
+    const body = Buffer.concat([nonce, cipher.getAuthTag(), encrypted]).toString('base64url');
+    const signature = createHmac('sha256', this.secret).update(body).digest('hex');
+    return `cursor-v1.${body}.${signature}`;
   }
 
   private parseCursor(cursor: string, queryHash: string, pageSize: number): CursorPayload {
-    if (cursor.length > maxCursorLength || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(cursor)) throw new AgentError('CURSOR_INVALID');
-    const [nonceValue, encryptedValue, tagValue] = cursor.split('.');
+    if (cursor.length > maxCursorLength || !/^cursor-v1\.[A-Za-z0-9_-]{16,384}\.[0-9a-f]{64}$/.test(cursor)) throw new AgentError('CURSOR_INVALID');
+    const [, body, signature] = cursor.split('.');
     let value: unknown;
     try {
-      const nonce = Buffer.from(nonceValue, 'base64url');
-      const encrypted = Buffer.from(encryptedValue, 'base64url');
-      const tag = Buffer.from(tagValue, 'base64url');
+      const expectedSignature = createHmac('sha256', this.secret).update(body).digest('hex');
+      if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) throw new Error('invalid cursor signature');
+      const packed = Buffer.from(body, 'base64url');
+      const nonce = packed.subarray(0, 12);
+      const tag = packed.subarray(12, 28);
+      const encrypted = packed.subarray(28);
       if (nonce.length !== 12 || tag.length !== 16 || encrypted.length === 0) throw new Error('invalid cursor');
       const decipher = createDecipheriv('aes-256-gcm', this.secret, nonce);
       decipher.setAuthTag(tag);

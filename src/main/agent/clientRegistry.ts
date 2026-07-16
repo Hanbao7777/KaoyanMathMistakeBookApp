@@ -17,7 +17,13 @@ import {
   validateOperationPolicyOverride
 } from '../../shared/agent/v1/gatewaySchemas';
 import { resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
-import type { DatabaseControlWriteRequest, DatabaseWriteResult } from '../persistence/databaseCoordinator';
+import {
+  assertDatabaseMutationScope,
+  type DatabaseControlWriteRequest,
+  type DatabaseMutationResult,
+  type DatabaseMutationScope,
+  type DatabaseWriteResult
+} from '../persistence/databaseCoordinator';
 
 export interface AgentControlSettings {
   readonly externalControlEnabled: boolean;
@@ -45,6 +51,26 @@ export interface RegisteredAgentSession {
   readonly sessionFingerprint: string;
   readonly credentialFingerprint: string;
   readonly expiresAt: string;
+  readonly terminatedAt?: string;
+}
+
+export interface AgentClientSummary {
+  readonly clientId: string;
+  readonly subjectId: string;
+  readonly displayName: string;
+  readonly scopes: readonly AgentScope[];
+  readonly trust: TrustProfile;
+  readonly revokedAt?: string;
+  readonly lastActiveAt?: string;
+}
+
+export interface AgentSessionSummary {
+  readonly sessionId: string;
+  readonly clientId: string;
+  readonly appInstanceId: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly lastActiveAt: string;
   readonly terminatedAt?: string;
 }
 
@@ -133,6 +159,34 @@ function toClient(row: Record<string, unknown>, scopes: readonly AgentScope[]): 
   });
 }
 
+function toClientSummary(row: Record<string, unknown>, scopes: readonly AgentScope[]): AgentClientSummary {
+  return Object.freeze({
+    clientId: String(row.client_id),
+    subjectId: String(row.subject_id),
+    displayName: String(row.display_name),
+    scopes: Object.freeze([...scopes]),
+    trust: row.trust as TrustProfile,
+    ...(typeof row.revoked_at === 'string' ? { revokedAt: row.revoked_at } : {}),
+    ...(typeof row.last_active_at === 'string' ? { lastActiveAt: row.last_active_at } : {})
+  });
+}
+
+function toSessionSummary(row: Record<string, unknown>): AgentSessionSummary {
+  return Object.freeze({
+    sessionId: String(row.session_id),
+    clientId: String(row.client_id),
+    appInstanceId: String(row.app_instance_id),
+    createdAt: String(row.created_at),
+    expiresAt: String(row.expires_at),
+    lastActiveAt: String(row.last_active_at),
+    ...(typeof row.terminated_at === 'string' ? { terminatedAt: row.terminated_at } : {})
+  });
+}
+
+function assertWindowLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 201) throw new AgentError('VALIDATION_ERROR', { field: 'limit' });
+}
+
 export class ClientRegistry {
   private readonly executeControlWrite: ClientRegistryDependencies['executeControlWrite'];
   private readonly appInstanceId: string;
@@ -200,18 +254,47 @@ export class ClientRegistry {
   }
 
   async setExternalControlEnabled(enabled: boolean): Promise<void> {
+    await this.write('agent-control-enabled', (database, scope) => this.setExternalControlEnabledInTransaction(database, scope, enabled));
+  }
+
+  setExternalControlEnabledInTransaction(database: Database, scope: DatabaseMutationScope, enabled: boolean): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
     if (typeof enabled !== 'boolean') throw new AgentError('VALIDATION_ERROR', { field: 'enabled' });
-    const timestamp = this.timestamp();
-    await this.write('agent-control-enabled', (database) => {
-      const current = one(database, 'SELECT external_control_enabled FROM agent_control_settings WHERE id = 1');
-      if (!current) throw new AgentError('RECOVERY_FENCE');
-      if ((current.external_control_enabled === 1) === enabled) return { changed: false, value: undefined };
-      database.run('UPDATE agent_control_settings SET external_control_enabled = ?, updated_at = ? WHERE id = 1', [enabled ? 1 : 0, timestamp]);
-      return { changed: true, value: undefined };
-    });
+    const current = one(database, 'SELECT external_control_enabled FROM agent_control_settings WHERE id = 1');
+    if (!current) throw new AgentError('RECOVERY_FENCE');
+    if ((current.external_control_enabled === 1) === enabled) return { changed: false, value: undefined };
+    database.run('UPDATE agent_control_settings SET external_control_enabled = ?, updated_at = ? WHERE id = 1', [enabled ? 1 : 0, this.timestamp()]);
+    return { changed: true, value: undefined };
   }
 
   async updatePolicy(policyVersion: string, overrides: readonly OperationPolicyOverride[]): Promise<void> {
+    const normalized = this.normalizePolicy(policyVersion, overrides);
+    await this.write('agent-policy-update', (database, scope) => this.updatePolicyInTransaction(database, scope, normalized.policyVersion, normalized.overrides));
+  }
+
+  updatePolicyInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    policyVersion: string,
+    overrides: readonly OperationPolicyOverride[]
+  ): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
+    const normalized = this.normalizePolicy(policyVersion, overrides);
+    const policyJson = canonicalizeJson(normalized.overrides);
+    const policyHash = hashCanonicalJson(normalized.overrides);
+    const current = one(database, 'SELECT policy_version, policy_hash FROM agent_control_settings WHERE id = 1');
+    if (!current) throw new AgentError('RECOVERY_FENCE');
+    if (current.policy_version === normalized.policyVersion && current.policy_hash === policyHash) return { changed: false, value: undefined };
+    database.run('UPDATE agent_control_settings SET policy_version = ?, policy_json = ?, policy_hash = ?, updated_at = ? WHERE id = 1', [
+      normalized.policyVersion, policyJson, policyHash, this.timestamp()
+    ]);
+    return { changed: database.getRowsModified() > 0, value: undefined };
+  }
+
+  private normalizePolicy(policyVersion: string, overrides: readonly OperationPolicyOverride[]): {
+    readonly policyVersion: string;
+    readonly overrides: readonly OperationPolicyOverride[];
+  } {
     assertSafeIdentifier(policyVersion, 'policyVersion');
     const seen = new Set<string>();
     const normalized = [...overrides].sort((left, right) => left.operation.localeCompare(right.operation));
@@ -220,20 +303,7 @@ export class ClientRegistry {
       seen.add(override.operation);
       validateOperationPolicyOverride(override, resolveOperationDescriptor(override.operation), this.catalog);
     }
-    const policyJson = canonicalizeJson(normalized);
-    const policyHash = hashCanonicalJson(normalized);
-    const timestamp = this.timestamp();
-    await this.write('agent-policy-update', (database) => {
-      const current = one(database, 'SELECT policy_version, policy_hash FROM agent_control_settings WHERE id = 1');
-      if (!current) throw new AgentError('RECOVERY_FENCE');
-      if (current.policy_version === policyVersion && current.policy_hash === policyHash) {
-        return { changed: false, value: undefined };
-      }
-      database.run('UPDATE agent_control_settings SET policy_version = ?, policy_json = ?, policy_hash = ?, updated_at = ? WHERE id = 1', [
-        policyVersion, policyJson, policyHash, timestamp
-      ]);
-      return { changed: database.getRowsModified() > 0, value: undefined };
-    });
+    return Object.freeze({ policyVersion, overrides: Object.freeze(normalized) });
   }
 
   async registerClient(registration: ClientRegistration): Promise<RegisteredAgentClient> {
@@ -289,16 +359,19 @@ export class ClientRegistry {
   }
 
   async revokeClient(clientId: string): Promise<void> {
+    await this.write(`agent-client-revoke-${clientId}`, (database, scope) => this.revokeClientInTransaction(database, scope, clientId));
+  }
+
+  revokeClientInTransaction(database: Database, scope: DatabaseMutationScope, clientId: string): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
     assertSafeIdentifier(clientId, 'clientId');
+    const current = one(database, 'SELECT revoked_at FROM agent_clients WHERE client_id = ?', [clientId]);
+    if (!current) throw new AgentError('CLIENT_REVOKED');
+    if (typeof current.revoked_at === 'string') return { changed: false, value: undefined };
     const timestamp = this.timestamp();
-    await this.write(`agent-client-revoke-${clientId}`, (database) => {
-      const current = one(database, 'SELECT revoked_at FROM agent_clients WHERE client_id = ?', [clientId]);
-      if (!current) throw new AgentError('CLIENT_REVOKED');
-      if (typeof current.revoked_at === 'string') return { changed: false, value: undefined };
-      database.run('UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id = ?', [timestamp, timestamp, clientId]);
-      database.run('UPDATE agent_sessions SET terminated_at = ? WHERE client_id = ? AND terminated_at IS NULL', [timestamp, clientId]);
-      return { changed: true, value: undefined };
-    });
+    database.run('UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id = ?', [timestamp, timestamp, clientId]);
+    database.run('UPDATE agent_sessions SET terminated_at = ? WHERE client_id = ? AND terminated_at IS NULL', [timestamp, clientId]);
+    return { changed: true, value: undefined };
   }
 
   async createSession(clientId: string, credentialFingerprint: string, sessionFingerprint: string, expiresAt: string): Promise<RegisteredAgentSession> {
@@ -326,14 +399,57 @@ export class ClientRegistry {
   }
 
   async terminateSession(sessionId: string): Promise<void> {
+    await this.write(`agent-session-terminate-${sessionId}`, (database, scope) => this.terminateSessionInTransaction(database, scope, sessionId));
+  }
+
+  terminateSessionInTransaction(database: Database, scope: DatabaseMutationScope, sessionId: string): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
     assertSafeIdentifier(sessionId, 'sessionId');
-    const timestamp = this.timestamp();
-    await this.write(`agent-session-terminate-${sessionId}`, (database) => {
-      const session = one(database, 'SELECT terminated_at FROM agent_sessions WHERE session_id = ?', [sessionId]);
-      if (!session) throw new AgentError('CLIENT_REVOKED');
-      if (typeof session.terminated_at === 'string') return { changed: false, value: undefined };
-      database.run('UPDATE agent_sessions SET terminated_at = ? WHERE session_id = ?', [timestamp, sessionId]);
-      return { changed: true, value: undefined };
+    const session = one(database, 'SELECT terminated_at FROM agent_sessions WHERE session_id = ?', [sessionId]);
+    if (!session) throw new AgentError('CLIENT_REVOKED');
+    if (typeof session.terminated_at === 'string') return { changed: false, value: undefined };
+    database.run('UPDATE agent_sessions SET terminated_at = ? WHERE session_id = ?', [this.timestamp(), sessionId]);
+    return { changed: true, value: undefined };
+  }
+
+  async listClientsWindow(filter: { readonly clientId?: string; readonly afterClientId?: string; readonly limit: number }): Promise<readonly AgentClientSummary[]> {
+    assertWindowLimit(filter.limit);
+    if (filter.clientId) assertSafeIdentifier(filter.clientId, 'clientId');
+    if (filter.afterClientId) assertSafeIdentifier(filter.afterClientId, 'afterClientId');
+    return this.read('agent-clients-list', (database) => {
+      const clauses: string[] = [];
+      const parameters: SqlParameter[] = [];
+      if (filter.clientId) { clauses.push('client_id = ?'); parameters.push(filter.clientId); }
+      if (filter.afterClientId) { clauses.push('client_id > ?'); parameters.push(filter.afterClientId); }
+      parameters.push(filter.limit);
+      const rows = all(database, `SELECT * FROM agent_clients ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY client_id LIMIT ?`, parameters);
+      return Object.freeze(rows.map((row) => toClientSummary(row, all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [String(row.client_id)]).map((entry) => entry.scope as AgentScope))));
+    });
+  }
+
+  async listSessionsWindow(filter: { readonly clientId?: string; readonly afterKey?: string; readonly limit: number }): Promise<readonly AgentSessionSummary[]> {
+    assertWindowLimit(filter.limit);
+    if (filter.clientId) assertSafeIdentifier(filter.clientId, 'clientId');
+    let afterClientId: string | undefined;
+    let afterSessionId: string | undefined;
+    if (filter.afterKey) {
+      const separator = filter.afterKey.indexOf('\0');
+      if (separator < 1 || separator === filter.afterKey.length - 1) throw new AgentError('CURSOR_INVALID');
+      afterClientId = filter.afterKey.slice(0, separator);
+      afterSessionId = filter.afterKey.slice(separator + 1);
+      assertSafeIdentifier(afterClientId, 'afterClientId');
+      assertSafeIdentifier(afterSessionId, 'afterSessionId');
+    }
+    return this.read('agent-sessions-list', (database) => {
+      const clauses: string[] = [];
+      const parameters: SqlParameter[] = [];
+      if (filter.clientId) { clauses.push('client_id = ?'); parameters.push(filter.clientId); }
+      if (afterClientId && afterSessionId) {
+        clauses.push('(client_id > ? OR (client_id = ? AND session_id > ?))');
+        parameters.push(afterClientId, afterClientId, afterSessionId);
+      }
+      parameters.push(filter.limit);
+      return Object.freeze(all(database, `SELECT * FROM agent_sessions ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY client_id, session_id LIMIT ?`, parameters).map(toSessionSummary));
     });
   }
 
