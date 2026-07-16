@@ -11,6 +11,10 @@ Revision 1 incorporates the independent acceptance review completed on
 2026-07-16. C0 is the only dispatchable task until its evidence gate passes; C1
 through C15 remain gated by the corrected dependencies below.
 
+Revision 2 replaces unavailable Claude Desktop with the installed Claude Code CLI
+as the second hard client. Claude Desktop becomes an optional compatibility target
+and cannot block Phase C.
+
 Phase C turns the accepted `AgentGateway` into a real, installable MCP product.
 It does not add a second business path: every external request authenticates into
 an immutable `AgentPrincipal` and then calls only `AgentGateway.execute` or
@@ -24,7 +28,7 @@ personal use.
 
 1. **Transport order:** ship stdio first over an App-owned loopback service;
    implement direct HTTP OAuth in the second half of Phase C.
-2. **Hard clients:** Codex CLI and Claude Desktop are the first two real-client
+2. **Hard clients:** Codex CLI and Claude Code CLI are the first two real-client
    acceptance targets.
 3. **Pairing:** pairing starts in the App control center. The App installs a
    stable launcher and requests a per-client identity, while the launcher creates
@@ -53,7 +57,7 @@ personal use.
     support explicit idempotency keys; R3/R4, batch, and cross-resource writes
     require one.
 11. **Protocol compatibility:** MCP `2025-11-25` is the baseline. Add only the
-    backward versions required by measured Codex/Claude behavior, with an exact
+    backward versions required by measured Codex CLI/Claude Code behavior, with an exact
     test matrix for every supported version.
 12. **Domain order:** knowledge/textbooks/analytics; study supervision/plans;
     question bank/structured import; habits/calendar/remaining TickTick; then
@@ -72,7 +76,7 @@ personal use.
 16. **Privacy:** no automatic telemetry. Logs are local and redacted; diagnostic
     bundles are user-initiated and previewed before export.
 17. **Configuration ownership:** the App backs up, merges, repairs, disconnects,
-    and rolls back only its own Codex/Claude configuration entries and launcher
+    and rolls back only its own Codex CLI/Claude Code configuration entries and launcher
     manifest.
 18. **Launcher product:** TypeScript source, distributed as a standalone Windows
     executable that requires no separately installed Node.js. The exact
@@ -82,7 +86,7 @@ personal use.
     overwrite. A single-writer policy remains available.
 20. **Language:** stable protocol identifiers and base descriptions are English;
     prompts are Chinese/English; control-center UX is Chinese-first.
-21. **AI import:** Codex/Claude multimodal structured drafts are the primary
+21. **AI import:** Codex CLI/Claude Code multimodal structured drafts are the primary
     import path. App OCR/DeepSeek are explicit fallbacks. Both enter the same
     validation, preview/change-set, idempotency, and recovery path.
 22. **Capability upgrades:** App updates may publish new definitions but never
@@ -124,11 +128,11 @@ personal use.
   v2. At plan time npm reports `@modelcontextprotocol/sdk@1.29.0` as stable and
   `@modelcontextprotocol/server@2.0.0-beta.4` as pre-release. C1 pins v1.29.0
   exactly and records a future v2 upgrade gate; no caret range is permitted.
-- Codex local clients support stdio and Streamable HTTP/OAuth, share MCP settings
-  through `config.toml`, and support CLI registration. Claude Desktop's local
-  target is stdio through its current MCP Bundle (`.mcpb`) or documented local
-  configuration route. Claude Desktop and Claude Code are separate products;
-  C0 must measure each exact product before assigning an HTTP/OAuth target.
+- Codex CLI supports stdio and Streamable HTTP/OAuth, shares MCP settings through
+  `config.toml`, and supports CLI registration. Claude Code is the second hard CLI
+  and its stdio/HTTP/OAuth behavior is measured independently through `claude mcp`.
+  Claude Desktop remains an optional future `.mcpb`/local-config target; its
+  absence or behavior is never used as evidence for or against Claude Code.
 
 Official references:
 
@@ -143,7 +147,7 @@ Official references:
 ## Architecture boundary
 
 ```text
-Codex CLI / Claude Desktop
+Codex CLI / Claude Code CLI
            │ stdio JSON-RPC
            ▼
   standalone kaoyan-mcp.exe
@@ -225,10 +229,10 @@ this document or a narrowly linked decision note. Do not edit Gateway behavior.
 
 **Work:**
 
-- Record installed Codex CLI, Claude Desktop, and—only for the HTTP comparison—
-  Claude Code versions. Test each exact product independently and record
-  unsupported product/transport combinations as explicit no-go results rather
-  than treating “Claude” as one client.
+- Record installed Codex CLI and Claude Code versions. Test each exact product
+  independently and record unsupported product/transport combinations as explicit
+  no-go results. If Claude Desktop is absent, mark the optional target N/A without
+  blocking C0.
 - Prove tools, resources, templates, prompts, list-changed notifications, structured
   tool results, cancellation, and progress behavior for both clients.
 - Verify exact v1.29.0 SDK support for required `2025-11-25` features; keep MCP
@@ -243,9 +247,9 @@ this document or a narrowly linked decision note. Do not edit Gateway behavior.
   launcher metadata but is not described as the asymmetric key store. The App
   receives only the public key/fingerprint; same-user full-process compromise
   remains outside the declared threat boundary.
-- Determine the official Codex registration command/config merge and Claude
-  Desktop `.mcpb`/local-config path currently supported. Test backup, merge,
-  conflict, disconnect, and rollback on disposable profiles only.
+- Determine the official Codex and Claude Code registration commands/config merge.
+  Test backup, merge, conflict, disconnect, and rollback on disposable profiles
+  only. Record Claude Desktop `.mcpb` information as optional documentation only.
 - Prove a specification-conforming local HTTPS strategy for the complete later
   OAuth surface: the MCP Streamable HTTP endpoint and protected-resource
   identifier, protected-resource metadata, authorization-server issuer and
@@ -415,7 +419,7 @@ manifest installer, Electron tests.
 
 **Work:**
 
-- Add guided “Connect Codex” and “Connect Claude Desktop” flows with verified
+- Add guided “Connect Codex” and “Connect Claude Code” flows with verified
   target identity, requested scopes, trust preset, disclosure notice, and explicit
   confirmation.
 - Prefer current official client registration mechanisms proven by C0; otherwise
@@ -431,7 +435,7 @@ manifest installer, Electron tests.
   The UI, preload, IPC adapter, config adapter, and launcher must not import or
   receive `ClientRegistry`, coordinator capability, or private-key access.
 
-**Gate:** real disposable Codex/Claude profiles prove connect, reload, health,
+**Gate:** real disposable Codex CLI/Claude Code profiles prove connect, reload, health,
 repair, external modification conflict, disconnect, rollback, and no unrelated
 configuration loss.
 
@@ -460,7 +464,7 @@ explicit exposure tests, real-client fixtures.
   hint may be ordinary result metadata; an actual navigation operation requires a
   later explicit catalog/application/Gateway migration and local-focus policy.
 
-**Gate:** Codex/Claude parity with Renderer, exact exposure list, replay/conflict,
+**Gate:** Codex CLI/Claude Code parity with Renderer, exact exposure list, replay/conflict,
 R4 request behavior, capability filtering, prompt-injection fixtures, data-size
 bounds, audit, restart, and no bypass of Gateway.
 
@@ -471,7 +475,7 @@ migration.
 
 **Acceptance:**
 
-- Codex CLI and Claude Desktop install from the control center, reload, initialize,
+- Codex CLI and Claude Code install from the control center, reload, initialize,
   list only authorized tools, read a resource, use a Chinese prompt, create/update
   data, survive App restart, replay a lost response, detect a concurrent revision
   conflict, receive a revoked-session denial, and disconnect cleanly.
@@ -660,9 +664,9 @@ token stores, browser/control-center consent route, protocol compatibility tests
   and cross-client session use deny immediately.
 - Raw OAuth material never reaches Gateway or ordinary logs/database fields.
 
-**Gate:** official OAuth discovery/conformance plus every exact client/product
-combination marked supported by C0. Codex CLI HTTP/OAuth is mandatory; Claude
-Desktop is not credited for Claude Code behavior. Code replay, PKCE mismatch,
+**Gate:** official OAuth discovery/conformance plus both hard clients. Codex CLI
+and Claude Code HTTP/OAuth are mandatory. Claude Desktop remains optional and is
+not credited for Claude Code behavior. Code replay, PKCE mismatch,
 wrong resource/audience, invalid certificate, redirect mismatch, refresh reuse,
 stale instance, and token/session mixing all deny.
 
@@ -757,9 +761,8 @@ with `D:\KaoyanMathMistakeBook` before opening paths or spawning Electron.
 ### Milestone/transport-change real clients
 
 - Codex CLI current installed version
-- Claude Desktop current installed version
-- Claude Code only when evaluating its distinct HTTP/OAuth support; never use it as
-  evidence for a Claude Desktop claim
+- Claude Code current installed version
+- Claude Desktop only as an optional, separately labeled compatibility target
 - stdio initial install, reload, operation, restart, revoke, disconnect
 - direct HTTPS OAuth discovery, login, scope increase/decrease, refresh, revoke for
   every exact product/transport combination marked supported by C0
@@ -778,10 +781,10 @@ with `D:\KaoyanMathMistakeBook` before opening paths or spawning Electron.
 
 Phase C is complete only when:
 
-1. Codex CLI and Claude Desktop pass the stdio matrix. Codex CLI passes direct
-   HTTPS OAuth. Any additional Claude product is credited only for its own exact
-   supported matrix; unsupported combinations are documented no-go results, not
-   silently substituted products.
+1. Codex CLI and Claude Code pass the stdio and direct HTTPS OAuth matrices for
+   their accepted versions. Claude Desktop is optional and credited only for its
+   own exact matrix; unsupported combinations are documented rather than silently
+   substituted products.
 2. The first 19-operation slice and every subsequently declared Phase C domain
    wave pass the migration gate; undeclared/unmigrated operations remain absent.
 3. Tools, resources/templates, prompts, instructions, notifications, structured
