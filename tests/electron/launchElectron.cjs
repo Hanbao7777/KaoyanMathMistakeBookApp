@@ -79,30 +79,54 @@ function launchElectron(options) {
     appPath,
     userDataDir,
     resultFile,
+    fixtureFile,
+    dataRoot,
+    configureHarness = true,
     timeoutMs = 15_000,
     env = process.env,
     electronBinary
   } = options ?? {};
   const resolvedRoot = assertOwnedRoot(root);
-  const resolvedAppPath = assertOwnedPath(appPath, resolvedRoot, 'Electron app path');
+  const resolvedProjectRoot = path.resolve(projectRoot);
+  const resolvedAppPath = path.resolve(appPath);
+  if (normalizedPath(resolvedAppPath) !== normalizedPath(resolvedProjectRoot) && !isSameOrDescendant(resolvedAppPath, resolvedRoot)) {
+    throw new Error('Electron app path must be the project root or an owned test fixture');
+  }
   const resolvedUserDataDir = assertOwnedPath(userDataDir, resolvedRoot, 'Electron userData path');
   const resolvedResultFile = assertOwnedPath(resultFile, resolvedRoot, 'Electron result file');
+  const resolvedFixtureFile = fixtureFile === undefined ? undefined : assertOwnedPath(fixtureFile, resolvedRoot, 'Electron fixture file');
+  const resolvedDataRoot = dataRoot === undefined ? undefined : assertOwnedPath(dataRoot, resolvedRoot, 'Electron data root');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
     throw new Error('Electron timeout must be a positive finite value');
   }
+  if (![true, false, 'preserve'].includes(configureHarness)) {
+    throw new Error('Electron harness configuration mode is invalid');
+  }
   if (!fs.existsSync(resolvedAppPath)) {
     throw new Error(`Electron app path does not exist: ${resolvedAppPath}`);
+  }
+  if (resolvedFixtureFile && (!fs.existsSync(resolvedFixtureFile) || !fs.statSync(resolvedFixtureFile).isFile())) {
+    throw new Error('Electron fixture file must be an existing file');
   }
   const resolvedElectronBinary = electronBinary ?? resolveElectronBinary(projectRoot);
 
   fs.mkdirSync(resolvedUserDataDir, { recursive: true });
   fs.mkdirSync(path.dirname(resolvedResultFile), { recursive: true });
-  fs.rmSync(resolvedResultFile, { force: true });
+  fs.writeFileSync(resolvedResultFile, '', 'utf8');
+  if (resolvedDataRoot) {
+    fs.mkdirSync(resolvedDataRoot, { recursive: true });
+    fs.writeFileSync(path.join(resolvedUserDataDir, 'data-root.json'), `${JSON.stringify({ root: resolvedDataRoot }, null, 2)}\n`, 'utf8');
+  }
 
   const childEnv = { ...env };
   delete childEnv.ELECTRON_RUN_AS_NODE;
-  childEnv.KAOYAN_E2E_HARNESS = '1';
-  childEnv.KAOYAN_E2E_RESULT_FILE = resolvedResultFile;
+  if (configureHarness === true) {
+    childEnv.KAOYAN_E2E_HARNESS = '1';
+    childEnv.KAOYAN_E2E_RESULT_FILE = resolvedResultFile;
+    if (resolvedFixtureFile) childEnv.KAOYAN_E2E_FIXTURE_FILE = resolvedFixtureFile;
+  } else if (configureHarness === false) {
+    delete childEnv.KAOYAN_E2E_HARNESS;
+  }
 
   const child = spawn(resolvedElectronBinary, [resolvedAppPath, `--user-data-dir=${resolvedUserDataDir}`], {
     cwd: projectRoot,
@@ -151,15 +175,18 @@ function launchElectron(options) {
           return result;
         } catch (error) {
           if (error instanceof SyntaxError) {
-            await new Promise((resolve) => setTimeout(resolve, 25));
-            continue;
+            if (child.exitCode === null && child.signalCode === null && !launchError) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+              continue;
+            }
+          } else {
+            await terminate();
+            throw formatFailure(`Electron harness produced an invalid result: ${error.message}`, {
+              ...await exit,
+              stdout,
+              stderr
+            });
           }
-          await terminate();
-          throw formatFailure(`Electron harness produced an invalid result: ${error.message}`, {
-            ...await exit,
-            stdout,
-            stderr
-          });
         }
       }
       if (child.exitCode !== null || child.signalCode !== null || launchError) {

@@ -1,4 +1,4 @@
-﻿import { Database, Download, FileSpreadsheet, FolderCog, FolderOpen, HardDriveDownload, Info, RotateCcw, ShieldCheck, Trash2, Upload } from 'lucide-react';
+﻿import { Bot, Database, Download, FileSpreadsheet, FolderCog, FolderOpen, HardDriveDownload, Info, RotateCcw, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { AppPaths, DatabaseBackupInfo, DeepSeekSettings, ImportBatch, ImportBatchDetail, LegacyExternalQuestionGroup, StudySettings } from '../../shared/types';
 import { useModal } from '../components/Modal';
@@ -57,7 +57,7 @@ function formatTime(value: string) {
   return new Date(value).toLocaleString('zh-CN');
 }
 
-export function SettingsPage() {
+export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () => void }) {
   const { toast } = useToast();
   const modal = useModal();
   const [paths, setPaths] = useState<AppPaths | null>(null);
@@ -221,6 +221,16 @@ export function SettingsPage() {
       </header>
 
       {paths.warning ? <div className="warning-box">{paths.warning}</div> : null}
+
+      <section className="settings-section">
+        <div className="knowledge-card-header">
+          <div>
+            <h2><Bot size={18} /> 外部智能体</h2>
+            <p className="muted-text">查看外部智能体状态、已授权客户端、审批和本地审计记录。</p>
+          </div>
+          <button className="primary-button" type="button" onClick={onOpenAgentControl}>打开控制中心</button>
+        </div>
+      </section>
 
       <section className="settings-section">
         <div className="section-header">

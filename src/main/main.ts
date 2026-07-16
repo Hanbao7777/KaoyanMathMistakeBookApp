@@ -24,12 +24,17 @@ import type {
   QuestionCategoryMigrationCommand,
   QuestionRematchCommand
 } from '../shared/agent/v1/contracts';
-
 const isDev = !app.isPackaged && process.env.KAOYAN_USE_RENDERER_BUILD !== '1';
+const e2eHarnessEnabled = process.env.KAOYAN_E2E_HARNESS === '1';
+const E2E_RESULT_CHANNEL = 'agentControl:e2e:writeResult';
+const REAL_DATA_ROOT = path.resolve('D:\\KaoyanMathMistakeBook');
+const E2E_MAX_ASSERTIONS = 100;
 let mainWindow: BrowserWindow | null = null;
 let isQuitting = false;
 let shutdownComplete = false;
 let mainShutdownPromise: Promise<void> | null = null;
+let e2eResultChannelRegistered = false;
+let e2eResultSubmitted = false;
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
@@ -125,8 +130,123 @@ function createWindow() {
   if (isDev) {
     win.loadURL('http://127.0.0.1:5173');
   } else {
-    win.loadFile(path.join(__dirname, '../../renderer/index.html'));
+    win.loadFile(path.join(__dirname, '../../renderer/index.html'), e2eHarnessEnabled ? { hash: '/e2e-agent-control' } : undefined);
   }
+}
+
+interface E2eHarnessPaths {
+  readonly root: string;
+  readonly fixtureFile: string;
+  readonly resultFile: string;
+}
+
+interface E2eHarnessResult {
+  readonly ok: boolean;
+  readonly assertions: readonly string[];
+  readonly error?: string;
+}
+
+function isSameOrDescendant(candidate: string, ancestor: string): boolean {
+  const relative = path.relative(ancestor, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function assertNotRealDataRelationship(candidate: string, label: string): void {
+  const normalizedCandidate = path.resolve(candidate).toLowerCase();
+  const normalizedRealRoot = REAL_DATA_ROOT.toLowerCase();
+  if (isSameOrDescendant(normalizedCandidate, normalizedRealRoot) || isSameOrDescendant(normalizedRealRoot, normalizedCandidate)) {
+    throw new Error(`${label} cannot relate to the real data root`);
+  }
+}
+
+function strictHarnessPath(value: string | undefined, label: string, expectedKind: 'file' | 'directory'): { readonly path: string; readonly root: string } {
+  if (!value) throw new Error(`${label} is required for the E2E harness`);
+  assertNotRealDataRelationship(value, label);
+  const tempRoot = fs.realpathSync.native(os.tmpdir());
+  const candidate = fs.realpathSync.native(value);
+  assertNotRealDataRelationship(candidate, label);
+  const relative = path.relative(tempRoot, candidate);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${label} must be an existing strict descendant of a kaoyan-* temporary root`);
+  }
+  const firstPart = relative.split(path.sep)[0];
+  if (!firstPart?.toLowerCase().startsWith('kaoyan-')) {
+    throw new Error(`${label} must be an existing strict descendant of a kaoyan-* temporary root`);
+  }
+  const root = fs.realpathSync.native(path.join(tempRoot, firstPart));
+  if (path.dirname(root).toLowerCase() !== tempRoot.toLowerCase() || root.toLowerCase() === candidate.toLowerCase()) {
+    throw new Error(`${label} must be below a unique kaoyan-* temporary root`);
+  }
+  const stats = fs.statSync(candidate);
+  if ((expectedKind === 'file' && !stats.isFile()) || (expectedKind === 'directory' && !stats.isDirectory())) {
+    throw new Error(`${label} must be an existing ${expectedKind}`);
+  }
+  return Object.freeze({ path: candidate, root });
+}
+
+function validateE2eHarnessEnvironment(): E2eHarnessPaths {
+  const fixture = strictHarnessPath(process.env.KAOYAN_E2E_FIXTURE_FILE, 'Fixture file', 'file');
+  const result = strictHarnessPath(process.env.KAOYAN_E2E_RESULT_FILE, 'Result file', 'file');
+  const userData = strictHarnessPath(app.getPath('userData'), 'Electron userData directory', 'directory');
+  if (fixture.root.toLowerCase() !== result.root.toLowerCase() || fixture.root.toLowerCase() !== userData.root.toLowerCase()) {
+    throw new Error('E2E fixture, result, and userData paths must share one unique kaoyan-* temporary root');
+  }
+  if (fixture.path.toLowerCase() === result.path.toLowerCase()) throw new Error('E2E fixture and result files must be distinct');
+
+  const configPath = path.join(userData.path, 'data-root.json');
+  const config = strictHarnessPath(configPath, 'E2E data-root configuration', 'file');
+  if (config.root.toLowerCase() !== fixture.root.toLowerCase()) throw new Error('E2E data-root configuration must share the harness temporary root');
+  const rawConfig = fs.readFileSync(config.path, 'utf8');
+  if (Buffer.byteLength(rawConfig, 'utf8') > 4_096) throw new Error('E2E data-root configuration is too large');
+  let parsedConfig: unknown;
+  try { parsedConfig = JSON.parse(rawConfig); } catch { throw new Error('E2E data-root configuration is malformed'); }
+  if (!parsedConfig || typeof parsedConfig !== 'object' || Array.isArray(parsedConfig) || Object.keys(parsedConfig).length !== 1 || typeof (parsedConfig as { root?: unknown }).root !== 'string') {
+    throw new Error('E2E data-root configuration is malformed');
+  }
+  const dataRoot = strictHarnessPath((parsedConfig as { root: string }).root, 'E2E data root', 'directory');
+  if (dataRoot.root.toLowerCase() !== fixture.root.toLowerCase()) throw new Error('E2E data root must share the harness temporary root');
+  if (isSameOrDescendant(dataRoot.path, userData.path) || isSameOrDescendant(userData.path, dataRoot.path)) {
+    throw new Error('E2E data root and userData directory must not overlap');
+  }
+  for (const [label, target] of [['fixture', fixture.path], ['result', result.path]] as const) {
+    if (isSameOrDescendant(target, userData.path) || isSameOrDescendant(target, dataRoot.path)) {
+      throw new Error(`E2E ${label} file must not overlap userData or the data root`);
+    }
+  }
+  return Object.freeze({ root: fixture.root, fixtureFile: fixture.path, resultFile: result.path });
+}
+
+function validateE2eResult(result: unknown): E2eHarnessResult {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid E2E result');
+  const keys = Object.keys(result);
+  if (keys.some((key) => !['ok', 'assertions', 'error'].includes(key)) || !keys.includes('ok') || !keys.includes('assertions')) throw new Error('Invalid E2E result');
+  const value = result as { ok?: unknown; assertions?: unknown; error?: unknown };
+  if (
+    typeof value.ok !== 'boolean' || !Array.isArray(value.assertions) || value.assertions.length > E2E_MAX_ASSERTIONS ||
+    value.assertions.some((item) => typeof item !== 'string' || item.length < 1 || item.length > 200) ||
+    (value.error !== undefined && (typeof value.error !== 'string' || value.error.length < 1 || value.error.length > 2_000)) ||
+    (value.ok ? value.error !== undefined : typeof value.error !== 'string')
+  ) throw new Error('Invalid E2E result');
+  return Object.freeze({ ok: value.ok, assertions: Object.freeze([...value.assertions]), ...(value.error ? { error: value.error } : {}) });
+}
+
+function registerE2eResultChannel(paths: E2eHarnessPaths): void {
+  if (!e2eHarnessEnabled) throw new Error('E2E result channel requires the exact harness guard');
+  if (e2eResultChannelRegistered) throw new Error('E2E result channel is already registered');
+  e2eResultChannelRegistered = true;
+  const resultHandle = fs.openSync(paths.resultFile, 'r+');
+  ipcMain.handle(E2E_RESULT_CHANNEL, (_event, result: unknown) => {
+    if (!e2eHarnessEnabled) throw new Error('E2E result channel is unavailable');
+    if (e2eResultSubmitted) throw new Error('E2E result was already submitted');
+    const value = validateE2eResult(result);
+    e2eResultSubmitted = true;
+    fs.ftruncateSync(resultHandle, 0);
+    fs.writeFileSync(resultHandle, JSON.stringify(value), 'utf8');
+    fs.fsyncSync(resultHandle);
+    fs.closeSync(resultHandle);
+    setTimeout(() => app.quit(), 30);
+    return { ok: true, data: undefined };
+  });
 }
 
 function reportStartupError(error: unknown) {
@@ -241,7 +361,7 @@ export interface MainStartupDependencies {
   runCompatibilityStartupWriters?: () => Promise<void>;
   initializeStudySupervisor?: () => Promise<void>;
   initializeTickTickService?: () => Promise<void>;
-  ensureDailyAutoBackup(): void;
+  ensureDailyAutoBackup(): void | Promise<unknown>;
   registerImageProtocol(): void;
   registerWindowStateIpc(): void;
   registerRuntimeIpc(): void;
@@ -268,6 +388,7 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
 export async function runMainStartup(
   dependencies: MainStartupDependencies = defaultMainStartupDependencies
 ): Promise<void> {
+  const harnessPaths = e2eHarnessEnabled ? validateE2eHarnessEnvironment() : undefined;
   dependencies.initializePaths();
   const initialization = await dependencies.initializeDatabase();
   if (initialization.state === 'needs_recovery') dependencies.assertDatabaseReadyForRuntimeIpc();
@@ -287,13 +408,19 @@ export async function runMainStartup(
     dependencies.assertDatabaseReadyForRuntimeIpc();
   }
   try {
-    dependencies.ensureDailyAutoBackup();
+    const autoBackup = dependencies.ensureDailyAutoBackup();
+    if (harnessPaths) await autoBackup;
   } catch (error) {
     console.warn('[AutoBackup]', error);
   }
   dependencies.registerImageProtocol();
   dependencies.registerWindowStateIpc();
   dependencies.registerRuntimeIpc();
+  if (harnessPaths) {
+    const { applyAgentControlCenterFixture } = await import('./e2e/agentControlCenterFixture');
+    await applyAgentControlCenterFixture(harnessPaths.fixtureFile);
+    registerE2eResultChannel(harnessPaths);
+  }
   dependencies.createWindow();
 }
 

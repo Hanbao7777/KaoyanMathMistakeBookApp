@@ -323,3 +323,12 @@ const api: AppApi = {
 };
 
 contextBridge.exposeInMainWorld('api', api);
+
+if (process.env.KAOYAN_E2E_HARNESS === '1') {
+  contextBridge.exposeInMainWorld('agentControlE2e', Object.freeze({
+    async report(result: { readonly ok: boolean; readonly assertions: readonly string[]; readonly error?: string }) {
+      const response = await ipcRenderer.invoke('agentControl:e2e:writeResult', result) as IpcResponse<void>;
+      if (!response || response.ok !== true || !('data' in response)) throw new Error('Invalid E2E result acknowledgement');
+    }
+  }));
+}
