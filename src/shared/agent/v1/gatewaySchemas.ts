@@ -10,6 +10,8 @@ import {
   detailLevels,
   gatewayBusinessCommandTypes,
   gatewayBusinessQueryTypes,
+  gatewayManagementCommandTypes,
+  gatewayManagementQueryTypes,
   gatewayWorkflowCommandTypes,
   gatewayWorkflowQueryTypes,
   idempotencyRequirements,
@@ -40,7 +42,10 @@ import {
   type ExecutionReceipt,
   type GatewayWorkflowCommand,
   type GatewayWorkflowQuery,
+  type GatewayManagementCommand,
+  type GatewayManagementQuery,
   type JsonObject,
+  type JsonValue,
   type OperationCatalog,
   type OperationDescriptor,
   type OperationPolicyOverride,
@@ -54,7 +59,8 @@ import {
   type ReceiptStatus,
   type RedactionProfile
 } from './gatewayContracts';
-import type { DataVersion, EntityRef } from './contracts';
+import type { CommandResult, DataVersion, EntityRef, DomainEvent } from './contracts';
+import { validateDomainEvent } from './schemas';
 
 type MutableJsonObject = Record<string, unknown>;
 type Assertion = (value: unknown, path: string) => void;
@@ -78,9 +84,7 @@ const CURSOR = /^cursor-v1\.[A-Za-z0-9_-]{16,384}\.[0-9a-f]{64}$/;
 const SAFE_NAME = /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/;
 const SAFE_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,99}$/;
 const CATALOG_VERSION = /^agent-catalog-v1@[1-9][0-9]{0,8}$/;
-const FORBIDDEN_CREDENTIAL_KEYS = new Set([
-  'principal', 'credentials', 'credential', 'bearerToken', 'accessToken', 'refreshToken', 'privateKey', 'signature'
-]);
+const PUBLIC_KEY = /^[A-Za-z0-9_-]{64,16384}$/;
 
 function fail(path: string): never {
   throw new AgentError('VALIDATION_ERROR', { field: path });
@@ -213,6 +217,10 @@ export function validateJsonObject(value: unknown, path = 'value'): asserts valu
   validateJson(value, path, new Set(), { nodes: 0, entries: 0 }, 0);
 }
 
+export function validateJsonValue(value: unknown, path = 'value'): asserts value is JsonValue {
+  validateJson(value, path, new Set(), { nodes: 0, entries: 0 }, 0);
+}
+
 function canonicalJsonValue(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -331,6 +339,19 @@ export function validateAgentPrincipalClaims(value: unknown, path = 'principal')
   boolean(result.renderer, `${path}.renderer`);
 }
 
+function normalizedCredentialKey(key: string): string {
+  return key.toLowerCase().replace(/[_-]/g, '');
+}
+
+function isForbiddenCredentialKey(key: string): boolean {
+  const normalized = normalizedCredentialKey(key);
+  if (normalized === 'publickey' || normalized === 'publickeyfingerprint' || normalized === 'keygeneration') return false;
+  return normalized === 'principal' || normalized === 'credential' || normalized === 'credentials' || normalized === 'secret' ||
+    normalized === 'signature' || normalized === 'keymaterial' || normalized.includes('privatekey') || normalized.includes('password') ||
+    normalized.includes('apikey') || normalized.includes('token') || normalized.includes('bearer') || normalized.includes('accesscredential') ||
+    normalized.includes('refreshcredential');
+}
+
 function rejectCredentialMaterial(value: unknown, path: string): void {
   if (value === null || typeof value !== 'object') return;
   if (Array.isArray(value)) {
@@ -340,7 +361,7 @@ function rejectCredentialMaterial(value: unknown, path: string): void {
   const result = value as MutableJsonObject;
   if (result.kind === 'agent-principal') fail(path);
   for (const key of Object.keys(result)) {
-    if (FORBIDDEN_CREDENTIAL_KEYS.has(key)) fail(`${path}.${key}`);
+    if (isForbiddenCredentialKey(key)) fail(`${path}.${key}`);
     rejectCredentialMaterial(result[key], `${path}.${key}`);
   }
 }
@@ -370,7 +391,7 @@ export function validateAgentCommandEnvelope(value: unknown): asserts value is A
   required(envelope, ['apiVersion', 'kind', 'operation', 'payload', 'requestId', 'catalog'], 'envelope');
   validateApiVersion(envelope.apiVersion, 'envelope.apiVersion');
   if (envelope.kind !== 'agent-command') fail('envelope.kind');
-  oneOf(envelope.operation, [...gatewayWorkflowCommandTypes, ...gatewayBusinessCommandTypes], 'envelope.operation');
+  oneOf(envelope.operation, [...gatewayWorkflowCommandTypes, ...gatewayManagementCommandTypes, ...gatewayBusinessCommandTypes], 'envelope.operation');
   validateJsonObject(envelope.payload, 'envelope.payload');
   rejectCredentialMaterial(envelope.payload, 'envelope.payload');
   uuid(envelope.requestId, 'envelope.requestId');
@@ -380,6 +401,9 @@ export function validateAgentCommandEnvelope(value: unknown): asserts value is A
     fail('envelope.expectedVersion');
   }
   if (envelope.workflow !== undefined) validateWorkflowReference(envelope.workflow, 'envelope.workflow');
+  if ((gatewayManagementCommandTypes as readonly string[]).includes(envelope.operation as string)) {
+    validateGatewayManagementCommand({ type: envelope.operation as GatewayManagementCommand['type'], payload: envelope.payload }, 'envelope');
+  }
 }
 
 export function validateAgentQueryEnvelope(value: unknown): asserts value is AgentQueryEnvelope {
@@ -387,21 +411,24 @@ export function validateAgentQueryEnvelope(value: unknown): asserts value is Age
   required(envelope, ['apiVersion', 'kind', 'operation', 'payload', 'requestId', 'catalog'], 'envelope');
   validateApiVersion(envelope.apiVersion, 'envelope.apiVersion');
   if (envelope.kind !== 'agent-query') fail('envelope.kind');
-  oneOf(envelope.operation, [...gatewayWorkflowQueryTypes, ...gatewayBusinessQueryTypes], 'envelope.operation');
+  oneOf(envelope.operation, [...gatewayWorkflowQueryTypes, ...gatewayManagementQueryTypes, ...gatewayBusinessQueryTypes], 'envelope.operation');
   validateJsonObject(envelope.payload, 'envelope.payload');
   rejectCredentialMaterial(envelope.payload, 'envelope.payload');
   uuid(envelope.requestId, 'envelope.requestId');
   validateCatalogIdentity(envelope.catalog, 'envelope.catalog');
   if (envelope.page !== undefined) validatePageRequest(envelope.page, 'envelope.page');
+  if ((gatewayManagementQueryTypes as readonly string[]).includes(envelope.operation as string)) {
+    validateGatewayManagementQuery({ type: envelope.operation as GatewayManagementQuery['type'], payload: envelope.payload }, 'envelope');
+  }
 }
 
-function validateSerializedError(value: unknown, path: string): void {
+export function validateSerializedAgentError(value: unknown, path: string): void {
   const result = exact(value, ['code', 'message', 'retryable', 'details'], path);
   required(result, ['code', 'message', 'retryable'], path);
   oneOf(result.code, agentErrorCodes, `${path}.code`);
   string(result.message, `${path}.message`, 500);
   boolean(result.retryable, `${path}.retryable`);
-  if (result.details !== undefined) validateJsonObject(result.details, `${path}.details`);
+  if (result.details !== undefined) { validateJsonObject(result.details, `${path}.details`); rejectCredentialMaterial(result.details, `${path}.details`); }
 }
 
 function validatePageInfo(value: unknown, path: string): asserts value is PageInfo {
@@ -427,7 +454,7 @@ export function validateAgentExecuteOutcome(value: unknown, path = 'outcome'): a
       if (workflow.kind !== (result.kind === 'pending_approval' ? 'approval' : 'changeset')) fail(`${path}.workflow.kind`);
       uuid(workflow.id, `${path}.workflow.id`); timestamp(workflow.expiresAt, `${path}.workflow.expiresAt`); return;
     }
-    case 'rejected': exact(result, ['kind', 'error'], path); required(result, ['kind', 'error'], path); validateSerializedError(result.error, `${path}.error`); return;
+    case 'rejected': exact(result, ['kind', 'error'], path); required(result, ['kind', 'error'], path); validateSerializedAgentError(result.error, `${path}.error`); return;
     default: fail(`${path}.kind`);
   }
 }
@@ -440,7 +467,7 @@ export function validateAgentQueryOutcome(value: unknown, path = 'outcome'): ass
     return;
   }
   if (result.kind === 'rejected') {
-    exact(result, ['kind', 'error'], path); required(result, ['kind', 'error'], path); validateSerializedError(result.error, `${path}.error`); return;
+    exact(result, ['kind', 'error'], path); required(result, ['kind', 'error'], path); validateSerializedAgentError(result.error, `${path}.error`); return;
   }
   fail(`${path}.kind`);
 }
@@ -465,7 +492,7 @@ export function validateExecutionReceipt(value: unknown, path = 'receipt'): asse
   if (result.affectedSetHash !== undefined) hash(result.affectedSetHash, `${path}.affectedSetHash`);
   validateCatalogIdentity(result.catalog, `${path}.catalog`); if (result.baseVersion !== undefined) validateGatewayDataVersion(result.baseVersion, `${path}.baseVersion`);
   oneOf(result.status, receiptStatuses, `${path}.status`); if (result.dataVersion !== undefined) validateGatewayDataVersion(result.dataVersion, `${path}.dataVersion`);
-  if (result.outcomeHash !== undefined) hash(result.outcomeHash, `${path}.outcomeHash`); if (result.error !== undefined) validateSerializedError(result.error, `${path}.error`);
+  if (result.outcomeHash !== undefined) hash(result.outcomeHash, `${path}.outcomeHash`); if (result.error !== undefined) validateSerializedAgentError(result.error, `${path}.error`);
   timestamp(result.createdAt, `${path}.createdAt`); timestamp(result.updatedAt, `${path}.updatedAt`);
   if (result.updatedAt < result.createdAt) fail(`${path}.updatedAt`);
   if (result.status === 'admitted' && (result.dataVersion !== undefined || result.outcomeHash !== undefined || result.error !== undefined)) fail(path);
@@ -631,9 +658,9 @@ function validatePolicyBounds(value: unknown, path: string): asserts value is De
 export function validateOperationDescriptor(value: unknown, path = 'descriptor'): asserts value is OperationDescriptor {
   const result = exact(value, [
     'apiVersion', 'name', 'kind', 'domain', 'catalogVersion', 'inputSchema', 'outputSchema', 'requiredScopes', 'sideEffects',
-    'idempotency', 'recovery', 'riskResolver', 'policyBounds', 'rendererManagement', 'allowedWhenExternalControlDisabled'
+    'idempotency', 'recovery', 'riskResolver', 'policyBounds', 'rendererManagement', 'allowedWhenExternalControlDisabled', 'visibility'
   ], path);
-  required(result, ['apiVersion', 'name', 'kind', 'domain', 'catalogVersion', 'inputSchema', 'outputSchema', 'requiredScopes', 'sideEffects', 'idempotency', 'recovery', 'riskResolver', 'policyBounds', 'rendererManagement', 'allowedWhenExternalControlDisabled'], path);
+  required(result, ['apiVersion', 'name', 'kind', 'domain', 'catalogVersion', 'inputSchema', 'outputSchema', 'requiredScopes', 'sideEffects', 'idempotency', 'recovery', 'riskResolver', 'policyBounds', 'rendererManagement', 'allowedWhenExternalControlDisabled', 'visibility'], path);
   validateApiVersion(result.apiVersion, `${path}.apiVersion`); validateOperationName(result.name, `${path}.name`); oneOf(result.kind, operationKinds, `${path}.kind`);
   oneOf(result.domain, operationDomains, `${path}.domain`); if (typeof result.catalogVersion !== 'string' || !CATALOG_VERSION.test(result.catalogVersion)) fail(`${path}.catalogVersion`);
   safeName(result.inputSchema, `${path}.inputSchema`); safeName(result.outputSchema, `${path}.outputSchema`);
@@ -643,13 +670,14 @@ export function validateOperationDescriptor(value: unknown, path = 'descriptor')
   oneOf(result.idempotency, idempotencyRequirements, `${path}.idempotency`); oneOf(result.recovery, recoveryRequirements, `${path}.recovery`);
   oneOf(result.riskResolver, riskResolvers, `${path}.riskResolver`); validatePolicyBounds(result.policyBounds, `${path}.policyBounds`);
   boolean(result.rendererManagement, `${path}.rendererManagement`); boolean(result.allowedWhenExternalControlDisabled, `${path}.allowedWhenExternalControlDisabled`);
-  const isCommand = (gatewayWorkflowCommandTypes as readonly string[]).includes(result.name as string) || (gatewayBusinessCommandTypes as readonly string[]).includes(result.name as string);
+  const isCommand = (gatewayWorkflowCommandTypes as readonly string[]).includes(result.name as string) || (gatewayManagementCommandTypes as readonly string[]).includes(result.name as string) || (gatewayBusinessCommandTypes as readonly string[]).includes(result.name as string);
   if ((result.kind === 'command') !== isCommand) fail(`${path}.kind`);
   if (result.kind === 'command' && result.idempotency !== 'required') fail(`${path}.idempotency`);
   if (result.kind === 'query' && result.sideEffects !== undefined && (result.sideEffects as readonly unknown[]).length > 0) fail(`${path}.sideEffects`);
   if (result.rendererManagement && result.domain !== 'management') fail(`${path}.rendererManagement`);
   if (result.allowedWhenExternalControlDisabled !== result.rendererManagement) fail(`${path}.allowedWhenExternalControlDisabled`);
   if (result.policyBounds.minimumRisk === 'R4' && result.recovery === 'none') fail(`${path}.recovery`);
+  oneOf(result.visibility, ['authorized-principal', 'owner-or-admin', 'public'] as const, `${path}.visibility`);
 }
 
 export function catalogHashInput(catalog: Pick<OperationCatalog, 'apiVersion' | 'version' | 'hashAlgorithm' | 'operations'>): JsonObject {
@@ -761,4 +789,144 @@ export function validateGatewayWorkflowQuery(value: unknown, path = 'query'): as
     case 'agent.audit.verify': { const payload = exact(query.payload, ['segmentId'], payloadPath); if (payload.segmentId !== undefined) uuid(payload.segmentId, `${payloadPath}.segmentId`); return; }
     default: fail(`${path}.type`);
   }
+}
+
+function validatePublicKeyBinding(value: unknown, path: string): void {
+  const result = exact(value, ['clientId', 'publicKeyFormat', 'publicKey', 'publicKeyFingerprint', 'signatureAlgorithm', 'expectedRegistryGeneration'], path);
+  required(result, ['clientId', 'publicKeyFormat', 'publicKey', 'publicKeyFingerprint', 'signatureAlgorithm', 'expectedRegistryGeneration'], path);
+  safeName(result.clientId, `${path}.clientId`);
+  if (typeof result.publicKey !== 'string' || !PUBLIC_KEY.test(result.publicKey)) fail(`${path}.publicKey`);
+  if (result.publicKeyFormat !== 'spki-der-base64url' || result.signatureAlgorithm !== 'rsa-pss-sha256') fail(path);
+  const bytes = decodeCanonicalBase64Url(result.publicKey as string, `${path}.publicKey`);
+  validateRsaSpki(bytes, `${path}.publicKey`);
+  if (result.publicKeyFingerprint !== publicKeyFingerprintForSpki(result.publicKey as string)) fail(`${path}.publicKeyFingerprint`);
+  safeNonNegative(result.expectedRegistryGeneration, `${path}.expectedRegistryGeneration`);
+  rejectCredentialMaterial(result, path);
+}
+
+function decodeCanonicalBase64Url(value: string, path: string): number[] {
+  if (value.length % 4 === 1 || value.includes('=') || /[^A-Za-z0-9_-]/.test(value)) fail(path);
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const bytes: number[] = [];
+  let buffer = 0;
+  let bits = 0;
+  for (const character of value) {
+    buffer = (buffer << 6) | alphabet.indexOf(character);
+    bits += 6;
+    if (bits >= 8) { bits -= 8; bytes.push((buffer >>> bits) & 0xff); }
+  }
+  if (bits >= 6 || (bits > 0 && (buffer & ((1 << bits) - 1)) !== 0)) fail(path);
+  let encoded = '';
+  for (let index = 0; index < bytes.length; index += 3) {
+    const first = bytes[index]; const second = bytes[index + 1]; const third = bytes[index + 2];
+    encoded += alphabet[first >>> 2];
+    encoded += alphabet[((first & 3) << 4) | ((second ?? 0) >>> 4)];
+    if (second !== undefined) encoded += alphabet[((second & 15) << 2) | ((third ?? 0) >>> 6)];
+    if (third !== undefined) encoded += alphabet[third & 63];
+  }
+  if (encoded !== value) fail(path);
+  return bytes;
+}
+
+interface DerElement { readonly tag: number; readonly contentStart: number; readonly end: number; }
+
+function readDerElement(bytes: readonly number[], offset: number, path: string): DerElement {
+  if (offset + 2 > bytes.length) fail(path);
+  const tag = bytes[offset];
+  const firstLength = bytes[offset + 1];
+  let contentStart = offset + 2;
+  let length = firstLength;
+  if ((firstLength & 0x80) !== 0) {
+    const lengthBytes = firstLength & 0x7f;
+    if (lengthBytes < 1 || lengthBytes > 4 || contentStart + lengthBytes > bytes.length || bytes[contentStart] === 0) fail(path);
+    length = 0;
+    for (let index = 0; index < lengthBytes; index += 1) length = length * 256 + bytes[contentStart + index];
+    if (length < 128) fail(path);
+    contentStart += lengthBytes;
+  }
+  const end = contentStart + length;
+  if (end > bytes.length) fail(path);
+  return { tag, contentStart, end };
+}
+
+export function publicKeyFingerprintForSpki(publicKey: string): string {
+  return hashCanonicalJson({ publicKeyFormat: 'spki-der-base64url', publicKey });
+}
+
+function validateRsaSpki(bytes: readonly number[], path: string): void {
+  if (bytes.length < 64) fail(path);
+  const outer = readDerElement(bytes, 0, path);
+  if (outer.tag !== 0x30 || outer.end !== bytes.length) fail(path);
+  const algorithm = readDerElement(bytes, outer.contentStart, path);
+  if (algorithm.tag !== 0x30) fail(path);
+  const oid = readDerElement(bytes, algorithm.contentStart, path);
+  const rsaEncryptionOid = [0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+  if (oid.tag !== 0x06 || oid.end - oid.contentStart !== rsaEncryptionOid.length || rsaEncryptionOid.some((byte, index) => bytes[oid.contentStart + index] !== byte)) fail(path);
+  const parameters = readDerElement(bytes, oid.end, path);
+  if (parameters.tag !== 0x05 || parameters.contentStart !== parameters.end || parameters.end !== algorithm.end) fail(path);
+  const publicKeyBits = readDerElement(bytes, algorithm.end, path);
+  if (publicKeyBits.tag !== 0x03 || publicKeyBits.contentStart + 2 >= publicKeyBits.end || bytes[publicKeyBits.contentStart] !== 0 || bytes[publicKeyBits.contentStart + 1] !== 0x30 || publicKeyBits.end !== outer.end) fail(path);
+}
+
+export function validateGatewayManagementCommand(value: unknown, path = 'command'): asserts value is GatewayManagementCommand {
+  const command = exact(value, ['type', 'payload'], path);
+  required(command, ['type', 'payload'], path);
+  oneOf(command.type, gatewayManagementCommandTypes, `${path}.type`);
+  validatePublicKeyBinding(command.payload, `${path}.payload`);
+}
+
+export function validateGatewayManagementQuery(value: unknown, path = 'query'): asserts value is GatewayManagementQuery {
+  const query = exact(value, ['type', 'payload'], path);
+  required(query, ['type', 'payload'], path);
+  if (query.type !== 'agent.receipts.get_status') fail(`${path}.type`);
+  const payload = exact(query.payload, ['clientId', 'requestId'], `${path}.payload`);
+  required(payload, ['clientId', 'requestId'], `${path}.payload`);
+  safeName(payload.clientId, `${path}.payload.clientId`);
+  uuid(payload.requestId, `${path}.payload.requestId`);
+  rejectCredentialMaterial(payload, `${path}.payload`);
+}
+
+export function validateSafeClientKeyBindingResult(value: unknown, path = 'result'): void {
+  const result = exact(value, ['apiVersion', 'kind', 'clientId', 'publicKeyFormat', 'publicKeyFingerprint', 'signatureAlgorithm', 'keyGeneration', 'registryGeneration', 'status'], path);
+  required(result, ['apiVersion', 'kind', 'clientId', 'publicKeyFormat', 'publicKeyFingerprint', 'signatureAlgorithm', 'keyGeneration', 'registryGeneration', 'status'], path);
+  validateApiVersion(result.apiVersion, `${path}.apiVersion`);
+  if (result.kind !== 'client-key-binding') fail(`${path}.kind`);
+  safeName(result.clientId, `${path}.clientId`); hash(result.publicKeyFingerprint, `${path}.publicKeyFingerprint`);
+  if (result.publicKeyFormat !== 'spki-der-base64url' || result.signatureAlgorithm !== 'rsa-pss-sha256') fail(path);
+  safeNonNegative(result.keyGeneration, `${path}.keyGeneration`); safeNonNegative(result.registryGeneration, `${path}.registryGeneration`);
+  oneOf(result.status, ['registered', 'rotated'] as const, `${path}.status`);
+  rejectCredentialMaterial(result, path);
+}
+
+export function validateSafeReceiptStatusResult(value: unknown, path = 'result'): void {
+  const result = exact(value, ['apiVersion', 'kind', 'clientId', 'requestId', 'status', 'receipt', 'terminal'], path);
+  required(result, ['apiVersion', 'kind', 'clientId', 'requestId', 'status', 'receipt'], path);
+  validateApiVersion(result.apiVersion, `${path}.apiVersion`);
+  if (result.kind !== 'receipt-status') fail(`${path}.kind`);
+  safeName(result.clientId, `${path}.clientId`); uuid(result.requestId, `${path}.requestId`); oneOf(result.status, receiptStatuses, `${path}.status`);
+  validateExecutionReceipt(result.receipt, `${path}.receipt`);
+  const receipt = result.receipt as ExecutionReceipt;
+  if (receipt.clientId !== result.clientId || receipt.requestId !== result.requestId || receipt.status !== result.status) fail(`${path}.receipt`);
+  if (result.status === 'admitted') {
+    if (result.terminal !== undefined) fail(`${path}.terminal`);
+    return;
+  }
+  const terminal = object(result.terminal, `${path}.terminal`);
+  if (result.status === 'completed') {
+    const commandResult = exact(terminal, ['kind', 'result'], `${path}.terminal`);
+    required(commandResult, ['kind', 'result'], `${path}.terminal`);
+    if (commandResult.kind !== 'command-result') fail(`${path}.terminal.kind`);
+    const replay = exact(commandResult.result, ['changed', 'value', 'events', 'dataVersion'], `${path}.terminal.result`);
+    required(replay, ['changed', 'value', 'events', 'dataVersion'], `${path}.terminal.result`);
+    boolean(replay.changed, `${path}.terminal.result.changed`); validateJsonValue(replay.value, `${path}.terminal.result.value`);
+    array(replay.events, `${path}.terminal.result.events`, validateDomainEvent, gatewayMaxAffectedEntities);
+    validateGatewayDataVersion(replay.dataVersion, `${path}.terminal.result.dataVersion`);
+    if (receipt.dataVersion === undefined || canonicalizeJson(receipt.dataVersion) !== canonicalizeJson(replay.dataVersion)) fail(`${path}.terminal.result.dataVersion`);
+    return;
+  }
+  const replay = exact(terminal, ['kind', 'error'], `${path}.terminal`);
+  required(replay, ['kind', 'error'], `${path}.terminal`);
+  if (replay.kind !== 'serialized-agent-error') fail(`${path}.terminal.kind`);
+  validateSerializedAgentError(replay.error, `${path}.terminal.error`);
+  if (receipt.error === undefined || canonicalizeJson(receipt.error) !== canonicalizeJson(replay.error)) fail(`${path}.terminal.error`);
 }

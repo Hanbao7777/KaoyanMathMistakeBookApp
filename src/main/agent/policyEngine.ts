@@ -16,10 +16,10 @@ import {
   validateOperationPolicyOverride
 } from '../../shared/agent/v1/gatewaySchemas';
 import {
-  isExternalPhaseBBusinessOperation,
   operationCatalogIdentity,
   resolveOperationDescriptor
 } from '../../shared/agent/v1/operationCatalog';
+import { isMcpExternalBusinessOperation } from '../../shared/mcp/v1/exposureManifest';
 import { assertIssuedAgentPrincipal, isMigratedRendererBusinessOperation } from './clientAuthenticator';
 import type { AgentControlSettings } from './clientRegistry';
 
@@ -127,8 +127,8 @@ export class PolicyEngine {
     const migratedRendererBusiness = principal.renderer && isMigratedRendererBusinessOperation(descriptor.name);
     const localManagementAction = principal.renderer && descriptor.rendererManagement;
     const localApprovedChangeSet = principal.renderer && evaluation.localApprovedChangeSet === true;
-    if (!principal.renderer && descriptor.domain !== 'management' && !isExternalPhaseBBusinessOperation(descriptor.name)) {
-      return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'EXTERNAL_PHASE_B_BOUNDARY');
+    if (!principal.renderer && descriptor.domain !== 'management' && !isMcpExternalBusinessOperation(descriptor.name)) {
+      return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
     }
     if (principal.renderer && !migratedRendererBusiness && !localManagementAction && !localApprovedChangeSet) {
       return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'RENDERER_MANAGEMENT_ONLY');

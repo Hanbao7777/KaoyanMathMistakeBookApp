@@ -38,6 +38,7 @@ interface DescriptorDefinition {
   readonly approval?: ApprovalRequirement;
   readonly requiresChangeSet?: boolean;
   readonly rendererManagement?: boolean;
+  readonly visibility?: 'authorized-principal' | 'owner-or-admin' | 'public';
 }
 
 const disabledRendererManagementOperationSet = new Set<OperationName>([
@@ -46,6 +47,8 @@ const disabledRendererManagementOperationSet = new Set<OperationName>([
   'agent.clients.list',
   'agent.clients.update_access',
   'agent.clients.revoke',
+  'agent.clients.register_key',
+  'agent.clients.rotate_key',
   'agent.sessions.list',
   'agent.sessions.terminate',
   'agent.r4_grants.create',
@@ -69,31 +72,6 @@ const disabledRendererManagementOperationSet = new Set<OperationName>([
 export const disabledRendererManagementOperations = Object.freeze(
   [...disabledRendererManagementOperationSet].sort()
 ) as readonly OperationName[];
-
-// Phase B external access is deliberately limited to the B6/B7 Renderer migration tranche.
-export const externalPhaseBBusinessOperations = Object.freeze([
-  'questions.create',
-  'questions.update',
-  'questions.delete',
-  'questions.remove_image',
-  'questions.mark_mastery',
-  'questions.submit_review',
-  'questions.list',
-  'questions.get',
-  'questions.review_logs',
-  'questions.review_buckets',
-  'tasks.create',
-  'tasks.update',
-  'tasks.complete',
-  'tasks.uncomplete',
-  'tasks.delete',
-  'tasks.list',
-  'tasks.get',
-  'focus.sessions.create',
-  'focus.sessions.list'
-] as const);
-
-const externalPhaseBBusinessOperationSet = new Set<OperationName>(externalPhaseBBusinessOperations);
 
 const definitions: Record<OperationName, DescriptorDefinition> = {
   'agent.control.set_enabled': managementCommand(['control.manage'], 'R2', { rendererManagement: true }),
@@ -124,6 +102,9 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'agent.policy.get': managementQuery(['policy.read'], true),
   'agent.catalog.get': managementQuery(['system.read'], true),
   'agent.privacy.get': managementQuery(['system.read'], true),
+  'agent.clients.register_key': managementCommand(['clients.manage'], 'R2', { rendererManagement: true, visibility: 'owner-or-admin' }),
+  'agent.clients.rotate_key': managementCommand(['clients.manage'], 'R2', { rendererManagement: true, visibility: 'owner-or-admin' }),
+  'agent.receipts.get_status': { ...managementQuery(['system.read']), visibility: 'owner-or-admin' },
   'questions.create': businessCommand('questions', ['questions.write'], 'R2', 'inverse'),
   'questions.update': businessCommand('questions', ['questions.write'], 'R2', 'inverse'),
   'questions.delete': businessCommand('questions', ['questions.archive'], 'R2', 'quarantine', {
@@ -235,7 +216,8 @@ function descriptor(name: OperationName, definition: DescriptorDefinition): Oper
       requiresR4GrantWhenRiskR4: (definition.maximumRisk ?? minimumRisk) === 'R4'
     }),
     rendererManagement,
-    allowedWhenExternalControlDisabled: rendererManagement
+    allowedWhenExternalControlDisabled: rendererManagement,
+    visibility: definition.visibility ?? (definition.domain === 'management' ? 'owner-or-admin' : 'authorized-principal')
   };
 }
 
@@ -274,8 +256,4 @@ export function resolveOperationDescriptor(name: OperationName): OperationDescri
 
 export function isDisabledRendererManagementOperation(name: OperationName): boolean {
   return disabledRendererManagementOperationSet.has(name);
-}
-
-export function isExternalPhaseBBusinessOperation(name: OperationName): boolean {
-  return externalPhaseBBusinessOperationSet.has(name);
 }

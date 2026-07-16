@@ -4,6 +4,7 @@ const path = require('node:path');
 
 const projectRoot = path.resolve(__dirname, '../../..');
 const agent = require(path.join(projectRoot, 'dist/main/shared/agent/index.js'));
+const mcp = require(path.join(projectRoot, 'dist/main/shared/mcp/v1/index.js'));
 
 const requestId = '123e4567-e89b-42d3-a456-426614174000';
 const timestamp = '2026-07-16T10:00:00.000Z';
@@ -51,21 +52,21 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
     'agent.approvals.approve', 'agent.approvals.list', 'agent.approvals.reject', 'agent.audit.export',
     'agent.audit.search', 'agent.audit.verify', 'agent.catalog.get', 'agent.changesets.apply',
     'agent.changesets.get', 'agent.changesets.list', 'agent.changesets.reject', 'agent.clients.list',
-    'agent.clients.revoke', 'agent.clients.update_access', 'agent.control.set_enabled', 'agent.policy.get',
+    'agent.clients.register_key', 'agent.clients.revoke', 'agent.clients.rotate_key', 'agent.clients.update_access', 'agent.control.set_enabled', 'agent.policy.get',
     'agent.privacy.get', 'agent.r4_grants.create', 'agent.r4_grants.list', 'agent.r4_grants.revoke',
     'agent.sessions.list', 'agent.sessions.terminate', 'agent.status.get'
   ]);
   assert.equal(Object.isFrozen(agent.operationCatalog), true);
   assert.equal(Object.isFrozen(agent.operationCatalog.operations), true);
-  assert.equal(Object.isFrozen(agent.externalPhaseBBusinessOperations), true);
-  assert.deepEqual(agent.externalPhaseBBusinessOperations, [
+  assert.equal(Object.isFrozen(mcp.mcpExternalBusinessOperations), true);
+  assert.deepEqual(mcp.mcpExternalBusinessOperations, [
     'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image', 'questions.mark_mastery',
     'questions.submit_review', 'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets',
     'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete', 'tasks.list', 'tasks.get',
     'focus.sessions.create', 'focus.sessions.list'
   ]);
-  assert.equal(agent.isExternalPhaseBBusinessOperation('questions.migrate_categories'), false);
-  assert.equal(agent.isExternalPhaseBBusinessOperation('tasks.create'), true);
+  assert.equal(mcp.isMcpExternalBusinessOperation('questions.migrate_categories'), false);
+  assert.equal(mcp.isMcpExternalBusinessOperation('tasks.create'), true);
   assert.equal(agent.resolveOperationDescriptor('questions.clear_all').policyBounds.approval, 'r4_grant');
 });
 

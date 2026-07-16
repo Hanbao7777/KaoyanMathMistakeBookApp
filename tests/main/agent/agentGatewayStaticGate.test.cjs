@@ -68,9 +68,7 @@ test('AgentGateway has only execute/query externally and no persistence capabili
 });
 
 test('external business exposure is a catalog-owned boundary evaluated before workflow admission', () => {
-  assert.match(operationCatalog, /export const externalPhaseBBusinessOperations = Object\.freeze\(/);
-  assert.match(operationCatalog, /const externalPhaseBBusinessOperationSet = new Set<OperationName>\(externalPhaseBBusinessOperations\)/);
-  assert.match(operationCatalog, /export function isExternalPhaseBBusinessOperation\(name: OperationName\): boolean/);
-  assert.match(policyEngine, /!principal\.renderer && descriptor\.domain !== 'management' && !isExternalPhaseBBusinessOperation\(descriptor\.name\)/);
-  assert.match(policyEngine, /'EXTERNAL_PHASE_B_BOUNDARY'/);
+  assert.match(policyEngine, /isMcpExternalBusinessOperation\(descriptor\.name\)/);
+  assert.match(policyEngine, /'EXTERNAL_MCP_EXPOSURE_BOUNDARY'/);
+  assert.doesNotMatch(operationCatalog, /externalPhaseBBusinessOperations/);
 });

@@ -98,7 +98,16 @@ test('external principals are denied outside the B6-B7 business boundary despite
       ...(operation === 'questions.clear_all' ? { r4Grant } : {})
     });
     assert.equal(decision.disposition, 'deny', operation);
-    assert.equal(decision.reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY', operation);
+    assert.equal(decision.reasonCode, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY', operation);
+  }
+});
+
+test('external principals without management scope cannot use C1 receipt or key contracts', async () => {
+  const composition = await setup(['questions.read']);
+  const principal = await external(composition);
+  const settings = await composition.registry.getSettings();
+  for (const operation of ['agent.clients.register_key', 'agent.clients.rotate_key', 'agent.receipts.get_status']) {
+    assert.throws(() => evaluate(composition, principal, operation, { settings }), (error) => error.code === 'SCOPE_DENIED', operation);
   }
 });
 
@@ -248,17 +257,17 @@ test('R4 rejects wildcard, permanent, payload-mismatched, and descriptor-mismatc
   };
   assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  }).reasonCode, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
   assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input: { confirmation: 'different' }, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  }).reasonCode, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
   assert.throws(() => agent.validateR4Grant({ ...grant, targetHash: '*' }), /request is invalid/i);
   assert.throws(() => agent.validateR4Grant({ ...grant, expiresAt: '2026-07-16T10:15:00.001Z' }), /request is invalid/i);
   assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash },
     r4Grant: { ...grant, issuedAt: '2026-07-16T09:44:59.999Z', expiresAt: '2026-07-16T09:59:59.999Z' }
-  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  }).reasonCode, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
   assert.equal(evaluate(composition, principal, 'questions.replace_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  }).reasonCode, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
 });

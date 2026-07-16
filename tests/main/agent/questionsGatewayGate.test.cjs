@@ -8,10 +8,12 @@ const adapterPath = path.join(projectRoot, 'src/main/ipc/adapters/questionsIpc.t
 const registerPath = path.join(projectRoot, 'src/main/ipc/registerIpc.ts');
 const authenticationPath = path.join(projectRoot, 'src/main/agent/clientAuthenticator.ts');
 const catalogPath = path.join(projectRoot, 'src/shared/agent/v1/operationCatalog.ts');
+const manifestPath = path.join(projectRoot, 'src/shared/mcp/v1/exposureManifest.ts');
 const adapter = fs.readFileSync(adapterPath, 'utf8');
 const register = fs.readFileSync(registerPath, 'utf8');
 const authentication = fs.readFileSync(authenticationPath, 'utf8');
 const catalog = fs.readFileSync(catalogPath, 'utf8');
+const manifest = fs.readFileSync(manifestPath, 'utf8');
 
 const rendererOperations = [
   'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
@@ -43,12 +45,12 @@ test('fixed Renderer adapter exposes no generic operation or caller identity for
   assert.doesNotMatch(register, /questions:[^']+'[^\n]*getQuestionsApplication/);
 });
 
-test('external Phase B business allowlist has static parity with the accepted B6-B7 Renderer migration gate', () => {
+test('versioned external MCP business manifest has static parity with the accepted B6-B7 Renderer migration gate', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block, 'Missing migrated Renderer operation allowlist');
   const rendererAllowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  const externalBlock = catalog.match(/externalPhaseBBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
-  assert.ok(externalBlock, 'Missing immutable external Phase B business allowlist');
+  const externalBlock = manifest.match(/businessOperations: Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
+  assert.ok(externalBlock, 'Missing immutable versioned MCP business manifest');
   const externalAllowlist = [...externalBlock[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(rendererAllowlist, rendererOperations);
   assert.deepEqual(externalAllowlist, rendererOperations);

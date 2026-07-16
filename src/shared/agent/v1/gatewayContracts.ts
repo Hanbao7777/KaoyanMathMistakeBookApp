@@ -396,6 +396,7 @@ export interface OperationDescriptor {
   readonly policyBounds: DescriptorPolicyBounds;
   readonly rendererManagement: boolean;
   readonly allowedWhenExternalControlDisabled: boolean;
+  readonly visibility: 'authorized-principal' | 'owner-or-admin' | 'public';
 }
 
 export interface OperationPolicyOverride {
@@ -450,6 +451,15 @@ export const gatewayWorkflowQueryTypes = [
   'agent.privacy.get'
 ] as const;
 
+export const gatewayManagementCommandTypes = [
+  'agent.clients.register_key',
+  'agent.clients.rotate_key'
+] as const;
+
+export const gatewayManagementQueryTypes = [
+  'agent.receipts.get_status'
+] as const;
+
 export const gatewayBusinessCommandTypes = [
   'questions.create',
   'questions.update',
@@ -485,7 +495,9 @@ export const gatewayBusinessQueryTypes = [
 
 export const operationNames = [
   ...gatewayWorkflowCommandTypes,
+  ...gatewayManagementCommandTypes,
   ...gatewayWorkflowQueryTypes,
+  ...gatewayManagementQueryTypes,
   ...gatewayBusinessCommandTypes,
   ...gatewayBusinessQueryTypes
 ] as const;
@@ -520,3 +532,57 @@ export type GatewayWorkflowQuery =
   | { readonly type: 'agent.policy.get'; readonly payload: Record<string, never> }
   | { readonly type: 'agent.catalog.get'; readonly payload: Record<string, never> }
   | { readonly type: 'agent.privacy.get'; readonly payload: Record<string, never> };
+
+export interface PublicKeyBindingInput {
+  readonly clientId: string;
+  readonly publicKeyFormat: 'spki-der-base64url';
+  readonly publicKey: string;
+  readonly publicKeyFingerprint: string;
+  readonly signatureAlgorithm: 'rsa-pss-sha256';
+  readonly expectedRegistryGeneration: number;
+}
+
+export interface GatewayRegisterKeyCommand {
+  readonly type: 'agent.clients.register_key';
+  readonly payload: PublicKeyBindingInput;
+}
+
+export interface GatewayRotateKeyCommand {
+  readonly type: 'agent.clients.rotate_key';
+  readonly payload: PublicKeyBindingInput;
+}
+
+export type GatewayManagementCommand = GatewayRegisterKeyCommand | GatewayRotateKeyCommand;
+
+export interface GatewayReceiptStatusQuery {
+  readonly type: 'agent.receipts.get_status';
+  readonly payload: { readonly clientId: string; readonly requestId: string };
+}
+
+export type GatewayManagementQuery = GatewayReceiptStatusQuery;
+
+export interface SafeClientKeyBindingResult {
+  readonly apiVersion: AgentApiVersion;
+  readonly kind: 'client-key-binding';
+  readonly clientId: string;
+  readonly publicKeyFormat: 'spki-der-base64url';
+  readonly publicKeyFingerprint: string;
+  readonly signatureAlgorithm: 'rsa-pss-sha256';
+  readonly keyGeneration: number;
+  readonly registryGeneration: number;
+  readonly status: 'registered' | 'rotated';
+}
+
+export type SafeReceiptTerminal =
+  | { readonly kind: 'command-result'; readonly result: CommandResult }
+  | { readonly kind: 'serialized-agent-error'; readonly error: SerializedAgentError };
+
+export interface SafeReceiptStatusResult {
+  readonly apiVersion: AgentApiVersion;
+  readonly kind: 'receipt-status';
+  readonly clientId: string;
+  readonly requestId: string;
+  readonly status: ReceiptStatus;
+  readonly receipt: ExecutionReceipt;
+  readonly terminal?: SafeReceiptTerminal;
+}
