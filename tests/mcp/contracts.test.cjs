@@ -63,6 +63,16 @@ test('external manifest and registry expose exactly the accepted 19 operations',
   assert.equal(registry.mcpV1ServerMetadata.currentProtocolVersion, '2025-11-25');
 });
 
+test('launcher contract is an exact projection of the external manifest and catalog', () => {
+  assert.equal(mcp.launcherOperationManifest.exposureVersion, mcp.mcpExternalExposureManifest.version);
+  assert.deepEqual(mcp.launcherOperationManifest.catalog, agent.operationCatalogIdentity);
+  assert.deepEqual(mcp.launcherOperationManifest.operations.map(({ name }) => name).sort(), [...mcp.mcpExternalBusinessOperations].sort());
+  for (const operation of mcp.launcherOperationManifest.operations) {
+    const descriptor = agent.resolveOperationDescriptor(operation.name);
+    assert.deepEqual({ kind: operation.kind, idempotency: operation.idempotency }, { kind: descriptor.kind, idempotency: descriptor.idempotency });
+  }
+});
+
 test('every business tool has an exact runtime envelope and payload validator', () => {
   const questionInput = {
     title: 'T', content: 'C', wrong_thinking: '', wrong_solution: '', correct_solution: 'S', answer: 'A',
@@ -153,6 +163,10 @@ test('result mapping separates tool correction from transport failures and redac
   assert.equal(result.data.path, '[REDACTED]');
   assert.equal(result.data.safe, true);
   assert.doesNotThrow(() => mcp.validateMcpStructuredOutcome(result));
+  const replay = mapping.mapMcpGatewayResult({ ...base, outcome: { kind: 'replayed', receiptId: requestId, result: { changed: true, value: { safe: true }, events: [], dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } } });
+  const terminalReplay = mcp.mapGatewayTerminalToMcpOutcome('questions.create', requestId, { kind: 'command-result', result: { changed: true, value: { safe: true }, events: [], dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } });
+  assert.deepEqual(replay, terminalReplay);
+  assert.equal(replay.receiptId, undefined);
   assert.equal(typeof mapping.resolveMcpResultMapper('questions.create'), 'function');
   assert.throws(() => mapping.resolveMcpResultMapper('questions.undo_review'), /No MCP result mapper/);
 });
