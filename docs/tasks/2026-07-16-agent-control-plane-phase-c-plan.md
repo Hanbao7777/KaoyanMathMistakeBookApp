@@ -7,6 +7,10 @@ decision-by-decision grilling session. It refines the sequencing in
 `docs/design/agent-control-plane.md` without weakening the accepted Phase A/B
 safety invariants.
 
+Revision 1 incorporates the independent acceptance review completed on
+2026-07-16. C0 is the only dispatchable task until its evidence gate passes; C1
+through C15 remain gated by the corrected dependencies below.
+
 Phase C turns the accepted `AgentGateway` into a real, installable MCP product.
 It does not add a second business path: every external request authenticates into
 an immutable `AgentPrincipal` and then calls only `AgentGateway.execute` or
@@ -23,8 +27,10 @@ personal use.
 2. **Hard clients:** Codex CLI and Claude Desktop are the first two real-client
    acceptance targets.
 3. **Pairing:** pairing starts in the App control center. The App installs a
-   stable launcher, creates a per-client identity/key, configures the client with
-   explicit consent, and offers a manual fallback.
+   stable launcher and requests a per-client identity, while the launcher creates
+   and owns the private key in Windows secure storage. The App registers only the
+   public binding through audited Gateway management operations, configures the
+   client with explicit consent, and offers a manual fallback.
 4. **Default authority:** a new client starts read-only. The user may select the
    `trusted personal AI` preset: migrated read/write scopes, R0-R3 automatic
    execution, and operation-bound one-use/time-limited approval for every R4.
@@ -109,7 +115,9 @@ personal use.
   localhost, validate Origin, and authenticate every connection.
 - MCP HTTP authorization uses protected-resource metadata, authorization-server
   discovery, OAuth 2.1, PKCE S256, exact redirect validation, and RFC 8707
-  resource/audience binding.
+  resource/audience binding. The protected MCP resource identifier and
+  authorization-server endpoints use HTTPS with ordinary TLS certificate
+  validation; localhost binding is not by itself an HTTP exemption.
 - Tasks are experimental in `2025-11-25`; the App job state machine is
   authoritative and Tasks are an optional negotiated projection.
 - The official TypeScript SDK repository recommends production v1 until stable
@@ -117,9 +125,10 @@ personal use.
   `@modelcontextprotocol/server@2.0.0-beta.4` as pre-release. C1 pins v1.29.0
   exactly and records a future v2 upgrade gate; no caret range is permitted.
 - Codex local clients support stdio and Streamable HTTP/OAuth, share MCP settings
-  through `config.toml`, and support CLI registration. Claude supports local
-  stdio configuration and Desktop Extensions; the installer spike chooses the
-  least destructive current official route and preserves manual fallback.
+  through `config.toml`, and support CLI registration. Claude Desktop's local
+  target is stdio through its current MCP Bundle (`.mcpb`) or documented local
+  configuration route. Claude Desktop and Claude Code are separate products;
+  C0 must measure each exact product before assigning an HTTP/OAuth target.
 
 Official references:
 
@@ -192,9 +201,10 @@ C1 + C4 + accepted B6/B7 ─> C6 first 19-operation MCP slice
                        │
         C9-C13 sequential domain migration waves
                        │
-C2 + C3 + C7 ─────────> C14 direct HTTP OAuth
+C2 + C3 + C7 ─────────> C14 direct HTTPS OAuth
                        │
-C5 + C7 + C14 ────────> C15 packaging, upgrade, completion gates
+C5 + C7 + C8 + C9 + C10 + C11 + C12 + C13 + C14
+                       └─> C15 packaging, upgrade, completion gates
 ```
 
 Tasks sharing `operationCatalog.ts`, Gateway bootstrap, main lifecycle, package
@@ -215,8 +225,10 @@ this document or a narrowly linked decision note. Do not edit Gateway behavior.
 
 **Work:**
 
-- Record installed Codex CLI and Claude Desktop versions and the protocol version
-  each negotiates with a minimal isolated server.
+- Record installed Codex CLI, Claude Desktop, and—only for the HTTP comparison—
+  Claude Code versions. Test each exact product independently and record
+  unsupported product/transport combinations as explicit no-go results rather
+  than treating “Claude” as one client.
 - Prove tools, resources, templates, prompts, list-changed notifications, structured
   tool results, cancellation, and progress behavior for both clients.
 - Verify exact v1.29.0 SDK support for required `2025-11-25` features; keep MCP
@@ -226,25 +238,42 @@ this document or a narrowly linked decision note. Do not edit Gateway behavior.
 - Compare standalone launcher options, including startup latency, binary size,
   stdout fidelity, signing/hash verification, Windows Defender behavior, and
   portable upgrade. Select one; do not ship a script wrapper as the product.
-- Prove a launcher can create/use a per-client asymmetric key protected through
-  Windows CNG or DPAPI without exposing private material to App config or logs.
+- Prove the launcher can create, sign with, rotate, and delete a per-client
+  asymmetric key using a persisted Windows CNG provider. DPAPI may protect
+  launcher metadata but is not described as the asymmetric key store. The App
+  receives only the public key/fingerprint; same-user full-process compromise
+  remains outside the declared threat boundary.
 - Determine the official Codex registration command/config merge and Claude
-  Desktop DXT/config path currently supported. Test backup, merge, conflict,
-  disconnect, and rollback on disposable profiles only.
-- Prove a specification-conforming local HTTPS strategy for the later OAuth
-  authorization-server endpoints with both real clients, including certificate
-  issuance, trust, rotation, removal, and no-admin install. If no acceptable
-  strategy exists, C0 reports a Phase C architecture blocker; C14 must not ship a
-  knowingly nonconforming plain-HTTP authorization server.
+  Desktop `.mcpb`/local-config path currently supported. Test backup, merge,
+  conflict, disconnect, and rollback on disposable profiles only.
+- Prove a specification-conforming local HTTPS strategy for the complete later
+  OAuth surface: the MCP Streamable HTTP endpoint and protected-resource
+  identifier, protected-resource metadata, authorization-server issuer and
+  metadata, authorization/token endpoints, and redirect/callback behavior.
+  Measure certificate issuance, hostname/SAN validation, trust, rotation,
+  removal, revocation behavior, and no-admin installation in every claimed hard
+  client. Plain HTTP is an explicit no-go for C14.
+- Exercise the proposed launcher journal through crash-before-forward,
+  crash-after-forward, lost-response, and packaging prototypes without adding it
+  to production. Confirm the current `AgentGateway` receipt model can remain the
+  sole business outcome authority.
 
-**Gate:** a written compatibility matrix and passing disposable-profile spikes.
-No production dependency is installed before this gate.
+**Gate:** commit a versioned compatibility matrix containing exact client, App,
+SDK, protocol, Windows, and launcher-build versions; per-feature pass/fail/N/A;
+artifact hashes; negotiated capabilities; certificate-chain/trust evidence;
+startup latency and binary size; and links to disposable-profile test output.
+The matrix must state no-go criteria and the selected launcher/key/certificate
+decisions. Any failure in HTTPS trust, stdout purity, exact-client support,
+journal recovery, or portable packaging blocks its dependent production task.
+No production dependency is installed before this gate is accepted.
 
 ### C1 — versioned MCP contracts and explicit registry
 
 **Planned files:** `src/shared/mcp/v1/*`, `src/main/mcp/registry.ts`,
 `src/main/mcp/resultMapping.ts`, narrowly owned exposure changes in
-`src/shared/agent/v1/operationCatalog.ts` and `src/main/agent/policyEngine.ts`,
+`src/shared/agent/v1/gatewayContracts.ts`,
+`src/shared/agent/v1/gatewaySchemas.ts`,
+`src/shared/agent/v1/operationCatalog.ts`, and `src/main/agent/policyEngine.ts`,
 `tests/mcp/contracts.test.cjs`, package metadata and lockfile for the exact
 accepted SDK dependency.
 
@@ -267,9 +296,18 @@ accepted SDK dependency.
 - Define English identifiers/descriptions and bilingual prompt identifiers.
 - Keep the first 512 characters of server instructions self-contained and limited
   to cross-tool safety/workflow guidance; stored content never enters instructions.
+- Add an owner/admin-authorized `agent.receipts.get_status` Gateway query contract
+  that returns only the existing authoritative receipt state or exact terminal
+  replay. It accepts `{clientId, requestId}` binding, exposes no generic mutation,
+  and is the only recovery lookup used by transports.
+- Add versioned Gateway management contracts and catalog descriptors for
+  `agent.clients.register_key` and `agent.clients.rotate_key`. They accept only
+  validated public-key bindings and expected registry generation, never private
+  key material. Their mutation and audit semantics are completed in C3/C5.
 
-**Gate:** exhaustive registry tests, schema bounds, no generic execution entry,
-and a static proof that this layer imports no persistence or domain service.
+**Gate:** exhaustive registry tests, schema bounds, receipt lookup ownership and
+redaction tests, pairing/rotation contract tests, no generic execution entry, and
+a static proof that this layer imports no persistence or domain service.
 
 ### C2 — App loopback host, discovery, and lifecycle
 
@@ -297,8 +335,9 @@ port races, second instance, startup recovery, shutdown, and immediate stop.
 
 ### C3 — stdio public-key authentication and Windows key lifecycle
 
-**Planned files:** `src/main/mcp/auth/stdioAuthenticator.ts`, secure pairing/key
-modules, narrow extensions to existing registry composition, and focused tests.
+**Planned files:** `src/main/mcp/auth/stdioAuthenticator.ts`, launcher-owned key
+modules, audited extensions to `src/main/agent/clientRegistry.ts`,
+`src/main/agent/bootstrap.ts`, and focused authentication/registry tests.
 
 **Work:**
 
@@ -315,10 +354,17 @@ modules, narrow extensions to existing registry composition, and focused tests.
   challenge reuse denies the next request/session.
 - The authenticator alone emits an existing immutable `AgentPrincipal`; Gateway
   remains credential-blind.
+- Implement the C1 `agent.clients.register_key` and `agent.clients.rotate_key`
+  management operations through the accepted control capability. Registration is
+  default read-only until a separate user-approved access update. Rotation uses
+  compare-and-swap registry generation, invalidates every old-key session in the
+  same durable mutation, and emits an immutable audit event. Neither MCP, preload,
+  nor the launcher receives direct `ClientRegistry` access.
 
-**Gate:** discovery-only, copied session, cross-client, replay, expired challenge,
-revoked key, wrong instance, and altered scope tests all deny without Gateway
-dispatch or secret logging.
+**Gate:** registration, duplicate fingerprint, rotation, rotation race, session
+invalidation, audit and restart tests pass; discovery-only, copied session,
+cross-client, replay, expired challenge, revoked key, wrong instance, and altered
+scope tests all deny without Gateway dispatch or secret logging.
 
 ### C4 — standalone stdio launcher and durable forwarding journal
 
@@ -333,25 +379,39 @@ dispatch or secret logging.
   and re-discover after App restart/port change.
 - Authenticate with the per-client key and attach the issued bridge session to
   every forwarded request; caller payload cannot select identity.
-- Persist a confined forwarding journal before writes: client, inbound request,
-  public operation, canonical payload hash, idempotency key, status, and receipt
-  reference. Never persist raw content or credentials unnecessarily.
-- Retry/reconnect with the same binding; mismatched reuse conflicts. Expose a
-  result/status lookup rather than guessing after a lost response.
+- Treat the public write `requestId` as the canonical idempotency key. MCP
+  JSON-RPC message IDs remain transport correlation only and are never substituted
+  for it. Gateway identity is exactly `{clientId, requestId}` plus the existing
+  canonical operation/payload/catalog/version binding.
+- The launcher journal is forwarding evidence, never a second business truth.
+  Store one versioned, per-client, root-confined record per write with operation,
+  canonical payload hash, Gateway request ID, catalog/version binding, state,
+  optional receipt reference, and timestamps; omit raw content and credentials.
+  States are `prepared`, `forwarded`, `terminal`, and `needs_lookup`. Publish every
+  transition using same-directory temp write, file flush, atomic replace, and
+  supported directory flush. Terminal payloads are cached only after exact Gateway
+  replay/response and are verified by outcome hash.
+- On restart, `prepared` may forward once; `forwarded`/`needs_lookup` must call the
+  C1 Gateway receipt-status query before retry. `terminal` returns the verified
+  exact result. Missing/unknown receipt evidence never becomes success and never
+  dispatches a different payload. Mismatched reuse conflicts.
 - R3/R4, batch, and cross-resource calls without explicit idempotency reject
   before Gateway admission.
 - Strip/handle `ELECTRON_RUN_AS_NODE`; implement bounded startup timeouts,
   cancellation, signal handling, and clean exit without killing an App it does
   not exclusively own.
 
-**Gate:** protocol conformance, byte/line fuzzing, stdout purity, concurrent
-launchers, App absent/running/restarting, lost response, duplicate/mismatched key,
-and process termination tests pass with isolated roots.
+**Gate:** protocol conformance, byte/line fuzzing, stdout purity, journal atomic
+phase/crash injection, receipt lookup/replay, concurrent launchers, App
+absent/running/restarting, lost response, duplicate/mismatched request ID, and
+process termination tests pass with isolated roots. Executor count remains one
+across every lost-response case.
 
 ### C5 — control-center pairing and client configuration lifecycle
 
-**Planned files:** typed shared/preload/IPC APIs, control-center UI, per-client
-configuration adapters, launcher manifest installer, Electron tests.
+**Planned files:** typed shared/preload/IPC APIs, control-center UI, Gateway
+registration/rotation composition, per-client configuration adapters, launcher
+manifest installer, Electron tests.
 
 **Work:**
 
@@ -367,6 +427,9 @@ configuration adapters, launcher manifest installer, Electron tests.
   repair, disconnect, key rotation, uninstall-if-unused, and restore-before-change.
 - Capability updates never expand scopes. New scopes appear as user-actionable
   authorization suggestions.
+- Pair and rotate only by invoking the C1/C3 audited Gateway management operations.
+  The UI, preload, IPC adapter, config adapter, and launcher must not import or
+  receive `ClientRegistry`, coordinator capability, or private-key access.
 
 **Gate:** real disposable Codex/Claude profiles prove connect, reload, health,
 repair, external modification conflict, disconnect, rollback, and no unrelated
@@ -386,12 +449,16 @@ explicit exposure tests, real-client fixtures.
   summary resources/templates; add first Chinese/English daily-review prompts.
 - Filter list results by principal scopes; expose a safe capability-summary
   resource for unauthorized/requestable domains.
-- Return structured result, receipt/idempotency reference, affected entities,
-  current data version, recovery/approval state, and optional navigation target.
+- Return structured result, the canonical request/idempotency binding, affected
+  entities, current data version, and recovery/approval state. A receipt ID is
+  returned only when the accepted Gateway outcome actually supplies one; clients
+  use `agent.receipts.get_status` after an uncertain response.
 - Full text is scope-controlled; lists summarize/page; images require explicit
   image scope/resource access and enforce size/type/dimension bounds.
-- Publish existing domain events for Renderer invalidation. `ui.navigate` is an
-  explicit operation and never simulates clicks or foregrounds without request.
+- Publish existing domain events for Renderer invalidation. C6 does not add
+  `ui.navigate`, simulate clicks, or foreground the App. A non-authoritative route
+  hint may be ordinary result metadata; an actual navigation operation requires a
+  later explicit catalog/application/Gateway migration and local-focus policy.
 
 **Gate:** Codex/Claude parity with Renderer, exact exposure list, replay/conflict,
 R4 request behavior, capability filtering, prompt-injection fixtures, data-size
@@ -410,83 +477,165 @@ migration.
   conflict, receive a revoked-session denial, and disconnect cleanly.
 - App-disabled mode, emergency stop, recovery fence, and ordinary no-MCP operation
   are verified in a real Electron process.
-- A portable package installs the launcher in a stable LocalAppData location and
-  reconnects after the portable App is moved and re-confirmed.
+- A development/win-unpacked artifact installs the launcher in a stable
+  LocalAppData location and survives App restart. Portable embedding, moved-App
+  confirmation, and packaged upgrade/rollback remain C15 gates.
 
 This milestone permits daily personal use but does not close Phase C.
 
 ### C8 — minimal durable job substrate
 
-**Planned files:** job schema/store/service under `src/main/agent` or a deeper
-application module, MCP job tools/resources, recovery and retention tests.
+**Owned files:** migration in `src/main/database/schema.ts`; contracts/validators
+under `src/shared/agent/v1/jobs.ts`; `src/main/agent/jobStore.ts`,
+`src/main/agent/jobExecutor.ts`, `src/main/agent/jobRecovery.ts`; narrow composition
+in `src/main/agent/bootstrap.ts` and `src/main/services/databaseService.ts`; MCP job
+tools/resources under `src/main/mcp/jobs/*`; schema, executor, recovery, Tasks, and
+retention tests. These files are owned sequentially; no other wave edits them while
+C8 is active.
 
 **Work:**
 
-- Persist owner client/session, operation binding, canonical input hash, status,
-  progress, result reference, error, cancellation request, timestamps, retention,
-  and restart evidence.
+- Add a constrained `agent_jobs` table and indexes for owner client, creating
+  session, operation/catalog/version binding, canonical input hash, receipt ID,
+  operation-journal ID, status, bounded progress, externalized result reference and
+  hash, redacted error, cancellation request, lease/attempt, timestamps, and
+  retention class. Terminal rows are immutable; result blobs live in an App-owned
+  managed agent-job result root and are hash/size verified. Tests replace it with
+  the isolated B0 result root.
 - States: `queued`, `running`, `waiting_approval`, `completed`, `failed`,
   `cancelled`, `interrupted`. Terminal states are immutable.
-- Provide create/status/list/cancel/result with ownership and admin authorization.
-- Cancellation acts only at safe checkpoints. Restart reconciliation never turns
-  unknown work into success; jobs attach to operation-journal/receipt evidence.
+- `JobStore` mutations execute only through the existing coordinator control mode;
+  `JobExecutor` is the sole FIFO admission/lease owner and dispatches business work
+  only through `AgentGateway`. It is not a second database writer queue and cannot
+  receive a coordinator capability. A job binds one canonical Gateway request ID,
+  so receipt and operation-journal evidence remain authoritative.
+- Startup calls `JobRecovery` only after database candidate recovery, audit
+  verification, receipt reconciliation, and operation-journal reconciliation.
+  It derives terminal state only from verified receipt/journal/result evidence;
+  otherwise `running` becomes `interrupted` and requires an explicit safe retry.
+- Provide `jobs.create/get/list/cancel/result` with owner-client access, creating-
+  session visibility rules, and admin override. Cancellation records intent and
+  acts only at handler-declared checkpoints before/after side-effect phases; it
+  never interrupts a database transaction or invents compensation.
 - Map to experimental MCP Tasks only when both sides negotiate support; the App job
-  ID/state remains authoritative and non-Tasks clients use ordinary tools/resources.
+  ID/state remains authoritative. Mapping is: `queued`/`running` -> `working`,
+  `waiting_approval` -> `input_required`, `completed` -> `completed`, `failed` or
+  `interrupted` -> `failed`, and `cancelled` -> `cancelled`. `tasks/get`,
+  `tasks/result`, and `tasks/cancel` enforce the same owner binding; Task IDs are
+  projections of App job IDs. Non-Tasks clients use ordinary job tools/resources.
 
-**Gate:** restart at every transition, cancellation races, client isolation,
-retention, result-size offloading, Tasks/non-Tasks parity, and no second writer
-queue.
+**Gate:** schema migration/reopen, FIFO leases, restart at every transition,
+receipt/journal reconciliation, cancellation at every safe checkpoint, client and
+session isolation, retention, result-size/hash failures, Tasks state/API mapping,
+Tasks/non-Tasks parity, and static proof of no second writer/coordinator queue.
 
 ### C9 — knowledge, textbooks, and analytics wave
 
-- Inventory and migrate every writer in the domain before external exposure.
-- Add bounded knowledge/textbook queries, question linkage, weak-area summaries,
-  and provenance-preserving resources.
-- Start read-heavy; expose writes only after Renderer/internal equivalence, catalog,
-  idempotency, revision, audit, and static bypass gates pass.
+**Owned files:** a committed C9 write-entry inventory; new application handlers
+under `src/main/application/knowledge/*`; migrated writer seams in
+`src/main/services/knowledgeMapService.ts` and the textbook/analytics services;
+narrow Renderer IPC adapters; the exposure manifest/catalog; `src/main/mcp`
+knowledge resources/tools; parity, bypass, receipt, and migration tests.
+
+**Exact proposed external set:** read operations `knowledge.list_nodes`,
+`knowledge.get_node`, `knowledge.list_links`, `textbooks.list`, `textbooks.get`,
+`analytics.get_weak_areas`; writes `knowledge.link_question`,
+`knowledge.unlink_question`, and `knowledge.bind_textbook`. No import, seed,
+rematch-all, arbitrary graph SQL, or physical textbook-file mutation is exposed.
+
+**Gate:** inventory every knowledge/textbook/analytics Renderer, IPC, startup,
+import, rematch, and internal writer; migrate each writer needed by the external
+set to application handlers before registering its tool. Renderer/external parity,
+bounded pagination, provenance, idempotency/revision/audit, static service/SQL
+bypass, and exact manifest/catalog/MCP registration tests pass.
 
 ### C10 — study supervision, daily plans, and review wave
 
-- Migrate plan/task-generation, study-supervisor, daily-review, and adjustment
-  writers through application handlers and Gateway.
-- Add Chinese/English planning and weekly-review prompts that orchestrate public
-  tools without hidden execution.
-- Keep autonomous schedules and week-long execution in Phase D.
+**Owned files:** a committed C10 writer inventory; application handlers under
+`src/main/application/study/*`; migrated seams in
+`src/main/services/studySupervisorService.ts` and related plan/review services;
+Renderer adapters; exposure/catalog entries; MCP tools/resources/prompts; parity,
+schedule-boundary, and static bypass tests.
+
+**Exact proposed external set:** `study.get_today`, `study.get_week_summary`,
+`study.create_plan_draft`, `study.apply_plan_adjustment`, and
+`study.record_manual_progress`. Prompts `study.daily_review.zh_en` and
+`study.weekly_review.zh_en` may orchestrate only these and already-public tools;
+prompts hold no hidden authority.
+
+**Gate:** plan-generation, rollover, supervisor initialization, timer, review, and
+adjustment writers are inventoried; every exposed write has one application/Gateway
+path and Renderer parity. Deterministic scheduling tests, no-op/revision behavior,
+receipt/audit, prompt-injection fixtures, exact exposure, and static bypass gates
+pass. Autonomous schedules, retry policy, dependency graphs, and week-long
+execution remain absent for Phase D.
 
 ### C11 — multimodal draft and structured-import wave
 
-- Add managed import inbox/staging with explicit user-selected files; no arbitrary
-  filesystem paths and no recursive directory reads.
-- Primary path: external multimodal AI submits a structured draft. Fallback path:
-  App OCR/DeepSeek creates the same draft contract with explicit network/data
-  disclosure.
-- Validate, deduplicate, bind images, preview affected entities, then apply through
-  a change set/job and operation journal.
-- Trusted single-item imports may apply after validation. Batches require preview;
-  R0-R3 policy may auto-apply, while overwrite/delete/reclassification escalation
-  follows resolved risk and R4 rules.
+**Owned files:** a committed C11 inventory; versioned draft contracts/validators;
+application import handlers; migrated seams in
+`src/main/services/structuredImportService.ts`,
+`src/main/services/questionBankService.ts`, and App OCR/DeepSeek import adapters;
+managed inbox/staging modules; exposure/catalog entries; MCP tools/resources;
+operation-journal, job, parity, and static bypass tests.
+
+**Exact proposed external set:** `imports.create_draft`, `imports.add_draft_image`,
+`imports.validate_draft`, `imports.preview_draft`, `imports.apply_draft`,
+`imports.get`, and `imports.cancel`. No arbitrary path, recursive directory,
+database replacement, raw archive extraction, or model-secret operation is exposed.
+
+**Gate:** inventory structured import, question-bank, AI/OCR, batch deletion, temp
+cleanup, image binding, and Renderer writers. External multimodal and App
+OCR/DeepSeek outputs use the same bounded draft schema, provenance, validation,
+deduplication, preview, change-set/job, idempotency, and journal recovery path.
+Only user-selected managed inbox assets are readable. Single-item/batch risk,
+network disclosure, crash phases, restart, parity, and exact exposure/bypass tests
+pass before registration.
 
 ### C12 — habits, calendar, and remaining task integrations
 
-- Inventory and migrate remaining TickTick lists/settings/habits/bridges/calendar
-  operations in bounded sub-waves.
-- Network/external-process effects are explicit; compensations and audit include
-  remote/local outcome separation.
-- Do not expose secrets, DeepSeek configuration values, or arbitrary external
-  process execution.
+**Owned files:** a committed C12 inventory; application handlers under
+`src/main/application/ticktick/*`; migrated seams in
+`src/main/services/ticktickService.ts`, bridge/calendar adapters, and related IPC;
+exposure/catalog entries; MCP tools/resources; remote-compensation, parity, and
+static bypass tests.
+
+**Exact proposed external set:** `ticktick.lists.list`, `ticktick.lists.create`,
+`ticktick.lists.update`, `ticktick.habits.list`, `ticktick.habits.create`,
+`ticktick.habits.update`, `ticktick.calendar.list_events`,
+`ticktick.bridges.get`, and `ticktick.bridges.update`. Settings secrets, DeepSeek
+credentials, generic external-process launch, and arbitrary remote API calls remain
+unexposed.
+
+**Gate:** list/settings/habit/bridge/calendar Renderer, timer, startup, and network
+writers are inventoried. Exposed operations use application/Gateway handlers;
+network and local outcomes are separately recorded and compensations are tested at
+every phase. Scope/redaction, remote replay, revision/audit, Renderer parity, exact
+exposure, and static bypass tests pass.
 
 ### C13 — destructive/global R4 wave
 
-- Expose backup/export first as bounded jobs, then deletion/import replacement,
-  restore, clear-all, and root migration only after their existing recovery
-  packages are callable through the same Gateway plan.
-- Every tool resolves affected assets and disk requirements before approval.
-- AI may request but cannot approve. Approval UI shows target/hash/version,
-  recovery assets, required space, and expiry.
-- Crash injection covers every journal phase and lost response; ambiguous outcomes
-  fence external writes and surface a recovery action.
+**Owned files:** a committed C13 inventory; global application handlers; migrated
+seams in `src/main/services/backupService.ts`, `databaseService.ts`,
+`pathService.ts`, global import/export and import-batch services; exposure/catalog
+entries; MCP job tools/resources; R4 approval UI adapters; recovery, parity, and
+static bypass tests.
 
-### C14 — direct Streamable HTTP OAuth
+**Exact proposed external set:** lower-risk jobs `backups.list`, `backups.create`,
+`exports.create`, and `exports.get`; R4 requests `backups.delete`,
+`database.restore`, `database.replace_from_import`, `database.clear_all`,
+`imports.delete_batch`, and `data_root.migrate`. No raw database-file path, generic
+filesystem delete, or implicit root selection is exposed.
+
+**Gate:** inventory backup/export/import replacement, physical deletion, restore,
+clear, batch deletion, and root-switch writers. Every operation resolves the exact
+affected asset set, verified recovery package, hashes, required/free disk space,
+and epoch/revision before approval. AI may request but cannot approve; local UI
+shows all binding fields. Crash injection covers every journal/publication/config
+phase and lost response; ambiguous outcomes fence writes. Renderer parity, jobs,
+R4 reservation/consume, exact exposure, and static bypass gates pass.
+
+### C14 — direct Streamable HTTPS OAuth
 
 **Planned files:** HTTP authenticator/authorization-server modules, metadata and
 token stores, browser/control-center consent route, protocol compatibility tests.
@@ -494,13 +643,16 @@ token stores, browser/control-center consent route, protocol compatibility tests
 **Work:**
 
 - Keep the localhost MCP resource server separate from stdio bridge credentials.
+  The direct resource endpoint has an HTTPS protected-resource identifier and
+  serves Streamable HTTP only through the C0-accepted certificate lifecycle.
 - Implement protected-resource and authorization-server metadata, authorization
   code + PKCE S256, exact redirect/state/nonce validation, and RFC 8707 `resource`
   in authorization and token requests.
-- Serve authorization-server endpoints through the C0-accepted HTTPS/certificate
-  lifecycle. A loopback exception may be used only if the applicable final
-  specification and both hard clients explicitly support it at implementation
-  time; this decision is recorded with primary-source evidence.
+- Serve the MCP endpoint, protected-resource metadata, issuer metadata,
+  authorization endpoint, and token endpoint through the C0-accepted HTTPS and
+  certificate lifecycle. Redirect/callback URIs follow the exact registered-client
+  rules. No localhost/plain-HTTP exception is assumed; any standards exception
+  requires current primary-source evidence and real-client proof before planning.
 - Access tokens are short-lived and bound to client, scopes, audience, token ID,
   and App instance. Refresh tokens rotate; reuse revokes the family and audits.
 - Bind bearer token, MCP session ID, client ID, instance, and negotiated protocol.
@@ -508,14 +660,32 @@ token stores, browser/control-center consent route, protocol compatibility tests
   and cross-client session use deny immediately.
 - Raw OAuth material never reaches Gateway or ordinary logs/database fields.
 
-**Gate:** official OAuth discovery/conformance plus real Codex and Claude HTTP
-flows; code replay, PKCE mismatch, wrong resource/audience, redirect mismatch,
-refresh reuse, stale instance, and token/session mixing all deny.
+**Gate:** official OAuth discovery/conformance plus every exact client/product
+combination marked supported by C0. Codex CLI HTTP/OAuth is mandatory; Claude
+Desktop is not credited for Claude Code behavior. Code replay, PKCE mismatch,
+wrong resource/audience, invalid certificate, redirect mismatch, refresh reuse,
+stale instance, and token/session mixing all deny.
 
 ### C15 — packaging, upgrade, diagnostics, and Phase C completion
 
-- Compile launcher and required protocol assets into the portable build; packaging
-  fails if versions/manifests/self-test disagree.
+**Owned files:** `package.json` and lockfile, launcher build scripts/configuration,
+`electron-builder` resource manifest, installer/upgrade modules, diagnostics,
+user documentation, packaged-artifact and completion-matrix tests. C15 starts only
+after C5 and C7-C14 are accepted and owns shared packaging metadata exclusively.
+
+- Compile the launcher and protocol assets before `electron-builder`. Emit the
+  standalone executable, public manifest, and hashes into a dedicated
+  `extraResources` directory outside ASAR; do not rely on executing an ASAR member
+  or an unpacked Node script. `asarUnpack` remains limited to assets that genuinely
+  require it.
+- Packaging fails if the launcher is missing, unexpectedly inside ASAR, lacks its
+  version/hash manifest, fails its packaged self-test, or disagrees with the App,
+  protocol, SDK, or manifest compatibility range.
+- On first pairing, copy the hash-verified launcher from `process.resourcesPath`
+  into a versioned LocalAppData directory, self-test it, and atomically switch the
+  current manifest. Never discover it relative to the moved portable executable
+  after installation; failed install/upgrade preserves the previous verified
+  launcher and client configuration.
 - Verify development, win-unpacked, portable, stable launcher path, moved portable,
   App absent/running, concurrent launchers, SDK upgrade, launcher rollback, old/new
   compatibility, and config repair.
@@ -525,6 +695,12 @@ refresh reuse, stale instance, and token/session mixing all deny.
   release gate requiring Windows signing; do not claim public-ready before it.
 - Publish user docs for pairing, scopes, cloud-model disclosure, R4, emergency
   stop, disconnect, repair, offline behavior, prompt injection, and threat boundary.
+
+**Gate:** artifact inspection proves the launcher exists outside ASAR with the
+declared hash in win-unpacked and portable outputs. Clean install, moved App,
+upgrade, forced self-test/hash failure, rollback, no-App startup, uninstall-if-
+unused, and incompatible-version matrices pass. C8-C14 evidence is linked in one
+Phase C completion matrix; packaging success cannot mask an incomplete domain wave.
 
 ## Domain migration gate
 
@@ -553,7 +729,8 @@ domain/operation variant:
 | App restart during request | Old session invalid; same idempotency binding resolves receipt or explicit unknown/recovery state |
 | Response lost after durable commit | Replay exact terminal result; executor count remains one |
 | Launcher crash before forwarding | Durable journal remains pre-dispatch and can safely retry |
-| Launcher crash after forwarding | Query receipt before any retry; mismatched payload conflicts |
+| Launcher crash after forwarding | `forwarded` becomes `needs_lookup`; query the authoritative Gateway receipt by `{clientId, requestId}` before any retry; mismatched payload conflicts |
+| Journal temp/replace/flush failure | Do not claim forwarding/terminal state; recover the last validated record and use receipt lookup when dispatch may have occurred |
 | Client config write fails | Original config remains or verified backup is restored |
 | Launcher upgrade self-test fails | Current manifest remains on previous working version |
 | Job interrupted | Reconcile from receipt/journal evidence; never infer success |
@@ -581,8 +758,11 @@ with `D:\KaoyanMathMistakeBook` before opening paths or spawning Electron.
 
 - Codex CLI current installed version
 - Claude Desktop current installed version
+- Claude Code only when evaluating its distinct HTTP/OAuth support; never use it as
+  evidence for a Claude Desktop claim
 - stdio initial install, reload, operation, restart, revoke, disconnect
-- direct HTTP OAuth discovery, login, scope increase/decrease, refresh, revoke
+- direct HTTPS OAuth discovery, login, scope increase/decrease, refresh, revoke for
+  every exact product/transport combination marked supported by C0
 - record client/App/launcher/SDK/protocol/schema versions with results
 
 ### Portable release candidate
@@ -598,8 +778,10 @@ with `D:\KaoyanMathMistakeBook` before opening paths or spawning Electron.
 
 Phase C is complete only when:
 
-1. Both real clients pass stdio and direct HTTP OAuth matrices for supported
-   versions.
+1. Codex CLI and Claude Desktop pass the stdio matrix. Codex CLI passes direct
+   HTTPS OAuth. Any additional Claude product is credited only for its own exact
+   supported matrix; unsupported combinations are documented no-go results, not
+   silently substituted products.
 2. The first 19-operation slice and every subsequently declared Phase C domain
    wave pass the migration gate; undeclared/unmigrated operations remain absent.
 3. Tools, resources/templates, prompts, instructions, notifications, structured
