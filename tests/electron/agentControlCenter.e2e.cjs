@@ -106,6 +106,16 @@ async function countPersistedClients(databasePath) {
   }
 }
 
+function assertIsolatedRunPaths(paths) {
+  const owned = [paths.root, paths.fixtureFile, paths.resultFile, paths.userDataDir, paths.dataRoot].map((target) => path.resolve(target));
+  assert.equal(new Set(owned.map((target) => target.toLowerCase())).size, owned.length);
+  for (const target of owned) {
+    assert.equal(target.toLowerCase().includes(realDataRoot.toLowerCase()), false);
+    assert.equal(realDataRoot.toLowerCase().includes(target.toLowerCase()), false);
+    assert.equal(path.relative(paths.root, target).startsWith('..'), false);
+  }
+}
+
 test.after(() => {
   for (const root of roots) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -124,6 +134,8 @@ test('production control center retains the user-owned R4 creation contract', ()
 
 test('real Electron completes the typed control-center flow and preserves durable state on restart', async (context) => {
   const paths = prepare(createRoot('positive'), 'control-center');
+  assertIsolatedRunPaths(paths);
+  const databasePath = path.join(paths.dataRoot, 'data', 'mistakes.db');
   const first = launchPrepared(paths);
   context.after(() => first.terminate());
   const initialResult = await first.waitForResult();
@@ -137,6 +149,9 @@ test('real Electron completes the typed control-center flow and preserves durabl
   assert.ok(initialResult.assertions.includes('audit ledger verifies after mutations'));
   const firstExit = await waitForExit(first);
   assert.equal(firstExit.exitCode, 0);
+  assert.equal(fs.existsSync(databasePath), true);
+  const persistedClientCount = await countPersistedClients(databasePath);
+  assert.ok(persistedClientCount >= 2);
 
   const second = launchPrepared(paths);
   context.after(() => second.terminate());
@@ -148,7 +163,7 @@ test('real Electron completes the typed control-center flow and preserves durabl
   assert.ok(restartResult.assertions.includes('restart verifies the durable audit ledger'));
   const secondExit = await waitForExit(second);
   assert.equal(secondExit.exitCode, 0);
-  assert.equal(path.resolve(paths.dataRoot).toLowerCase().includes(realDataRoot.toLowerCase()), false);
+  assert.equal(await countPersistedClients(databasePath), persistedClientCount);
 });
 
 test('flag absent and fixture environment alone never apply the fixture', async () => {
