@@ -151,6 +151,17 @@ test('production trust options derive from the shared TrustProfile contract', ()
   assert.doesNotMatch(source, /event\.target\.value\s+as\s+TrustProfile/);
 });
 
+test('production pairing UI keeps default authority read-only and renders structured manual argv as text', () => {
+  const source = fs.readFileSync(controlCenterPage, 'utf8');
+  assert.match(source, /requestedScopes:\s*\['system\.read'\]/);
+  assert.match(source, /trust:\s*'observer'/);
+  assert.match(source, /disclosureAccepted:\s*true,\s*authorityConfirmed:\s*false/);
+  assert.match(source, /manualConfiguration\.executable/);
+  assert.match(source, /manualConfiguration\.argv\.map\(\(argument\) => JSON\.stringify\(argument\)\)/);
+  assert.doesNotMatch(source, /dangerouslySetInnerHTML/);
+  assert.doesNotMatch(source, /manualCommand/);
+});
+
 test('real Electron completes the typed control-center flow and preserves durable state on restart', async (context) => {
   const paths = prepare(createRoot('positive'), 'control-center');
   assertIsolatedRunPaths(paths);

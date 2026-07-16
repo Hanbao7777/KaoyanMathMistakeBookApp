@@ -490,3 +490,34 @@ test('built standalone launcher keeps stdout protocol-only for malformed and ove
     assert.ok(fs.statSync(executable).size > 1_000_000);
   } finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); }
 });
+
+test('launcher control modes reject mixed, missing, duplicated, and extra arguments', async () => {
+  const { pairingControl } = launcherModule;
+  for (const args of [[], ['create'], ['unknown', '--key-name', 'kaoyan-test'], ['create', '--key-name', 'kaoyan-test', '--extra'], ['create', '--key-name', 'kaoyan-test', '--key-name', 'kaoyan-other']]) {
+    await assert.rejects(pairingControl(args), /Invalid pairing control arguments/);
+  }
+});
+
+test('standalone launcher self-test is exact and mixed control modes fail closed', { skip: !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
+  const executable = path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe');
+  const selfTest = spawnSync(executable, ['--self-test'], { encoding: 'utf8', timeout: 10_000 });
+  assert.equal(selfTest.status, 0, selfTest.stderr); assert.equal(selfTest.stderr, '');
+  assert.deepEqual(JSON.parse(selfTest.stdout), { ok: true, kind: 'kaoyan-mcp-self-test-v1', launcherVersion: '1.0.0' });
+  for (const args of [['--self-test', '--extra'], ['--pairing-control', 'get', '--key-name', 'kaoyan-test', '--extra'], ['--client-id', clientId, '--self-test']]) {
+    const result = spawnSync(executable, args, { encoding: 'utf8', timeout: 10_000 });
+    assert.notEqual(result.status, 0); assert.equal(result.stdout, ''); assert.match(result.stderr, /^kaoyan-mcp: (startup|pairing_control)_failed\n$/);
+  }
+});
+
+test('standalone launcher owns an exact real CNG create/get/delete lifecycle', { skip: process.platform !== 'win32' || !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
+  const executable = path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe'); const keyName = `kaoyan-c5-exe-${require('node:crypto').randomUUID()}`;
+  const invoke = (operation) => spawnSync(executable, ['--pairing-control', operation, '--key-name', keyName], { encoding: 'utf8', timeout: 30_000 });
+  try {
+    const created = invoke('create'); assert.equal(created.status, 0, created.stderr); assert.equal(created.stderr, '');
+    const binding = JSON.parse(created.stdout); assert.deepEqual(Object.keys(binding).sort(), ['kind', 'publicKey', 'publicKeyFingerprint', 'publicKeyFormat', 'signatureAlgorithm', 'version']);
+    assert.equal(binding.kind, 'cng-public-key-binding'); assert.match(binding.publicKeyFingerprint, /^sha256-v1:[0-9a-f]{64}$/); assert.ok(created.stdout.length < 16 * 1024);
+    const loaded = invoke('get'); assert.equal(loaded.status, 0, loaded.stderr); assert.deepEqual(JSON.parse(loaded.stdout), binding);
+    const deleted = invoke('delete'); assert.equal(deleted.status, 0, deleted.stderr); assert.deepEqual(JSON.parse(deleted.stdout), { version: 1, kind: 'cng-key-deleted', keyName });
+    const missing = invoke('get'); assert.notEqual(missing.status, 0); assert.equal(missing.stdout, ''); assert.equal(missing.stderr, 'kaoyan-mcp: pairing_control_failed\n');
+  } finally { invoke('delete'); }
+});

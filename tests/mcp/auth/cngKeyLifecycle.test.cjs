@@ -12,6 +12,7 @@ test('launcher CNG key signs RSA-PSS and is deleted in finally', { skip: process
   const message = Buffer.from('kaoyan-c3-canonical-challenge', 'utf8');
   try {
     const binding = await lifecycle.create(keyName);
+    assert.deepEqual(await lifecycle.get(keyName), binding);
     assert.equal(binding.publicKeyFormat, 'spki-der-base64url');
     assert.equal(binding.signatureAlgorithm, 'rsa-pss-sha256');
     assert.match(binding.publicKeyFingerprint, /^sha256-v1:[0-9a-f]{64}$/);
@@ -31,6 +32,7 @@ test('launcher CNG lifecycle rejects unsafe key names before invoking PowerShell
   const lifecycle = new WindowsCngKeyLifecycle();
   await assert.rejects(lifecycle.create('../not-safe'), /Invalid disposable CNG key name/);
   await assert.rejects(lifecycle.sign('not-kaoyan', 'QQ'), /Invalid disposable CNG key name/);
+  await assert.rejects(lifecycle.get('../not-safe'), /Invalid disposable CNG key name/);
 });
 
 test('launcher CNG rotation removes the old key and keeps the replacement usable', { skip: process.platform !== 'win32' }, async () => {

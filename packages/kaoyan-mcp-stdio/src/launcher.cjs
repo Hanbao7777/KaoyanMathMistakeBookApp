@@ -918,11 +918,33 @@ async function main() {
   await launcher.run();
 }
 
+async function pairingControl(argumentsList) {
+  if (argumentsList.length !== 3 || !['create', 'get', 'delete'].includes(argumentsList[0]) || argumentsList[1] !== '--key-name') throw new Error('Invalid pairing control arguments');
+  const operation = argumentsList[0];
+  const keyName = argumentsList[2];
+  const lifecycle = new WindowsCngKeyLifecycle();
+  if (operation === 'delete') {
+    await lifecycle.delete(keyName);
+    return Object.freeze({ version: 1, kind: 'cng-key-deleted', keyName });
+  }
+  const binding = operation === 'create' ? await lifecycle.create(keyName) : await lifecycle.get(keyName);
+  return Object.freeze({ version: 1, kind: 'cng-public-key-binding', ...binding });
+}
+
 if (require.main === module) {
-  main().catch(() => { process.stderr.write('kaoyan-mcp: startup_failed\n'); process.exitCode = 1; });
+  const argumentsList = process.argv.slice(2);
+  if (argumentsList[0] === '--pairing-control') {
+    pairingControl(argumentsList.slice(1)).then((binding) => {
+      process.stdout.write(`${JSON.stringify(binding)}\n`);
+    }).catch(() => { process.stderr.write('kaoyan-mcp: pairing_control_failed\n'); process.exitCode = 1; });
+  } else if (argumentsList.length === 1 && argumentsList[0] === '--self-test') {
+    process.stdout.write(`{"ok":true,"kind":"kaoyan-mcp-self-test-v1","launcherVersion":"${LAUNCHER_VERSION}"}\n`);
+  } else {
+    main().catch(() => { process.stderr.write('kaoyan-mcp: startup_failed\n'); process.exitCode = 1; });
+  }
 }
 
 module.exports = {
   DurableClaimLock, ForwardingJournal, HttpBridgeClient, JOURNAL_VERSION, LAUNCHER_VERSION, Launcher, STATES,
-  boundedLines, canonicalize, hash, isWrite, launcherRangeAllows, requestIdFrom, safeRoot, toolEnvelope, validateRecord
+  boundedLines, canonicalize, hash, isWrite, launcherRangeAllows, pairingControl, requestIdFrom, safeRoot, toolEnvelope, validateRecord
 };

@@ -8,8 +8,8 @@ function invoke(script, args) {
   args.forEach((value, index) => { env[`KAOYAN_CNG_ARG_${index}`] = value; });
   return new Promise((resolve, reject) => execFile(
     'pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
-    { windowsHide: true, maxBuffer: 32 * 1024, env },
-    (error, stdout) => error ? reject(error) : resolve(stdout.trim())
+    { windowsHide: true, maxBuffer: 32 * 1024, timeout: 15_000, env },
+    (error, stdout) => error ? reject(new Error('CNG operation failed')) : resolve(stdout.trim())
   ));
 }
 
@@ -40,6 +40,14 @@ class WindowsCngKeyLifecycle {
       signatureAlgorithm: 'rsa-pss-sha256',
       publicKeyFingerprint: publicKeyFingerprint(publicKey)
     });
+  }
+
+  async get(name) {
+    safeName(name);
+    const script = "$n=$env:KAOYAN_CNG_ARG_0; $p=[Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider; if(-not [Security.Cryptography.CngKey]::Exists($n,$p)){throw 'key missing'}; $k=[Security.Cryptography.CngKey]::Open($n,$p); $rsa=$null; try { $rsa=[Security.Cryptography.RSACng]::new($k); [Convert]::ToBase64String($rsa.ExportSubjectPublicKeyInfo()).TrimEnd('=').Replace('+','-').Replace('/','_') } finally { if($rsa){$rsa.Dispose()}; $k.Dispose() }";
+    const publicKey = await invoke(script, [name]);
+    canonicalBase64Url(publicKey, 'CNG public key');
+    return Object.freeze({ publicKey, publicKeyFormat: 'spki-der-base64url', signatureAlgorithm: 'rsa-pss-sha256', publicKeyFingerprint: publicKeyFingerprint(publicKey) });
   }
 
   async sign(name, canonicalChallenge) {

@@ -263,3 +263,27 @@ test('adapter rejects oversized pages before Gateway dispatch', async () => {
   await assert.rejects(api.listClients({ pageSize: 101 }), (error) => error?.code === 'VALIDATION_ERROR');
   assert.equal(calls, 0);
 });
+
+test('pairing IPC adapter composes one stable service and validates exact requests and results', async () => {
+  const current = await runtime(); let loads = 0; const calls = [];
+  const status = (request, state = 'healthy') => ({
+    apiVersion: 'kaoyan-pairing-v1@1', product: request.product, clientId: request.clientId, state,
+    message: 'ok', requestedScopes: ['system.read'], requestedTrust: 'observer',
+    grantedScopes: ['system.read'], grantedTrust: 'observer', generation: state === 'disconnected' ? 0 : 1
+  });
+  const service = {
+    async connect(request) { calls.push(['connect', request]); return status(request); },
+    async health(request) { calls.push(['health', request]); return status(request); },
+    async repair(request) { calls.push(['repair', request]); return status(request); },
+    async rotate(request) { calls.push(['rotate', request]); return status(request); },
+    async disconnect(request) { calls.push(['disconnect', request]); return status(request, 'disconnected'); }
+  };
+  const api = adapterModule.createAgentControlCenterIpc(async () => current.plane, async () => { loads += 1; return service; });
+  const connect = { product: 'codex', clientId: 'codex-ipc-client', requestedScopes: ['system.read'], trust: 'observer', disclosureAccepted: true, authorityConfirmed: false };
+  await api.connectClient(connect); await api.getClientConnection({ product: 'codex', clientId: connect.clientId }); await api.repairClientConnection({ product: 'codex', clientId: connect.clientId });
+  assert.equal(loads, 1); assert.deepEqual(calls.map(([name]) => name), ['connect', 'health', 'repair']);
+  await assert.rejects(api.connectClient({ ...connect, extra: true }), /fields/); assert.equal(calls.length, 3);
+  await assert.rejects(api.rotateClientKey({ product: 'codex', clientId: '../unsafe' }), /clientId/); assert.equal(calls.length, 3);
+  service.health = async (request) => ({ ...status(request), secret: 'not-allowed' });
+  await assert.rejects(api.getClientConnection({ product: 'codex', clientId: connect.clientId }), /fields/);
+});

@@ -14,11 +14,11 @@
     "test:main": "npm run build:main && node --test tests/main/**/*.test.cjs",
     "build:main": "tsc -p tsconfig.main.json",
     "build:launcher:js": "tsc -p tsconfig.launcher.json",
-    "build:launcher": "npm run build:launcher:js && pkg --target node22-win-x64 --output dist/mcp-stdio/kaoyan-mcp.exe dist/launcher-build/packages/kaoyan-mcp-stdio/src/launcher.cjs",
+    "build:launcher": "npm run build:launcher:js && pkg --target node22-win-x64 --output dist/mcp-stdio/kaoyan-mcp.exe dist/launcher-build/packages/kaoyan-mcp-stdio/src/launcher.cjs && node scripts/build-mcp-launcher-manifest.cjs",
     "build:launcher:test-fixture": "pkg --target node22-win-x64 --output dist/mcp-stdio/kaoyan-fake-app.exe tests/mcp/launcher/fakeApp.cjs",
     "test:launcher:real": "npm run build:main && npm run build:launcher && npm run build:launcher:test-fixture && node --test tests/mcp/launcher/realProcess.test.cjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
-    "pack:win": "npm run build && electron-builder --win portable --x64"
+    "pack:win": "npm run build && npm run build:launcher && electron-builder --win portable --x64"
   },
   "build": {
     "appId": "com.local.kaoyan.math.mistakebook",
@@ -39,6 +39,14 @@
       {
         "from": "resources/knowledge_map_seed.zip",
         "to": "knowledge_map_seed.zip"
+      },
+      {
+        "from": "dist/mcp-stdio/kaoyan-mcp.exe",
+        "to": "mcp-stdio/kaoyan-mcp.exe"
+      },
+      {
+        "from": "dist/mcp-stdio/launcher-manifest.json",
+        "to": "mcp-stdio/launcher-manifest.json"
       }
     ],
     "asarUnpack": [

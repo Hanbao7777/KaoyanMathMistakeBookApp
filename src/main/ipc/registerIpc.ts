@@ -170,6 +170,7 @@ import type {
 } from '../../shared/types';
 import type { AgentScope, TrustProfile } from '../../shared/agent/v1/gatewayContracts';
 import type { AgentControlCreateR4GrantRequest, AgentControlPageRequest } from '../../shared/api';
+import { validatePairingRequest, validatePairingTargetRequest, type PairingRequest, type PairingTargetRequest } from '../../shared/mcp/v1/pairingContracts';
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
   ipcMain.handle(channel, async (_event, ...args: TArgs) => {
@@ -409,6 +410,11 @@ export function registerIpc() {
   handle('agentControl:getPolicy', () => agentControlCenterIpc.getPolicy());
   handle('agentControl:getCatalog', () => agentControlCenterIpc.getCatalog());
   handle('agentControl:getPrivacyDisclosure', () => agentControlCenterIpc.getPrivacyDisclosure());
+  handle('agentControl:connectClient', (request: PairingRequest) => { validatePairingRequest(request, 'ipc.connectClient'); return agentControlCenterIpc.connectClient(request); });
+  handle('agentControl:getClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.getClientConnection'); return agentControlCenterIpc.getClientConnection(request); });
+  handle('agentControl:repairClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.repairClientConnection'); return agentControlCenterIpc.repairClientConnection(request); });
+  handle('agentControl:rotateClientKey', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.rotateClientKey'); return agentControlCenterIpc.rotateClientKey(request); });
+  handle('agentControl:disconnectClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.disconnectClientConnection'); return agentControlCenterIpc.disconnectClientConnection(request); });
   handle('dashboard:get', () => getDashboard());
   handle('questions:list', (filters: QuestionFilters) => listQuestionsFromRenderer(filters));
   handle('questions:get', (id: number) => getQuestionFromRenderer(id));

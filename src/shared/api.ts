@@ -97,6 +97,7 @@ import type {
   TrustProfile,
   OperationName
 } from './agent/v1/gatewayContracts';
+import type { PairingRequest, PairingStatus, PairingTargetRequest } from './mcp/v1/pairingContracts';
 
 export interface AgentControlPageRequest {
   readonly cursor?: string;
@@ -144,6 +145,11 @@ export interface AgentControlApi {
   getPolicy: () => Promise<{ readonly policyVersion: string; readonly externalControlEnabled: boolean }>;
   getCatalog: () => Promise<{ readonly version: string; readonly hash: string }>;
   getPrivacyDisclosure: () => Promise<AgentControlPrivacyDisclosure>;
+  connectClient: (request: PairingRequest) => Promise<PairingStatus>;
+  getClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  repairClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  rotateClientKey: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  disconnectClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
 }
 
 export interface AppApi {

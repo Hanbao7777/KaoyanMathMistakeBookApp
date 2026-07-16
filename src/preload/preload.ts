@@ -128,7 +128,12 @@ const api: AppApi = {
     verifyAudit: (segmentId) => invoke('agentControl:verifyAudit', segmentId),
     getPolicy: () => invoke('agentControl:getPolicy'),
     getCatalog: () => invoke('agentControl:getCatalog'),
-    getPrivacyDisclosure: () => invoke('agentControl:getPrivacyDisclosure')
+    getPrivacyDisclosure: () => invoke('agentControl:getPrivacyDisclosure'),
+    connectClient: (request) => invoke('agentControl:connectClient', request),
+    getClientConnection: (request) => invoke('agentControl:getClientConnection', request),
+    repairClientConnection: (request) => invoke('agentControl:repairClientConnection', request),
+    rotateClientKey: (request) => invoke('agentControl:rotateClientKey', request),
+    disconnectClientConnection: (request) => invoke('agentControl:disconnectClientConnection', request)
   } satisfies AgentControlApi,
   dashboard: () => invoke<DashboardData>('dashboard:get'),
   listQuestions: (filters: QuestionFilters) => invoke<Question[]>('questions:list', filters),

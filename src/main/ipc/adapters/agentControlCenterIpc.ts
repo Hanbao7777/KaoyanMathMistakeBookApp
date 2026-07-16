@@ -28,6 +28,10 @@ import type {
 } from '../../../shared/agent/v1/gatewayContracts';
 import { operationCatalogIdentity } from '../../../shared/agent/v1/operationCatalog';
 import { getAgentControlPlane } from '../../services/databaseService';
+import { PairingService, loadPackagedLauncherArtifact } from '../../mcp/pairing/pairingService';
+import { validatePairingRequest, validatePairingStatus, validatePairingTargetRequest, type PairingRequest, type PairingStatus, type PairingTargetRequest } from '../../../shared/mcp/v1/pairingContracts';
+import path from 'node:path';
+import { app } from 'electron';
 
 const MAX_PAGE_SIZE = 100;
 const SAFE_REDACTION = Object.freeze({
@@ -144,7 +148,20 @@ function mapVerification(value: AuditVerificationValue): AgentControlVerificatio
   return Object.freeze({ ...value });
 }
 
-export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane): AgentControlApi {
+export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane, loadPairingService?: () => Promise<PairingService>): AgentControlApi {
+  let pairingService: Promise<PairingService> | undefined;
+  const pairing = () => pairingService ??= (loadPairingService ? loadPairingService() : (async () => {
+    const controlPlane = await loadControlPlane();
+    const localAppData = process.env.LOCALAPPDATA;
+    if (!localAppData) throw new Error('LOCALAPPDATA is unavailable');
+    const userData = app.getPath('userData');
+    const injectedResources = !app.isPackaged ? process.env.KAOYAN_MCP_DEV_RESOURCES_PATH : undefined;
+    const resourcesPath = injectedResources ?? process.resourcesPath;
+    return new PairingService({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(),
+      launcherArtifact: loadPackagedLauncherArtifact(resourcesPath), localAppData,
+      discoveryRoot: userData, journalRoot: path.join(userData, 'mcp-journal') });
+  })());
+  async function pairingResult(result: Promise<PairingStatus>): Promise<PairingStatus> { const value = await result; validatePairingStatus(value, 'pairingResult'); return value; }
   async function execute(command: GatewayWorkflowCommand): Promise<unknown> {
     const controlPlane = await loadControlPlane();
     const outcome = await controlPlane.gateway.execute({
@@ -197,7 +214,12 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     async verifyAudit(segmentId?: string) { return mapVerification(await query({ type: 'agent.audit.verify', payload: segmentId ? { segmentId } : {} }) as AuditVerificationValue); },
     async getPolicy() { const value = await query({ type: 'agent.policy.get', payload: {} }) as ControlSettings; return Object.freeze({ policyVersion: value.policyVersion, externalControlEnabled: value.externalControlEnabled }); },
     async getCatalog() { const value = await query({ type: 'agent.catalog.get', payload: {} }) as { readonly version: string; readonly hash: string }; return Object.freeze({ version: value.version, hash: value.hash }); },
-    async getPrivacyDisclosure() { const value = await query({ type: 'agent.privacy.get', payload: {} }) as AgentControlPrivacyDisclosure; return Object.freeze({ ...value }); }
+    async getPrivacyDisclosure() { const value = await query({ type: 'agent.privacy.get', payload: {} }) as AgentControlPrivacyDisclosure; return Object.freeze({ ...value }); },
+    async connectClient(request: PairingRequest) { validatePairingRequest(request, 'connectClient'); return pairingResult((await pairing()).connect(request)); },
+    async getClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'getClientConnection'); return pairingResult((await pairing()).health(request)); },
+    async repairClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'repairClientConnection'); return pairingResult((await pairing()).repair(request)); },
+    async rotateClientKey(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'rotateClientKey'); return pairingResult((await pairing()).rotate(request)); },
+    async disconnectClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'disconnectClientConnection'); return pairingResult((await pairing()).disconnect(request)); }
   } satisfies AgentControlApi);
 }
 
