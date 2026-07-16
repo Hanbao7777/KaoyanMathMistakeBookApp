@@ -24,6 +24,7 @@ import {
   type DatabaseMutationScope,
   type DatabaseWriteResult
 } from '../persistence/databaseCoordinator';
+import { all, one, type SqlParameter } from './sqlRows';
 
 export interface AgentControlSettings {
   readonly externalControlEnabled: boolean;
@@ -89,30 +90,6 @@ export interface ClientRegistryDependencies {
   readonly catalog: CatalogIdentity;
   readonly now?: () => string;
   readonly randomUUID?: () => string;
-}
-
-type SqlParameter = string | number | null | Uint8Array;
-
-function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
-  const statement = database.prepare(sql);
-  try {
-    statement.bind([...parameters]);
-    return statement.step() ? statement.getAsObject() : undefined;
-  } finally {
-    statement.free();
-  }
-}
-
-function all(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown>[] {
-  const statement = database.prepare(sql);
-  const rows: Record<string, unknown>[] = [];
-  try {
-    statement.bind([...parameters]);
-    while (statement.step()) rows.push(statement.getAsObject());
-    return rows;
-  } finally {
-    statement.free();
-  }
 }
 
 function assertSafeIdentifier(value: string, field: string): void {

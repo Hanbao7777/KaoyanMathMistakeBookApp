@@ -12,9 +12,8 @@ import {
 import { RevisionStore } from '../persistence/revisionStore';
 import { AuditLedger } from './auditLedger';
 import type { PreparedExecutionReceipt } from './idempotencyStore';
+import { one } from './sqlRows';
 import { WorkflowStore, type ChangeSetApplyBinding, type WorkflowBinding } from './workflows';
-
-type SqlParameter = string | number | null | Uint8Array;
 
 export interface ExecutionReceiptsDependencies {
   readonly audit: AuditLedger;
@@ -29,16 +28,6 @@ export interface ReceiptWorkflowAuthorities {
 
 const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const hashPattern = /^sha256-v1:[0-9a-f]{64}$/;
-
-function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
-  const statement = database.prepare(sql);
-  try {
-    statement.bind([...parameters]);
-    return statement.step() ? statement.getAsObject() : undefined;
-  } finally {
-    statement.free();
-  }
-}
 
 function equalHash(left: string, right: string): boolean {
   return hashPattern.test(left) && hashPattern.test(right) && timingSafeEqual(Buffer.from(left), Buffer.from(right));

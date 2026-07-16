@@ -21,8 +21,7 @@ import {
 import { assertDatabaseMutationScope, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
 import { AuditLedger, type AgentControlWriteExecutor } from './auditLedger';
 import { WorkflowStore, type R4ReservationRequest } from './workflows';
-
-type SqlParameter = string | number | null | Uint8Array;
+import { all, one, type SqlParameter } from './sqlRows';
 
 export interface IdempotencyStoreDependencies {
   readonly executeControlWrite: AgentControlWriteExecutor;
@@ -79,28 +78,6 @@ export interface ReceiptRecoveryEvidence {
 
 const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const hashPattern = /^sha256-v1:[0-9a-f]{64}$/;
-
-function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
-  const statement = database.prepare(sql);
-  try {
-    statement.bind([...parameters]);
-    return statement.step() ? statement.getAsObject() : undefined;
-  } finally {
-    statement.free();
-  }
-}
-
-function all(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown>[] {
-  const statement = database.prepare(sql);
-  const rows: Record<string, unknown>[] = [];
-  try {
-    statement.bind([...parameters]);
-    while (statement.step()) rows.push(statement.getAsObject());
-    return rows;
-  } finally {
-    statement.free();
-  }
-}
 
 function timestamp(value: string, field: string): string {
   if (!timestampPattern.test(value) || new Date(value).toISOString() !== value) throw new AgentError('VALIDATION_ERROR', { field });

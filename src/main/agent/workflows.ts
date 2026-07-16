@@ -29,8 +29,7 @@ import {
 } from '../../shared/agent/v1/gatewaySchemas';
 import { assertDatabaseMutationScope, type DatabaseMutationResult, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
 import { AuditLedger, type AgentControlWriteExecutor } from './auditLedger';
-
-type SqlParameter = string | number | null | Uint8Array;
+import { all, one, type SqlParameter } from './sqlRows';
 
 export interface WorkflowStoreDependencies {
   readonly executeControlWrite: AgentControlWriteExecutor;
@@ -83,28 +82,6 @@ function windowParts(value: string | undefined): readonly [string, string] | und
   const separator = value.indexOf('\0');
   if (separator < 1 || separator === value.length - 1) throw new AgentError('CURSOR_INVALID');
   return [value.slice(0, separator), value.slice(separator + 1)];
-}
-
-function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
-  const statement = database.prepare(sql);
-  try {
-    statement.bind([...parameters]);
-    return statement.step() ? statement.getAsObject() : undefined;
-  } finally {
-    statement.free();
-  }
-}
-
-function all(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown>[] {
-  const statement = database.prepare(sql);
-  const rows: Record<string, unknown>[] = [];
-  try {
-    statement.bind([...parameters]);
-    while (statement.step()) rows.push(statement.getAsObject());
-    return rows;
-  } finally {
-    statement.free();
-  }
 }
 
 function timestamp(value: string, field: string): number {

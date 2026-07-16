@@ -57,6 +57,15 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
   ]);
   assert.equal(Object.isFrozen(agent.operationCatalog), true);
   assert.equal(Object.isFrozen(agent.operationCatalog.operations), true);
+  assert.equal(Object.isFrozen(agent.externalPhaseBBusinessOperations), true);
+  assert.deepEqual(agent.externalPhaseBBusinessOperations, [
+    'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image', 'questions.mark_mastery',
+    'questions.submit_review', 'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets',
+    'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete', 'tasks.list', 'tasks.get',
+    'focus.sessions.create', 'focus.sessions.list'
+  ]);
+  assert.equal(agent.isExternalPhaseBBusinessOperation('questions.migrate_categories'), false);
+  assert.equal(agent.isExternalPhaseBBusinessOperation('tasks.create'), true);
   assert.equal(agent.resolveOperationDescriptor('questions.clear_all').policyBounds.approval, 'r4_grant');
 });
 

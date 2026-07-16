@@ -14,6 +14,8 @@ const contracts = source('src/shared/agent/v1/gatewayContracts.ts');
 const rendererAdapter = source('src/main/agent/rendererAdapter.ts');
 const questionAdapter = source('src/main/ipc/adapters/questionsIpc.ts');
 const tickTickAdapter = source('src/main/ipc/adapters/ticktickIpc.ts');
+const policyEngine = source('src/main/agent/policyEngine.ts');
+const operationCatalog = source('src/shared/agent/v1/operationCatalog.ts');
 
 const migratedWrites = [
   'questions.create',
@@ -63,4 +65,12 @@ test('AgentGateway has only execute/query externally and no persistence capabili
     ['execute', 'query']
   );
   assert.doesNotMatch(gateway, /DatabaseCoordinator|databaseCoordinator|executeControlWrite|executeBusinessWrite|getDatabase\(|getReadOnlyDatabase|\.exec\(|\.run\(|\btransaction\b|node:fs|node:path|sql\.js/i);
+});
+
+test('external business exposure is a catalog-owned boundary evaluated before workflow admission', () => {
+  assert.match(operationCatalog, /export const externalPhaseBBusinessOperations = Object\.freeze\(/);
+  assert.match(operationCatalog, /const externalPhaseBBusinessOperationSet = new Set<OperationName>\(externalPhaseBBusinessOperations\)/);
+  assert.match(operationCatalog, /export function isExternalPhaseBBusinessOperation\(name: OperationName\): boolean/);
+  assert.match(policyEngine, /!principal\.renderer && descriptor\.domain !== 'management' && !isExternalPhaseBBusinessOperation\(descriptor\.name\)/);
+  assert.match(policyEngine, /'EXTERNAL_PHASE_B_BOUNDARY'/);
 });

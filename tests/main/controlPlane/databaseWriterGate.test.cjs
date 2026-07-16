@@ -201,6 +201,7 @@ function scanTransactionsAndMutators() {
       'src/main/agent/auditLedger.ts',
       'src/main/agent/executionReceipts.ts',
       'src/main/agent/idempotencyStore.ts',
+      'src/main/agent/sqlRows.ts',
       'src/main/agent/workflows.ts'
     ]);
     for (const match of source.matchAll(/\.(run|exec|prepare)\s*\(|\b(?:BEGIN(?:\s+TRANSACTION)?|COMMIT|ROLLBACK)\b/g)) {
@@ -296,7 +297,7 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
   assert.deepEqual(counts, {
     'bootstrap/candidate validation': 7,
     'capability-scoped question repository': 2,
-    'control ledger read helper': 7,
+    'control ledger read helper': 2,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator control invocation scope': 7,
@@ -307,7 +308,6 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
     'database bootstrap/migration schema': 2,
-    'control registry read helper': 2,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,
     'verified read-only database SQL call': 11

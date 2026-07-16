@@ -10,6 +10,7 @@ const projectRoot = path.resolve(__dirname, '../..');
 const builtMain = path.join(projectRoot, 'dist', 'main', 'main', 'main.js');
 const builtPreload = path.join(projectRoot, 'dist', 'main', 'preload', 'preload.js');
 const controlCenterPage = path.join(projectRoot, 'src', 'renderer', 'pages', 'AgentControlCenterPage.tsx');
+const gatewayContracts = path.join(projectRoot, 'src', 'shared', 'agent', 'v1', 'gatewayContracts.ts');
 const realDataRoot = 'D:\\KaoyanMathMistakeBook';
 const roots = new Set();
 
@@ -130,6 +131,24 @@ test('production control center retains the user-owned R4 creation contract', ()
   assert.doesNotMatch(call[1], /\b(?:grantId|catalog|recovery|maxUses|status|issuedAt)\b/);
   assert.match(source, /确认创建 R4 限时授权/);
   assert.match(source, /目标客户端：.*绑定操作：.*到期时间：/s);
+});
+
+test('production trust options derive from the shared TrustProfile contract', () => {
+  const source = fs.readFileSync(controlCenterPage, 'utf8');
+  const contract = fs.readFileSync(gatewayContracts, 'utf8');
+  const trustProfilesMatch = contract.match(/export const trustProfiles = \[([^\]]+)\] as const;/);
+  assert.ok(trustProfilesMatch, 'shared trustProfiles declaration is missing');
+  const trustProfiles = [...trustProfilesMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  assert.deepEqual(trustProfiles, ['observer', 'collaborator', 'autonomous', 'full_control']);
+  assert.equal(trustProfiles.includes('high_autonomy'), false);
+
+  assert.match(source, /import \{ trustProfiles, type /);
+  assert.match(source, /trustProfiles\.map\(\(trust\) => <option key=\{trust\} value=\{trust\}>\{trustLabels\[trust\]\}<\/option>\)/);
+  assert.match(source, /autonomous:\s*'高自治'/);
+  assert.match(source, /if \(!isTrustProfile\(trust\)\) return;/);
+  assert.match(source, /updateClientAccess\(client\.clientId, draft\.scopes, draft\.trust\)/);
+  assert.doesNotMatch(source, /high_autonomy/);
+  assert.doesNotMatch(source, /event\.target\.value\s+as\s+TrustProfile/);
 });
 
 test('real Electron completes the typed control-center flow and preserves durable state on restart', async (context) => {

@@ -4,6 +4,7 @@ const environment = require('../helpers/controlPlaneTestEnv.cjs');
 
 const bootstrap = environment.requireMain('agent/bootstrap.js');
 const authentication = environment.requireMain('agent/clientAuthenticator.js');
+const { AgentGateway } = environment.requireMain('agent/agentGateway.js');
 const agent = require(`${environment.projectRoot}/dist/main/shared/agent/index.js`);
 const timestamp = '2026-07-16T10:00:00.000Z';
 const credential = 'policy credential';
@@ -73,18 +74,77 @@ test('renderer admits only migrated B6-B7 operations while preserving the recove
   assert.throws(() => evaluate(composition, renderer, 'tasks.list', { settings: mismatched }), (error) => error.code === 'CATALOG_VERSION_MISMATCH');
 });
 
-test('removed Renderer operations remain available to properly scoped external principals', async () => {
+test('external principals are denied outside the B6-B7 business boundary despite scopes, policy, or R4 grants', async () => {
   const composition = await setup([
-    'questions.write', 'reviews.submit', 'knowledge.write', 'operations.batch'
+    'questions.write', 'questions.archive', 'reviews.submit', 'knowledge.write', 'operations.batch'
   ]);
   const principal = await external(composition);
   const settings = await composition.registry.getSettings();
-  for (const operation of ['questions.undo_review', 'questions.link_knowledge']) {
-    assert.equal(evaluate(composition, principal, operation, { settings }).disposition, 'execute', operation);
+  const r4Grant = {
+    apiVersion: 1,
+    grantId: '00000000-0000-4000-8000-000000000011',
+    clientId: 'policy-client', operation: 'questions.clear_all', payloadHash: agent.hashCanonicalJson({}),
+    targetHash: agent.hashCanonicalJson({ target: 'all' }), catalog: agent.operationCatalogIdentity,
+    recovery: 'consistency_bundle', maxAffectedEntities: 500, maxUses: 1, status: 'active',
+    issuedAt: timestamp, expiresAt: '2026-07-16T10:15:00.000Z'
+  };
+  for (const operation of [
+    'questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge',
+    'questions.bulk_upsert', 'questions.import', 'questions.replace_all', 'questions.clear_all'
+  ]) {
+    const decision = evaluate(composition, principal, operation, {
+      settings,
+      state: { affectedEntityCount: 1, targetHash: r4Grant.targetHash },
+      ...(operation === 'questions.clear_all' ? { r4Grant } : {})
+    });
+    assert.equal(decision.disposition, 'deny', operation);
+    assert.equal(decision.reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY', operation);
   }
-  for (const operation of ['questions.migrate_categories', 'questions.rematch_knowledge']) {
-    assert.equal(evaluate(composition, principal, operation, { settings }).disposition, 'requires_changeset', operation);
-  }
+});
+
+test('external boundary denial reaches no workflow, admission, receipt, or business dispatch', async () => {
+  const composition = await setup(['questions.write', 'reviews.submit', 'knowledge.write', 'operations.batch']);
+  const principal = await external(composition);
+  const settings = await composition.registry.getSettings();
+  const trace = [];
+  const gateway = new AgentGateway({
+    async authorize() { return { settings }; },
+    async resolveState() { trace.push('resolve-state'); return { affectedEntityCount: 1, affectedEntities: [] }; },
+    async resolveCommand(envelope, descriptor) {
+      trace.push('resolve-command');
+      return {
+        descriptor, payload: envelope.payload, state: { affectedEntityCount: 1, affectedEntities: [] },
+        dispatch: 'business', operation: envelope.operation
+      };
+    },
+    evaluatePolicy(input) { trace.push('policy'); return composition.policy.evaluate(input); },
+    validateCommand() {},
+    validateQuery() {},
+    async admit() { trace.push('admit'); throw new Error('must not admit'); },
+    async dispatchCommand() { trace.push('dispatch'); throw new Error('must not dispatch'); },
+    async dispatchManagement() { trace.push('management-dispatch'); throw new Error('must not dispatch'); },
+    async dispatchQuery() { trace.push('query-dispatch'); throw new Error('must not dispatch'); },
+    async terminalizeKnownFailure() { trace.push('terminalize'); },
+    workflows: {
+      async getR4Grant() { trace.push('grant'); return undefined; },
+      async authorizeApproval() { trace.push('approval-authorize'); throw new Error('must not authorize'); },
+      async authorizeChangeSet() { trace.push('changeset-authorize'); throw new Error('must not authorize'); },
+      async createApproval() { trace.push('approval-create'); throw new Error('must not create'); },
+      async createChangeSet() { trace.push('changeset-create'); throw new Error('must not create'); },
+      async queryManagement() { trace.push('management-query'); throw new Error('must not query'); }
+    },
+    audit: {
+      async denial() { trace.push('denial-audit'); },
+      async query() { trace.push('query-audit'); }
+    }
+  });
+  const outcome = await gateway.execute({
+    apiVersion: 1, kind: 'agent-command', operation: 'questions.migrate_categories', payload: { limit: 1 },
+    requestId: '00000000-0000-4000-8000-000000000020',
+    expectedVersion: { dataEpoch: 'policy-boundary', dataRevision: 0 }, catalog: agent.operationCatalogIdentity
+  }, principal);
+  assert.equal(outcome.error.code, 'POLICY_DENIED');
+  assert.deepEqual(trace, ['resolve-command', 'grant', 'policy', 'denial-audit']);
 });
 
 test('renderer physical image risk remains authoritative without changing external R4 grants', async () => {
@@ -172,7 +232,7 @@ test('samples and validates the policy clock exactly once per evaluation', async
   assert.equal(calls, 2);
 });
 
-test('R4 rejects wildcard, permanent, payload-mismatched, and descriptor-mismatched authority', async () => {
+test('R4 rejects wildcard, permanent, payload-mismatched, and descriptor-mismatched authority; external Phase B boundary precedes grant evaluation', async () => {
   const composition = await setup();
   const principal = await external(composition);
   const settings = await composition.registry.getSettings();
@@ -188,17 +248,17 @@ test('R4 rejects wildcard, permanent, payload-mismatched, and descriptor-mismatc
   };
   assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }).disposition, 'execute');
-  assert.throws(() => evaluate(composition, principal, 'questions.clear_all', {
+  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input: { confirmation: 'different' }, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }), (error) => error.code === 'R4_GRANT_INVALID');
+  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
   assert.throws(() => agent.validateR4Grant({ ...grant, targetHash: '*' }), /request is invalid/i);
   assert.throws(() => agent.validateR4Grant({ ...grant, expiresAt: '2026-07-16T10:15:00.001Z' }), /request is invalid/i);
-  assert.throws(() => evaluate(composition, principal, 'questions.clear_all', {
+  assert.equal(evaluate(composition, principal, 'questions.clear_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash },
     r4Grant: { ...grant, issuedAt: '2026-07-16T09:44:59.999Z', expiresAt: '2026-07-16T09:59:59.999Z' }
-  }), (error) => error.code === 'R4_GRANT_INVALID');
-  assert.throws(() => evaluate(composition, principal, 'questions.replace_all', {
+  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
+  assert.equal(evaluate(composition, principal, 'questions.replace_all', {
     settings, input, state: { affectedEntityCount: 10, targetHash }, r4Grant: grant
-  }), (error) => error.code === 'R4_GRANT_INVALID');
+  }).reasonCode, 'EXTERNAL_PHASE_B_BOUNDARY');
 });

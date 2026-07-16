@@ -40,7 +40,7 @@ interface DescriptorDefinition {
   readonly rendererManagement?: boolean;
 }
 
-const managementRecoveryAllowlist = new Set<OperationName>([
+const disabledRendererManagementOperationSet = new Set<OperationName>([
   'agent.status.get',
   'agent.control.set_enabled',
   'agent.clients.list',
@@ -67,8 +67,33 @@ const managementRecoveryAllowlist = new Set<OperationName>([
 ]);
 
 export const disabledRendererManagementOperations = Object.freeze(
-  [...managementRecoveryAllowlist].sort()
+  [...disabledRendererManagementOperationSet].sort()
 ) as readonly OperationName[];
+
+// Phase B external access is deliberately limited to the B6/B7 Renderer migration tranche.
+export const externalPhaseBBusinessOperations = Object.freeze([
+  'questions.create',
+  'questions.update',
+  'questions.delete',
+  'questions.remove_image',
+  'questions.mark_mastery',
+  'questions.submit_review',
+  'questions.list',
+  'questions.get',
+  'questions.review_logs',
+  'questions.review_buckets',
+  'tasks.create',
+  'tasks.update',
+  'tasks.complete',
+  'tasks.uncomplete',
+  'tasks.delete',
+  'tasks.list',
+  'tasks.get',
+  'focus.sessions.create',
+  'focus.sessions.list'
+] as const);
+
+const externalPhaseBBusinessOperationSet = new Set<OperationName>(externalPhaseBBusinessOperations);
 
 const definitions: Record<OperationName, DescriptorDefinition> = {
   'agent.control.set_enabled': managementCommand(['control.manage'], 'R2', { rendererManagement: true }),
@@ -183,7 +208,7 @@ function businessQuery(domain: 'questions' | 'tasks' | 'focus', requiredScopes: 
 
 function descriptor(name: OperationName, definition: DescriptorDefinition): OperationDescriptor {
   const rendererManagement = definition.rendererManagement === true;
-  if (rendererManagement !== managementRecoveryAllowlist.has(name)) {
+  if (rendererManagement !== disabledRendererManagementOperationSet.has(name)) {
     throw new Error(`Renderer management allowlist mismatch for ${name}`);
   }
   const minimumRisk = definition.risk ?? 'R1';
@@ -248,5 +273,9 @@ export function resolveOperationDescriptor(name: OperationName): OperationDescri
 }
 
 export function isDisabledRendererManagementOperation(name: OperationName): boolean {
-  return managementRecoveryAllowlist.has(name);
+  return disabledRendererManagementOperationSet.has(name);
+}
+
+export function isExternalPhaseBBusinessOperation(name: OperationName): boolean {
+  return externalPhaseBBusinessOperationSet.has(name);
 }

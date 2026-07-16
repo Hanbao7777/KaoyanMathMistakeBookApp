@@ -3,8 +3,8 @@
 ## Status and authority
 
 This document records the accepted findings from the read-only Phase B review of
-`efb07ea9e649dea1148ffc42a914670229f403c9...HEAD`. It is an active remediation
-plan authorized by the user. It does not rewrite the historical Phase A or Phase B
+`efb07ea9e649dea1148ffc42a914670229f403c9...HEAD`. The remediation was completed
+and accepted on 2026-07-16. It does not rewrite the historical Phase A or Phase B
 implementation plans.
 
 The remediation preserves the Phase B architecture: external callers enter only
@@ -135,3 +135,29 @@ The remediation is complete only when the coordinator directly verifies all thre
 worker results, confirms that external principals cannot execute unmigrated writes,
 confirms that the high-autonomy UI path submits `autonomous`, and reruns the full
 acceptance matrix. Structural refactoring must remain behavior-preserving.
+
+## Completion evidence
+
+The coordinator directly inspected all three worker diffs and accepted the
+combined result:
+
+- The trust selector derives its values from `trustProfiles`, submits
+  `autonomous`, retains the “高自治” label, and rejects forged values.
+- `externalPhaseBBusinessOperations` is a frozen code-owned boundary with static
+  parity to the accepted B6/B7 migration set. External requests outside it are
+  denied before workflow admission or business dispatch.
+- The private disabled-control set is named
+  `disabledRendererManagementOperationSet`.
+- The five duplicated sql.js row readers use `src/main/agent/sqlRows.ts`, with
+  focused cleanup and failure-propagation tests.
+
+Final acceptance results:
+
+- `npm run build`: passed (existing Vite large-chunk warning only)
+- Agent tests: 99/99 passed
+- Real Electron control-center tests: 8/8 passed
+- Phase A writer and end-to-end gates: 9/9 passed
+- `npm run test:main`: 400/400 passed
+- `npm test`: 424/424 passed
+- `npm run typecheck`: passed
+- `git diff --check`: passed

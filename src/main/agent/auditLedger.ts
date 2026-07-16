@@ -23,8 +23,7 @@ import {
   validateJsonObject
 } from '../../shared/agent/v1/gatewaySchemas';
 import { assertDatabaseMutationScope, type DatabaseControlWriteRequest, type DatabaseMutationResult, type DatabaseMutationScope, type DatabaseWriteResult } from '../persistence/databaseCoordinator';
-
-type SqlParameter = string | number | null | Uint8Array;
+import { all, one, type SqlParameter } from './sqlRows';
 
 export type AgentControlWriteExecutor = <T>(
   request: DatabaseControlWriteRequest<T>
@@ -100,28 +99,6 @@ const absolutePath = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
 const protectedKinds = new Set<AuditKind>([
   'authentication', 'pairing', 'client_revoked', 'policy_changed', 'catalog_changed'
 ]);
-
-function one(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown> | undefined {
-  const statement = database.prepare(sql);
-  try {
-    statement.bind([...parameters]);
-    return statement.step() ? statement.getAsObject() : undefined;
-  } finally {
-    statement.free();
-  }
-}
-
-function all(database: Database, sql: string, parameters: readonly SqlParameter[] = []): Record<string, unknown>[] {
-  const statement = database.prepare(sql);
-  const rows: Record<string, unknown>[] = [];
-  try {
-    statement.bind([...parameters]);
-    while (statement.step()) rows.push(statement.getAsObject());
-    return rows;
-  } finally {
-    statement.free();
-  }
-}
 
 function timestamp(value: string, field: string): string {
   if (!timestampPattern.test(value) || new Date(value).toISOString() !== value) {

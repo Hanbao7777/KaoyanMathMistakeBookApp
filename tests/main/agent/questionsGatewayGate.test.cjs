@@ -7,9 +7,11 @@ const projectRoot = path.resolve(__dirname, '../../..');
 const adapterPath = path.join(projectRoot, 'src/main/ipc/adapters/questionsIpc.ts');
 const registerPath = path.join(projectRoot, 'src/main/ipc/registerIpc.ts');
 const authenticationPath = path.join(projectRoot, 'src/main/agent/clientAuthenticator.ts');
+const catalogPath = path.join(projectRoot, 'src/shared/agent/v1/operationCatalog.ts');
 const adapter = fs.readFileSync(adapterPath, 'utf8');
 const register = fs.readFileSync(registerPath, 'utf8');
 const authentication = fs.readFileSync(authenticationPath, 'utf8');
+const catalog = fs.readFileSync(catalogPath, 'utf8');
 
 const rendererOperations = [
   'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
@@ -41,11 +43,15 @@ test('fixed Renderer adapter exposes no generic operation or caller identity for
   assert.doesNotMatch(register, /questions:[^']+'[^\n]*getQuestionsApplication/);
 });
 
-test('Renderer business allowlist retains B6 and adds only accepted B7 operations', () => {
+test('external Phase B business allowlist has static parity with the accepted B6-B7 Renderer migration gate', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block, 'Missing migrated Renderer operation allowlist');
-  const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(allowlist, rendererOperations);
+  const rendererAllowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  const externalBlock = catalog.match(/externalPhaseBBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
+  assert.ok(externalBlock, 'Missing immutable external Phase B business allowlist');
+  const externalAllowlist = [...externalBlock[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  assert.deepEqual(rendererAllowlist, rendererOperations);
+  assert.deepEqual(externalAllowlist, rendererOperations);
   for (const operation of rendererOperations.slice(0, 10)) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   for (const operation of ['questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge']) {
     assert.doesNotMatch(adapter, new RegExp(`type: '${operation.replace('.', '\\.')}'`));
