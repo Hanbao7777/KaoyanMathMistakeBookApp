@@ -26,7 +26,7 @@ Before starting work:
 
 - The coordinator is responsible for understanding, decomposing, dispatching, debugging, and verifying work without relying on an automatically selected skill.
 - Decide whether delegation adds value before creating an agent.
-- Classify each delegated task as simple, medium, or hard and follow `docs/agents/model-routing.md`.
+- Classify each delegated task as simple, medium, hard, or ultra-hard and follow `docs/agents/model-routing.md`.
 - Define objective, allowed scope, forbidden scope, file ownership, validation, and expected response before dispatch.
 - Default to `relationship: subagent` and `notifyOnFinish: true`.
 - Use `detached` only for an explicit full ownership transfer requested by the user.

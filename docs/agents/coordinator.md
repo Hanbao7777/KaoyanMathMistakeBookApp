@@ -28,7 +28,7 @@ Every prompt must contain:
 Read First:
 Objective:
 Context:
-Difficulty: simple | medium | hard
+Difficulty: simple | medium | hard | ultra-hard
 User-Requested Skills: [optional]
 Allowed Scope:
 Forbidden Scope:
