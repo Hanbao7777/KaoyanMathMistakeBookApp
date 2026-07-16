@@ -74,8 +74,8 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
   assert.equal(first.clientId, 'local-renderer-management');
   assert.equal(first.renderer, true);
   assert.deepEqual(first.scopes, [
-    'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
-    'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
+    'approvals.manage', 'approvals.read', 'audit.export', 'audit.read', 'changesets.manage', 'changesets.read',
+    'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write', 'r4.manage', 'r4.read',
     'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
     'sessions.manage', 'sessions.read', 'system.read'
   ]);

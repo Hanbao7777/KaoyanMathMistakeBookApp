@@ -316,19 +316,19 @@ export class WorkflowStore {
     return result.value;
   }
 
-  async revokeR4Grant(grantId: string, clientId: string): Promise<void> {
-    await this.executeControlWrite({ requestId: `agent-r4-revoke-${grantId}`, execute: (database, scope) => this.revokeR4GrantInTransaction(database, scope, grantId, clientId) });
+  async revokeR4Grant(grantId: string, clientId: string, localUserAuthority = false): Promise<void> {
+    await this.executeControlWrite({ requestId: `agent-r4-revoke-${grantId}`, execute: (database, scope) => this.revokeR4GrantInTransaction(database, scope, grantId, clientId, localUserAuthority) });
   }
 
-  revokeR4GrantInTransaction(database: Database, scope: DatabaseMutationScope, grantId: string, clientId: string): DatabaseMutationResult<void> {
+  revokeR4GrantInTransaction(database: Database, scope: DatabaseMutationScope, grantId: string, clientId: string, localUserAuthority = false): DatabaseMutationResult<void> {
     assertDatabaseMutationScope(scope, database);
     const row = one(database, 'SELECT * FROM agent_r4_grants WHERE grant_id = ?', [grantId]);
-    if (!row || row.client_id !== clientId || row.status === 'consumed') throw new AgentError('R4_GRANT_CONSUMED');
+    if (!row || (!localUserAuthority && row.client_id !== clientId) || row.status === 'consumed') throw new AgentError('R4_GRANT_CONSUMED');
     if (row.status === 'revoked') return { changed: false, value: undefined };
     if (row.status === 'reserved') throw new AgentError('R4_GRANT_RESERVED');
     database.run("UPDATE agent_r4_grants SET status = 'revoked', revoked_at = ? WHERE grant_id = ?", [this.currentTimestamp(), grantId]);
     this.requiredAudit(() => this.audit.appendWorkflowControlInTransaction(database, scope, {
-      clientId, operation: 'agent.r4_grants.revoke', risk: 'R4', summary: Object.freeze({ action: 'r4_grant_revoked', grantId })
+      clientId: String(row.client_id), operation: 'agent.r4_grants.revoke', risk: 'R4', summary: Object.freeze({ action: 'r4_grant_revoked', grantId })
     }));
     return { changed: true, value: undefined };
   }

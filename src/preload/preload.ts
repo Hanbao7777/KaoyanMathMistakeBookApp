@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppApi } from '../shared/api';
+import type { AgentControlApi, AppApi } from '../shared/api';
 import type {
   AppPaths,
   AddExternalQuestionToMistakesResult,
@@ -93,11 +93,43 @@ type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
 
 async function invoke<T>(channel: string, ...args: unknown[]) {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcResponse<T>;
-  if (!response.ok) throw new Error(response.error);
+  if (!response || typeof response !== 'object' || typeof response.ok !== 'boolean') {
+    throw new Error('Invalid IPC response envelope');
+  }
+  if (!response.ok) {
+    if (typeof response.error !== 'string') throw new Error('Invalid IPC error envelope');
+    throw new Error(response.error);
+  }
+  if (!('data' in response)) throw new Error('Invalid IPC success envelope');
   return response.data;
 }
 
 const api: AppApi = {
+  agentControl: {
+    getStatus: () => invoke('agentControl:getStatus'),
+    setExternalControlEnabled: (enabled) => invoke('agentControl:setExternalControlEnabled', enabled),
+    listClients: (request = {}) => invoke('agentControl:listClients', request),
+    updateClientAccess: (clientId, scopes, trust) => invoke('agentControl:updateClientAccess', { clientId, scopes, trust }),
+    revokeClient: (clientId) => invoke('agentControl:revokeClient', clientId),
+    listSessions: (request = {}) => invoke('agentControl:listSessions', request),
+    terminateSession: (sessionId) => invoke('agentControl:terminateSession', sessionId),
+    listR4Grants: (request = {}) => invoke('agentControl:listR4Grants', request),
+    createR4Grant: (grant) => invoke('agentControl:createR4Grant', grant),
+    revokeR4Grant: (grantId) => invoke('agentControl:revokeR4Grant', grantId),
+    listApprovals: (request = {}) => invoke('agentControl:listApprovals', request),
+    approve: (approvalId) => invoke('agentControl:approve', approvalId),
+    rejectApproval: (approvalId, reasonCode) => invoke('agentControl:rejectApproval', approvalId, reasonCode),
+    listChangeSets: (request = {}) => invoke('agentControl:listChangeSets', request),
+    getChangeSet: (changeSetId) => invoke('agentControl:getChangeSet', changeSetId),
+    applyChangeSet: (changeSetId) => invoke('agentControl:applyChangeSet', changeSetId),
+    rejectChangeSet: (changeSetId, reasonCode) => invoke('agentControl:rejectChangeSet', changeSetId, reasonCode),
+    searchAudit: (request = {}) => invoke('agentControl:searchAudit', request),
+    exportAudit: (request = {}) => invoke('agentControl:exportAudit', request),
+    verifyAudit: (segmentId) => invoke('agentControl:verifyAudit', segmentId),
+    getPolicy: () => invoke('agentControl:getPolicy'),
+    getCatalog: () => invoke('agentControl:getCatalog'),
+    getPrivacyDisclosure: () => invoke('agentControl:getPrivacyDisclosure')
+  } satisfies AgentControlApi,
   dashboard: () => invoke<DashboardData>('dashboard:get'),
   listQuestions: (filters: QuestionFilters) => invoke<Question[]>('questions:list', filters),
   getQuestion: (id: number) => invoke<Question | null>('questions:get', id),

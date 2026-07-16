@@ -122,6 +122,7 @@ import {
   uncompleteTickTickTaskFromRenderer,
   updateTickTickTaskFromRenderer
 } from './adapters/ticktickIpc';
+import { agentControlCenterIpc } from './adapters/agentControlCenterIpc';
 import { FocusTimerEngine } from '../services/focusTimerEngine';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
@@ -167,6 +168,8 @@ import type {
   TickTickHabitInput,
   TickTickHabitLog
 } from '../../shared/types';
+import type { AgentScope, TrustProfile } from '../../shared/agent/v1/gatewayContracts';
+import type { AgentControlCreateR4GrantRequest, AgentControlPageRequest } from '../../shared/api';
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
   ipcMain.handle(channel, async (_event, ...args: TArgs) => {
@@ -383,6 +386,29 @@ function focusMainWindow() {
 }
 
 export function registerIpc() {
+  handle('agentControl:getStatus', () => agentControlCenterIpc.getStatus());
+  handle('agentControl:setExternalControlEnabled', (enabled: boolean) => agentControlCenterIpc.setExternalControlEnabled(enabled));
+  handle('agentControl:listClients', (request?: AgentControlPageRequest) => agentControlCenterIpc.listClients(request));
+  handle('agentControl:updateClientAccess', (request: { readonly clientId: string; readonly scopes: readonly AgentScope[]; readonly trust: TrustProfile }) => agentControlCenterIpc.updateClientAccess(request.clientId, request.scopes, request.trust));
+  handle('agentControl:revokeClient', (clientId: string) => agentControlCenterIpc.revokeClient(clientId));
+  handle('agentControl:listSessions', (request?: AgentControlPageRequest & { readonly clientId?: string }) => agentControlCenterIpc.listSessions(request));
+  handle('agentControl:terminateSession', (sessionId: string) => agentControlCenterIpc.terminateSession(sessionId));
+  handle('agentControl:listR4Grants', (request?: AgentControlPageRequest & { readonly clientId?: string; readonly status?: import('../../shared/agent/v1/gatewayContracts').R4GrantStatus }) => agentControlCenterIpc.listR4Grants(request));
+  handle('agentControl:createR4Grant', (grant: AgentControlCreateR4GrantRequest) => agentControlCenterIpc.createR4Grant(grant));
+  handle('agentControl:revokeR4Grant', (grantId: string) => agentControlCenterIpc.revokeR4Grant(grantId));
+  handle('agentControl:listApprovals', (request?: AgentControlPageRequest & { readonly status?: import('../../shared/agent/v1/gatewayContracts').ApprovalStatus }) => agentControlCenterIpc.listApprovals(request));
+  handle('agentControl:approve', (approvalId: string) => agentControlCenterIpc.approve(approvalId));
+  handle('agentControl:rejectApproval', (approvalId: string, reasonCode: string) => agentControlCenterIpc.rejectApproval(approvalId, reasonCode));
+  handle('agentControl:listChangeSets', (request?: AgentControlPageRequest & { readonly status?: import('../../shared/agent/v1/gatewayContracts').ChangeSetStatus }) => agentControlCenterIpc.listChangeSets(request));
+  handle('agentControl:getChangeSet', (changeSetId: string) => agentControlCenterIpc.getChangeSet(changeSetId));
+  handle('agentControl:applyChangeSet', (changeSetId: string) => agentControlCenterIpc.applyChangeSet(changeSetId));
+  handle('agentControl:rejectChangeSet', (changeSetId: string, reasonCode: string) => agentControlCenterIpc.rejectChangeSet(changeSetId, reasonCode));
+  handle('agentControl:searchAudit', (request?: AgentControlPageRequest & { readonly clientId?: string; readonly kinds?: readonly import('../../shared/agent/v1/gatewayContracts').AuditKind[] }) => agentControlCenterIpc.searchAudit(request));
+  handle('agentControl:exportAudit', (request?: AgentControlPageRequest) => agentControlCenterIpc.exportAudit(request));
+  handle('agentControl:verifyAudit', (segmentId?: string) => agentControlCenterIpc.verifyAudit(segmentId));
+  handle('agentControl:getPolicy', () => agentControlCenterIpc.getPolicy());
+  handle('agentControl:getCatalog', () => agentControlCenterIpc.getCatalog());
+  handle('agentControl:getPrivacyDisclosure', () => agentControlCenterIpc.getPrivacyDisclosure());
   handle('dashboard:get', () => getDashboard());
   handle('questions:list', (filters: QuestionFilters) => listQuestionsFromRenderer(filters));
   handle('questions:get', (id: number) => getQuestionFromRenderer(id));

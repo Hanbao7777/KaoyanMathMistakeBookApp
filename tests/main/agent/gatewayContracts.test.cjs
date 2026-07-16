@@ -48,9 +48,12 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
     [...agent.operationNames].sort()
   );
   assert.deepEqual(agent.disabledRendererManagementOperations, [
-    'agent.audit.export', 'agent.audit.search', 'agent.audit.verify', 'agent.catalog.get',
-    'agent.clients.list', 'agent.clients.revoke', 'agent.control.set_enabled', 'agent.policy.get',
-    'agent.privacy.get', 'agent.sessions.list', 'agent.sessions.terminate', 'agent.status.get'
+    'agent.approvals.approve', 'agent.approvals.list', 'agent.approvals.reject', 'agent.audit.export',
+    'agent.audit.search', 'agent.audit.verify', 'agent.catalog.get', 'agent.changesets.apply',
+    'agent.changesets.get', 'agent.changesets.list', 'agent.changesets.reject', 'agent.clients.list',
+    'agent.clients.revoke', 'agent.clients.update_access', 'agent.control.set_enabled', 'agent.policy.get',
+    'agent.privacy.get', 'agent.r4_grants.create', 'agent.r4_grants.list', 'agent.r4_grants.revoke',
+    'agent.sessions.list', 'agent.sessions.terminate', 'agent.status.get'
   ]);
   assert.equal(Object.isFrozen(agent.operationCatalog), true);
   assert.equal(Object.isFrozen(agent.operationCatalog.operations), true);

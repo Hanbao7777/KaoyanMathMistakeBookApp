@@ -26,6 +26,7 @@ import {
 import {
   assertCatalogIdentity,
   hashCanonicalJson,
+  validateR4Grant,
   validateGatewayWorkflowCommand,
   validateGatewayWorkflowQuery
 } from '../../shared/agent/v1/gatewaySchemas';
@@ -361,7 +362,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     const changeSetId = String(envelope.payload.changeSetId);
     const changeSet = await workflows.getChangeSet(changeSetId);
     if (
-      !changeSet || !['approved', 'applied'].includes(changeSet.status) || changeSet.clientId !== principal.clientId ||
+      !changeSet || !['approved', 'applied'].includes(changeSet.status) || (!principal.renderer && changeSet.clientId !== principal.clientId) ||
       changeSet.catalog.version !== operationCatalogIdentity.version || changeSet.catalog.hash !== operationCatalogIdentity.hash ||
       changeSet.operations.length !== 1
     ) throw new AgentError('APPROVAL_INVALID');
@@ -372,6 +373,11 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     ) throw new AgentError('APPROVAL_INVALID');
     const plannedDescriptor = resolveOperationDescriptor(operation.operation);
     if (plannedDescriptor.kind !== 'command' || plannedDescriptor.domain === 'management') throw new AgentError('APPROVAL_INVALID');
+    if (principal.renderer) {
+      const owner = await registry.getActiveClientSummary(changeSet.clientId);
+      if (plannedDescriptor.requiredScopes.some((scope) => !owner.scopes.includes(scope))) throw new AgentError('SCOPE_DENIED');
+      if (owner.trust === 'observer') throw new AgentError('POLICY_DENIED');
+    }
     const plannedEnvelope: AgentCommandEnvelope = Object.freeze({
       ...envelope,
       operation: operation.operation,
@@ -388,7 +394,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     ) throw new AgentError('APPROVAL_INVALID');
     const applyBinding: ChangeSetApplyBinding = Object.freeze({
       changeSetId,
-      clientId: principal.clientId,
+      clientId: changeSet.clientId,
       operation: operation.operation,
       payloadHash: operation.payloadHash,
       affectedSetHash: changeSet.affectedSetHash,
@@ -403,6 +409,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       operation: operation.operation,
       expectedVersion: changeSet.baseVersion,
       changeSetApply: applyBinding,
+      ...(principal.renderer ? { localApprovedChangeSet: true as const } : {}),
       ...(changeSet.status === 'applied' ? { changeSetAlreadyApplied: true } : {})
     });
   };
@@ -416,10 +423,40 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   ): DatabaseMutationResult<unknown> => {
     switch (command.type) {
       case 'agent.control.set_enabled': return controlValue(registry.setExternalControlEnabledInTransaction(database, scope, command.payload.enabled), { enabled: command.payload.enabled });
+      case 'agent.clients.update_access': return controlValue(registry.updateClientAccessInTransaction(database, scope, command.payload.clientId, command.payload.scopes, command.payload.trust), { clientId: command.payload.clientId, scopes: command.payload.scopes, trust: command.payload.trust });
       case 'agent.clients.revoke': return controlValue(registry.revokeClientInTransaction(database, scope, command.payload.clientId), { clientId: command.payload.clientId, revoked: true });
       case 'agent.sessions.terminate': return controlValue(registry.terminateSessionInTransaction(database, scope, command.payload.sessionId), { sessionId: command.payload.sessionId, terminated: true });
-      case 'agent.r4_grants.create': return workflows.createR4GrantInTransaction(database, scope, command.payload.grant);
-      case 'agent.r4_grants.revoke': return controlValue(workflows.revokeR4GrantInTransaction(database, scope, command.payload.grantId, principal.clientId), { grantId: command.payload.grantId, revoked: true });
+      case 'agent.r4_grants.create': {
+        const request = command.payload.grant;
+        if (!principal.renderer && request.clientId !== principal.clientId) throw new AgentError('SCOPE_DENIED');
+        const targetDescriptor = resolveOperationDescriptor(request.operation);
+        const issuedAt = now();
+        if (
+          targetDescriptor.policyBounds.maximumRisk !== 'R4' || !targetDescriptor.policyBounds.requiresR4GrantWhenRiskR4 ||
+          targetDescriptor.policyBounds.maxAffectedEntities !== request.maxAffectedEntities ||
+          Date.parse(request.expiresAt) <= Date.parse(issuedAt)
+        ) throw new AgentError('R4_GRANT_INVALID');
+        const target = registry.getActiveClientSummaryInTransaction(database, scope, request.clientId);
+        if (target.trust === 'observer' || targetDescriptor.requiredScopes.some((scope) => !target.scopes.includes(scope))) throw new AgentError('SCOPE_DENIED');
+        const grant = Object.freeze({
+          apiVersion: agentApiVersion,
+          grantId: uuid().toLowerCase(),
+          clientId: request.clientId,
+          operation: request.operation,
+          payloadHash: request.payloadHash,
+          targetHash: request.targetHash,
+          catalog: operationCatalogIdentity,
+          recovery: targetDescriptor.recovery,
+          maxAffectedEntities: request.maxAffectedEntities,
+          maxUses: 1 as const,
+          status: 'active' as const,
+          issuedAt,
+          expiresAt: request.expiresAt
+        });
+        validateR4Grant(grant);
+        return workflows.createR4GrantInTransaction(database, scope, grant);
+      }
+      case 'agent.r4_grants.revoke': return controlValue(workflows.revokeR4GrantInTransaction(database, scope, command.payload.grantId, principal.clientId, principal.renderer), { grantId: command.payload.grantId, revoked: true });
       case 'agent.approvals.approve': return workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'approved', principal.renderer ? 'user' : 'policy');
       case 'agent.approvals.reject': return workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'rejected', principal.renderer ? 'user' : 'policy');
       case 'agent.changesets.reject': return workflows.transitionChangeSetInTransaction(database, scope, command.payload.changeSetId, 'rejected');
@@ -469,7 +506,8 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       state: input.state,
       settings: input.settings,
       pageSize: input.pageSize,
-      r4Grant: input.r4Grant
+      r4Grant: input.r4Grant,
+      localApprovedChangeSet: input.localApprovedChangeSet
     }),
     validateCommand(envelope, descriptor) {
       if (descriptor.domain === 'management') validateGatewayWorkflowCommand({ type: envelope.operation, payload: envelope.payload });

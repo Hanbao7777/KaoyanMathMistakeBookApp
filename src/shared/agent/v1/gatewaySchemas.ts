@@ -717,9 +717,22 @@ export function validateGatewayWorkflowCommand(value: unknown, path = 'command')
   const payloadPath = `${path}.payload`;
   switch (command.type) {
     case 'agent.control.set_enabled': { const payload = exact(command.payload, ['enabled'], payloadPath); required(payload, ['enabled'], payloadPath); boolean(payload.enabled, `${payloadPath}.enabled`); return; }
+    case 'agent.clients.update_access': { const payload = exact(command.payload, ['clientId', 'scopes', 'trust'], payloadPath); required(payload, ['clientId', 'scopes', 'trust'], payloadPath); safeName(payload.clientId, `${payloadPath}.clientId`); uniqueStringArray(payload.scopes, agentScopes, `${payloadPath}.scopes`); const scopes = payload.scopes as readonly string[]; if (scopes.length === 0) fail(`${payloadPath}.scopes`); if (canonicalizeJson([...scopes].sort()) !== canonicalizeJson(scopes)) fail(`${payloadPath}.scopes`); oneOf(payload.trust, trustProfiles, `${payloadPath}.trust`); return; }
     case 'agent.clients.revoke': { const payload = exact(command.payload, ['clientId'], payloadPath); required(payload, ['clientId'], payloadPath); safeName(payload.clientId, `${payloadPath}.clientId`); return; }
     case 'agent.sessions.terminate': { const payload = exact(command.payload, ['sessionId'], payloadPath); required(payload, ['sessionId'], payloadPath); uuid(payload.sessionId, `${payloadPath}.sessionId`); return; }
-    case 'agent.r4_grants.create': { const payload = exact(command.payload, ['grant'], payloadPath); required(payload, ['grant'], payloadPath); validateR4Grant(payload.grant, `${payloadPath}.grant`); return; }
+    case 'agent.r4_grants.create': {
+      const payload = exact(command.payload, ['grant'], payloadPath);
+      required(payload, ['grant'], payloadPath);
+      const grant = exact(payload.grant, ['clientId', 'operation', 'payloadHash', 'targetHash', 'maxAffectedEntities', 'expiresAt'], `${payloadPath}.grant`);
+      required(grant, ['clientId', 'operation', 'payloadHash', 'targetHash', 'maxAffectedEntities', 'expiresAt'], `${payloadPath}.grant`);
+      safeName(grant.clientId, `${payloadPath}.grant.clientId`);
+      oneOf(grant.operation, operationNames, `${payloadPath}.grant.operation`);
+      hash(grant.payloadHash, `${payloadPath}.grant.payloadHash`);
+      hash(grant.targetHash, `${payloadPath}.grant.targetHash`);
+      boundedPositive(grant.maxAffectedEntities, `${payloadPath}.grant.maxAffectedEntities`, 500);
+      timestamp(grant.expiresAt, `${payloadPath}.grant.expiresAt`);
+      return;
+    }
     case 'agent.r4_grants.revoke': { const payload = exact(command.payload, ['grantId'], payloadPath); required(payload, ['grantId'], payloadPath); uuid(payload.grantId, `${payloadPath}.grantId`); return; }
     case 'agent.approvals.approve': { const payload = exact(command.payload, ['approvalId'], payloadPath); required(payload, ['approvalId'], payloadPath); uuid(payload.approvalId, `${payloadPath}.approvalId`); return; }
     case 'agent.approvals.reject': { const payload = exact(command.payload, ['approvalId', 'reasonCode'], payloadPath); required(payload, ['approvalId', 'reasonCode'], payloadPath); uuid(payload.approvalId, `${payloadPath}.approvalId`); safeName(payload.reasonCode, `${payloadPath}.reasonCode`); return; }

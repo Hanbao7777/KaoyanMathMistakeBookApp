@@ -556,6 +556,77 @@ test('approved one-operation change set applies through CommandBus once and term
   assert.equal((await workflows.getChangeSet(changeSetId)).status, 'applied');
 });
 
+test('renderer applies an approved external change set outside migrated renderer operations exactly once', async () => {
+  const current = await realComposition({ scopes: ['questions.read', 'questions.write'] });
+  const capability = coordinatorModule.createDatabaseCoordinatorControlCapability(current.coordinator);
+  const executeControlWrite = (request) => current.coordinator.executeControlWrite(capability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: agent.operationCatalogIdentity, now: () => now, randomUUID: uuid });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now: () => now, randomUUID: uuid });
+  await current.b3.registry.registerClient({
+    clientId: 'external-change-set-client', subjectId: 'external-change-set-client', displayName: 'External change set client',
+    credentialFingerprint: authentication.fingerprintCredential('external-change-set-client'), scopes: ['questions.write'], trust: 'full_control'
+  });
+  const baseVersion = current.coordinator.currentVersion();
+  const payload = { questionId: 1, mastery: '一般' };
+  const affected = [{ entityType: 'question', entityId: '1' }];
+  const changeSetId = uuid();
+  await workflows.createChangeSet({
+    apiVersion: 1, changeSetId, clientId: 'external-change-set-client', status: 'approved', catalog: agent.operationCatalogIdentity,
+    baseVersion, risk: 'R2', summary: 'Renderer applies external plan',
+    operations: [{ operation: 'questions.mark_mastery', payload, payloadHash: agent.hashCanonicalJson(payload), affectedEntities: affected }],
+    affectedSetHash: agent.hashCanonicalJson(affected), recovery: 'inverse', createdAt: now, expiresAt: '2026-07-16T15:00:00.000Z'
+  });
+  const request = managementCommand('agent.changesets.apply', { changeSetId });
+  assert.equal((await current.gateway.execute(request, current.renderer.principal())).kind, 'completed');
+  assert.equal((await current.gateway.execute(request, current.renderer.principal())).kind, 'replayed');
+  assert.equal(current.executions(), 1);
+  assert.equal((await workflows.getChangeSet(changeSetId)).status, 'applied');
+});
+
+test('change-set apply denies narrowed, revoked, observer, and cross-client authority without side effects', async () => {
+  const current = await realComposition({ scopes: ['changesets.manage', 'questions.write'] });
+  const capability = coordinatorModule.createDatabaseCoordinatorControlCapability(current.coordinator);
+  const executeControlWrite = (request) => current.coordinator.executeControlWrite(capability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: agent.operationCatalogIdentity, now: () => now, randomUUID: uuid });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now: () => now, randomUUID: uuid });
+  const payload = { questionId: 1, mastery: '一般' };
+  const affected = [{ entityType: 'question', entityId: '1' }];
+  async function ownerChangeSet(clientId) {
+    await current.b3.registry.registerClient({
+      clientId, subjectId: clientId, displayName: clientId,
+      credentialFingerprint: authentication.fingerprintCredential(clientId), scopes: ['questions.write'], trust: 'full_control'
+    });
+    const changeSetId = uuid();
+    await workflows.createChangeSet({
+      apiVersion: 1, changeSetId, clientId, status: 'approved', catalog: agent.operationCatalogIdentity,
+      baseVersion: current.coordinator.currentVersion(), risk: 'R2', summary: `Denied ${clientId}`,
+      operations: [{ operation: 'questions.mark_mastery', payload, payloadHash: agent.hashCanonicalJson(payload), affectedEntities: affected }],
+      affectedSetHash: agent.hashCanonicalJson(affected), recovery: 'inverse', createdAt: now, expiresAt: '2026-07-16T15:00:00.000Z'
+    });
+    return changeSetId;
+  }
+
+  const narrowed = await ownerChangeSet('changeset-narrowed');
+  await current.b3.registry.updateClientAccess('changeset-narrowed', ['audit.read'], 'full_control');
+  assert.equal((await current.gateway.execute(managementCommand('agent.changesets.apply', { changeSetId: narrowed }), current.renderer.principal())).error.code, 'SCOPE_DENIED');
+  assert.equal((await workflows.getChangeSet(narrowed)).status, 'approved');
+
+  const revoked = await ownerChangeSet('changeset-revoked');
+  await current.b3.registry.revokeClient('changeset-revoked');
+  assert.equal((await current.gateway.execute(managementCommand('agent.changesets.apply', { changeSetId: revoked }), current.renderer.principal())).error.code, 'CLIENT_REVOKED');
+  assert.equal((await workflows.getChangeSet(revoked)).status, 'approved');
+
+  const observer = await ownerChangeSet('changeset-observer');
+  await current.b3.registry.updateClientAccess('changeset-observer', ['questions.write'], 'observer');
+  assert.equal((await current.gateway.execute(managementCommand('agent.changesets.apply', { changeSetId: observer }), current.renderer.principal())).error.code, 'POLICY_DENIED');
+  assert.equal((await workflows.getChangeSet(observer)).status, 'approved');
+
+  const crossClient = await ownerChangeSet('changeset-cross-client');
+  assert.equal((await current.gateway.execute(managementCommand('agent.changesets.apply', { changeSetId: crossClient }), current.principal)).error.code, 'APPROVAL_INVALID');
+  assert.equal((await workflows.getChangeSet(crossClient)).status, 'approved');
+  assert.equal(current.executions(), 0);
+});
+
 test('failed change-set business dispatch terminalizes failure without marking the change set applied', async () => {
   const current = await realComposition({ scopes: ['changesets.manage', 'questions.write'], handlerError: new agent.AgentError('INTERNAL_ERROR') });
   const capability = coordinatorModule.createDatabaseCoordinatorControlCapability(current.coordinator);

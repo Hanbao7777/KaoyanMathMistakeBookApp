@@ -67,8 +67,9 @@ export function isMigratedRendererBusinessOperation(operation: string): boolean 
 }
 
 const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
-  'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
-  'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
+  'approvals.manage', 'approvals.read', 'audit.export', 'audit.read', 'changesets.manage', 'changesets.read',
+  'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
+  'r4.manage', 'r4.read',
   'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
   'sessions.manage', 'sessions.read', 'system.read'
 ]);

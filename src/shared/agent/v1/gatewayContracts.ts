@@ -244,6 +244,15 @@ export interface R4Grant {
   readonly revokedAt?: string;
 }
 
+export interface R4GrantCreateInput {
+  readonly clientId: string;
+  readonly operation: OperationName;
+  readonly payloadHash: string;
+  readonly targetHash: string;
+  readonly maxAffectedEntities: number;
+  readonly expiresAt: string;
+}
+
 export interface R4GrantBinding {
   readonly catalog: CatalogIdentity;
   readonly operation: OperationName;
@@ -411,6 +420,7 @@ export interface OperationCatalog {
 
 export const gatewayWorkflowCommandTypes = [
   'agent.control.set_enabled',
+  'agent.clients.update_access',
   'agent.clients.revoke',
   'agent.sessions.terminate',
   'agent.r4_grants.create',
@@ -483,9 +493,10 @@ export type OperationName = (typeof operationNames)[number];
 
 export type GatewayWorkflowCommand =
   | { readonly type: 'agent.control.set_enabled'; readonly payload: { readonly enabled: boolean } }
+  | { readonly type: 'agent.clients.update_access'; readonly payload: { readonly clientId: string; readonly scopes: readonly AgentScope[]; readonly trust: TrustProfile } }
   | { readonly type: 'agent.clients.revoke'; readonly payload: { readonly clientId: string } }
   | { readonly type: 'agent.sessions.terminate'; readonly payload: { readonly sessionId: string } }
-  | { readonly type: 'agent.r4_grants.create'; readonly payload: { readonly grant: R4Grant } }
+  | { readonly type: 'agent.r4_grants.create'; readonly payload: { readonly grant: R4GrantCreateInput } }
   | { readonly type: 'agent.r4_grants.revoke'; readonly payload: { readonly grantId: string } }
   | { readonly type: 'agent.approvals.approve'; readonly payload: { readonly approvalId: string } }
   | { readonly type: 'agent.approvals.reject'; readonly payload: { readonly approvalId: string; readonly reasonCode: string } }

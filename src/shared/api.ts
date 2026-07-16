@@ -88,8 +88,66 @@ import type {
   TickTickHabitInput,
   TickTickHabitLog
 } from './types';
+import type {
+  AgentScope,
+  ApprovalStatus,
+  AuditKind,
+  ChangeSetStatus,
+  R4GrantStatus,
+  TrustProfile,
+  OperationName
+} from './agent/v1/gatewayContracts';
+
+export interface AgentControlPageRequest {
+  readonly cursor?: string;
+  readonly pageSize?: number;
+}
+
+export interface AgentControlPage<T> {
+  readonly items: readonly T[];
+  readonly page: { readonly pageSize: number; readonly hasMore: boolean; readonly nextCursor?: string };
+}
+
+export interface AgentControlMutationAcknowledgement { readonly clientId?: string; readonly sessionId?: string; readonly grantId?: string; readonly approvalId?: string; readonly changeSetId?: string; readonly enabled?: boolean; readonly revoked?: boolean; readonly terminated?: boolean; }
+export interface AgentControlClientSummary { readonly clientId: string; readonly subjectId: string; readonly displayName: string; readonly scopes: readonly AgentScope[]; readonly trust: TrustProfile; readonly revokedAt?: string; readonly lastActiveAt?: string; }
+export interface AgentControlSessionSummary { readonly sessionId: string; readonly clientId: string; readonly appInstanceId: string; readonly createdAt: string; readonly expiresAt: string; readonly lastActiveAt: string; readonly terminatedAt?: string; }
+export interface AgentControlCreateR4GrantRequest { readonly clientId: string; readonly operation: OperationName; readonly payloadHash: string; readonly targetHash: string; readonly maxAffectedEntities: number; readonly expiresAt: string; }
+export interface AgentControlR4GrantSummary { readonly grantId: string; readonly clientId: string; readonly operation: OperationName; readonly recovery: string; readonly maxAffectedEntities: number; readonly status: R4GrantStatus; readonly issuedAt: string; readonly expiresAt: string; readonly consumedAt?: string; readonly revokedAt?: string; }
+export interface AgentControlApprovalSummary { readonly approvalId: string; readonly clientId: string; readonly operation: OperationName; readonly status: ApprovalStatus; readonly risk: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentControlChangeSetSummary { readonly changeSetId: string; readonly clientId: string; readonly status: ChangeSetStatus; readonly summary: string; readonly risk: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentControlAuditSummary { readonly sequence: number; readonly clientId: string; readonly operation?: string; readonly kind: AuditKind; readonly occurredAt: string; readonly risk?: string; }
+export interface AgentControlStatus { readonly settings: { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number }; readonly runtimeState: string; }
+export interface AgentControlPrivacyDisclosure { readonly revision: number; readonly externalModelDataDisclosureRequired: boolean; }
+export interface AgentControlVerification { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string; }
+
+export interface AgentControlApi {
+  getStatus: () => Promise<AgentControlStatus>;
+  setExternalControlEnabled: (enabled: boolean) => Promise<{ readonly enabled: boolean }>;
+  listClients: (request?: AgentControlPageRequest) => Promise<AgentControlPage<AgentControlClientSummary>>;
+  updateClientAccess: (clientId: string, scopes: readonly AgentScope[], trust: TrustProfile) => Promise<AgentControlMutationAcknowledgement>;
+  revokeClient: (clientId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listSessions: (request?: AgentControlPageRequest & { readonly clientId?: string }) => Promise<AgentControlPage<AgentControlSessionSummary>>;
+  terminateSession: (sessionId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listR4Grants: (request?: AgentControlPageRequest & { readonly clientId?: string; readonly status?: R4GrantStatus }) => Promise<AgentControlPage<AgentControlR4GrantSummary>>;
+  createR4Grant: (grant: AgentControlCreateR4GrantRequest) => Promise<AgentControlR4GrantSummary>;
+  revokeR4Grant: (grantId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listApprovals: (request?: AgentControlPageRequest & { readonly status?: ApprovalStatus }) => Promise<AgentControlPage<AgentControlApprovalSummary>>;
+  approve: (approvalId: string) => Promise<AgentControlMutationAcknowledgement>;
+  rejectApproval: (approvalId: string, reasonCode: string) => Promise<AgentControlMutationAcknowledgement>;
+  listChangeSets: (request?: AgentControlPageRequest & { readonly status?: ChangeSetStatus }) => Promise<AgentControlPage<AgentControlChangeSetSummary>>;
+  getChangeSet: (changeSetId: string) => Promise<AgentControlChangeSetSummary | null>;
+  applyChangeSet: (changeSetId: string) => Promise<AgentControlMutationAcknowledgement>;
+  rejectChangeSet: (changeSetId: string, reasonCode: string) => Promise<AgentControlMutationAcknowledgement>;
+  searchAudit: (request?: AgentControlPageRequest & { readonly clientId?: string; readonly kinds?: readonly AuditKind[] }) => Promise<AgentControlPage<AgentControlAuditSummary>>;
+  exportAudit: (request?: AgentControlPageRequest) => Promise<AgentControlVerification>;
+  verifyAudit: (segmentId?: string) => Promise<AgentControlVerification>;
+  getPolicy: () => Promise<{ readonly policyVersion: string; readonly externalControlEnabled: boolean }>;
+  getCatalog: () => Promise<{ readonly version: string; readonly hash: string }>;
+  getPrivacyDisclosure: () => Promise<AgentControlPrivacyDisclosure>;
+}
 
 export interface AppApi {
+  agentControl: AgentControlApi;
   dashboard: () => Promise<DashboardData>;
   listQuestions: (filters: QuestionFilters) => Promise<Question[]>;
   getQuestion: (id: number) => Promise<Question | null>;

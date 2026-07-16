@@ -7,41 +7,59 @@ const projectRoot = path.resolve(__dirname, '../..');
 const apiPath = path.join(projectRoot, 'src/shared/api.ts');
 const preloadPath = path.join(projectRoot, 'src/preload/preload.ts');
 const registerIpcPath = path.join(projectRoot, 'src/main/ipc/registerIpc.ts');
+const agentControlAdapterPath = path.join(projectRoot, 'src/main/ipc/adapters/agentControlCenterIpc.ts');
 const mainPath = path.join(projectRoot, 'src/main/main.ts');
 
 function readSource(filePath) {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-const NON_IPC_METHODS = new Set(['toFileUrl']);
+const NON_IPC_METHODS = new Set(['toFileUrl', 'agentControl']);
 
-function extractApiMethods(apiSource) {
+function blockAfter(source, marker, endMarker) {
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error(`could not find ${marker}`);
+  const end = source.indexOf(endMarker, start);
+  if (end < 0) throw new Error(`could not find end of ${marker}`);
+  return source.slice(start, end);
+}
+
+function extractIndentedMethods(source, indentation) {
   const methods = new Set();
-  const lines = apiSource.split('\n');
-  const inInterface = lines.findIndex((l) => l.includes('export interface AppApi')) >= 0;
-  const regex = /^\s{2}([a-zA-Z_][a-zA-Z0-9_]*)\s*[:<(]/;
-  for (const line of lines) {
-    const m = regex.exec(line);
-    if (m && !NON_IPC_METHODS.has(m[1])) {
-      methods.add(m[1]);
-    }
-  }
+  const regex = new RegExp(`^\\s{${indentation}}([a-zA-Z_][a-zA-Z0-9_]*)\\s*:`, 'gm');
+  let match;
+  while ((match = regex.exec(source)) !== null) methods.add(match[1]);
   return methods;
 }
 
+function extractApiMethods(apiSource) {
+  const block = blockAfter(apiSource, 'export interface AppApi {', '\n}');
+  return new Set([...extractIndentedMethods(block, 2)].filter((method) => !NON_IPC_METHODS.has(method)));
+}
+
 function extractPreloadMethods(preloadSource) {
+  const block = blockAfter(preloadSource, 'const api: AppApi = {', '\n};');
+  return new Set([...extractIndentedMethods(block, 2)].filter((method) => !NON_IPC_METHODS.has(method)));
+}
+
+function extractAgentControlApiMethods(apiSource) {
+  return extractIndentedMethods(blockAfter(apiSource, 'export interface AgentControlApi {', '\n}'), 2);
+}
+
+function extractPreloadAgentControlMethods(preloadSource) {
+  return extractIndentedMethods(blockAfter(preloadSource, '  agentControl: {', '\n  } satisfies AgentControlApi'), 4);
+}
+
+function extractAdapterAgentControlMethods(adapterSource) {
+  const factory = adapterSource.slice(adapterSource.indexOf('export function createAgentControlCenterIpc'));
+  const block = blockAfter(factory, '  return Object.freeze({', '  } satisfies AgentControlApi);');
   const methods = new Set();
-  const regex = /^\s{2}([a-zA-Z_][a-zA-Z0-9_]*)\s*[:<(]/gm;
-  let m;
-  const apiBlockStart = preloadSource.indexOf('const api: AppApi');
-  if (apiBlockStart < 0) throw new Error('could not find api block in preload');
-  const block = preloadSource.slice(apiBlockStart);
-  while ((m = regex.exec(block)) !== null) {
-    if (!NON_IPC_METHODS.has(m[1])) {
-      methods.add(m[1]);
-    }
-  }
+  for (const match of block.matchAll(/^\s{4}async\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/gm)) methods.add(match[1]);
   return methods;
+}
+
+function extractAgentControlChannels(source) {
+  return new Set([...source.matchAll(/agentControl:([a-zA-Z_][a-zA-Z0-9_]*)/g)].map((match) => match[1]));
 }
 
 function extractPreloadChannels(preloadSource) {
@@ -67,6 +85,7 @@ function extractRegisteredChannels(registerIpcSource) {
 const apiSource = readSource(apiPath);
 const preloadSource = readSource(preloadPath);
 const registerIpcSource = readSource(registerIpcPath);
+const agentControlAdapterSource = readSource(agentControlAdapterPath);
 const mainSource = fs.existsSync(mainPath) ? readSource(mainPath) : '';
 
 const apiMethods = extractApiMethods(apiSource);
@@ -82,6 +101,18 @@ test('AppApi methods are exposed in preload', () => {
 test('preload invoke/send channels are registered in main', () => {
   const missing = [...preloadChannels].filter((c) => !registeredChannels.has(c));
   assert.deepEqual(missing, [], `registerIpc missing channels: ${missing.join(', ')}`);
+});
+
+test('AgentControlApi, preload, adapter, and registerIpc retain exact nested method/channel parity', () => {
+  const apiMethods = extractAgentControlApiMethods(apiSource);
+  const preloadMethods = extractPreloadAgentControlMethods(preloadSource);
+  const adapterMethods = extractAdapterAgentControlMethods(agentControlAdapterSource);
+  const preloadChannels = extractAgentControlChannels(blockAfter(preloadSource, '  agentControl: {', '\n  } satisfies AgentControlApi'));
+  const registeredChannels = extractAgentControlChannels(registerIpcSource);
+  assert.deepEqual([...preloadMethods].sort(), [...apiMethods].sort());
+  assert.deepEqual([...adapterMethods].sort(), [...apiMethods].sort());
+  assert.deepEqual([...preloadChannels].sort(), [...apiMethods].sort());
+  assert.deepEqual([...registeredChannels].sort(), [...apiMethods].sort());
 });
 
 test('contract scan detects intentional mismatch', () => {

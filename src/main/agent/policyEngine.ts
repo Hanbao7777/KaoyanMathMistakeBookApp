@@ -58,6 +58,7 @@ export interface PolicyEvaluation {
   readonly settings: AgentControlSettings;
   readonly pageSize?: number;
   readonly r4Grant?: R4Grant;
+  readonly localApprovedChangeSet?: true;
 }
 
 function deny(risk: RiskLevel, descriptor: OperationDescriptor, policyVersion: string, reasonCode: string): PolicyDecision {
@@ -120,7 +121,9 @@ export class PolicyEngine {
     const descriptor = canonicalDescriptor(evaluation.descriptor);
     assertIssuedAgentPrincipal(principal);
     const migratedRendererBusiness = principal.renderer && isMigratedRendererBusinessOperation(descriptor.name);
-    if (principal.renderer && !migratedRendererBusiness && (!descriptor.rendererManagement || !descriptor.allowedWhenExternalControlDisabled)) {
+    const localManagementAction = principal.renderer && descriptor.rendererManagement;
+    const localApprovedChangeSet = principal.renderer && evaluation.localApprovedChangeSet === true;
+    if (principal.renderer && !migratedRendererBusiness && !localManagementAction && !localApprovedChangeSet) {
       return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'RENDERER_MANAGEMENT_ONLY');
     }
     let catalogMatches = true;
@@ -150,7 +153,7 @@ export class PolicyEngine {
       throw new AgentError('EXTERNAL_CONTROL_DISABLED');
     }
     if (override?.enabled === false) return deny(risk, descriptor, settings.policyVersion, 'OPERATION_DISABLED');
-    if (descriptor.requiredScopes.some((scope) => !principal.scopes.includes(scope))) {
+    if (!localApprovedChangeSet && descriptor.requiredScopes.some((scope) => !principal.scopes.includes(scope))) {
       throw new AgentError('SCOPE_DENIED');
     }
 
@@ -181,9 +184,9 @@ export class PolicyEngine {
         ) throw new AgentError('R4_GRANT_INVALID');
         disposition = 'execute'; reasonCode = 'R4_GRANT_BOUND';
       }
-    } else if (descriptor.policyBounds.requiresChangeSet || override?.requireChangeSet) {
+    } else if (!localManagementAction && !localApprovedChangeSet && (descriptor.policyBounds.requiresChangeSet || override?.requireChangeSet)) {
       disposition = 'requires_changeset'; reasonCode = 'CHANGESET_REQUIRED';
-    } else if (descriptor.policyBounds.approval === 'always' || override?.requireApproval) {
+    } else if (!localManagementAction && !localApprovedChangeSet && (descriptor.policyBounds.approval === 'always' || override?.requireApproval)) {
       disposition = 'requires_approval'; reasonCode = 'APPROVAL_REQUIRED';
     } else if (principal.trust === 'collaborator' && riskOrder.indexOf(risk) >= 2) {
       disposition = 'requires_approval'; reasonCode = 'TRUST_APPROVAL_REQUIRED';

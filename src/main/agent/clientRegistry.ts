@@ -337,25 +337,57 @@ export class ClientRegistry {
   }
 
   async updateClientAccess(clientId: string, scopesInput: readonly AgentScope[], trust: TrustProfile): Promise<void> {
+    await this.write(`agent-client-access-${clientId}`, (database, scope) => this.updateClientAccessInTransaction(database, scope, clientId, scopesInput, trust));
+  }
+
+  async getActiveClientSummary(clientId: string): Promise<AgentClientSummary> {
+    assertSafeIdentifier(clientId, 'clientId');
+    return this.read(`agent-client-active-${clientId}`, (database) => {
+      const row = one(database, 'SELECT * FROM agent_clients WHERE client_id = ?', [clientId]);
+      if (!row || typeof row.revoked_at === 'string') throw new AgentError('CLIENT_REVOKED');
+      const scopes = all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [clientId])
+        .map((entry) => entry.scope as AgentScope);
+      return toClientSummary(row, scopes);
+    });
+  }
+
+  updateClientAccessInTransaction(database: Database, scope: DatabaseMutationScope, clientId: string, scopesInput: readonly AgentScope[], trust: TrustProfile): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
     assertSafeIdentifier(clientId, 'clientId');
     const scopes = normalizeScopes(scopesInput);
     assertTrust(trust);
     const timestamp = this.timestamp();
-    await this.write(`agent-client-access-${clientId}`, (database) => {
-      const client = one(database, 'SELECT trust FROM agent_clients WHERE client_id = ?', [clientId]);
-      if (!client) throw new AgentError('CLIENT_REVOKED');
-      const currentScopes = all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [clientId]).map((row) => String(row.scope));
-      if (client.trust === trust && currentScopes.length === scopes.length && currentScopes.every((scope, index) => scope === scopes[index])) {
-        return { changed: false, value: undefined };
-      }
-      database.run('DELETE FROM agent_client_scopes WHERE client_id = ?', [clientId]);
-      for (const scope of scopes) database.run(
-        'INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)',
-        [clientId, scope, this.catalog.version, timestamp]
-      );
-      database.run('UPDATE agent_clients SET trust = ?, updated_at = ? WHERE client_id = ?', [trust, timestamp, clientId]);
-      return { changed: true, value: undefined };
-    });
+    const client = one(database, 'SELECT trust, revoked_at FROM agent_clients WHERE client_id = ?', [clientId]);
+    if (!client) throw new AgentError('CLIENT_REVOKED');
+    if (typeof client.revoked_at === 'string') throw new AgentError('CLIENT_REVOKED');
+    const currentScopes = all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [clientId]).map((row) => String(row.scope));
+    if (client.trust === trust && currentScopes.length === scopes.length && currentScopes.every((scope, index) => scope === scopes[index])) {
+      return { changed: false, value: undefined };
+    }
+    database.run('DELETE FROM agent_client_scopes WHERE client_id = ?', [clientId]);
+    for (const scope of scopes) database.run(
+      'INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)',
+      [clientId, scope, this.catalog.version, timestamp]
+    );
+    database.run('UPDATE agent_clients SET trust = ?, updated_at = ? WHERE client_id = ?', [trust, timestamp, clientId]);
+    return { changed: true, value: undefined };
+  }
+
+  assertActiveClientInTransaction(database: Database, scope: DatabaseMutationScope, clientId: string): void {
+    assertDatabaseMutationScope(scope, database);
+    assertSafeIdentifier(clientId, 'clientId');
+    const client = one(database, 'SELECT revoked_at FROM agent_clients WHERE client_id = ?', [clientId]);
+    if (!client || typeof client.revoked_at === 'string') throw new AgentError('CLIENT_REVOKED');
+  }
+
+  getActiveClientSummaryInTransaction(database: Database, scope: DatabaseMutationScope, clientId: string): AgentClientSummary {
+    assertDatabaseMutationScope(scope, database);
+    assertSafeIdentifier(clientId, 'clientId');
+    const row = one(database, 'SELECT * FROM agent_clients WHERE client_id = ?', [clientId]);
+    if (!row || typeof row.revoked_at === 'string') throw new AgentError('CLIENT_REVOKED');
+    const scopes = all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [clientId])
+      .map((entry) => entry.scope as AgentScope);
+    return toClientSummary(row, scopes);
   }
 
   async revokeClient(clientId: string): Promise<void> {
