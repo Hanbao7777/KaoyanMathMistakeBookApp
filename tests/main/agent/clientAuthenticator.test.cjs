@@ -76,10 +76,10 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
   assert.deepEqual(first.scopes, [
     'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
     'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
-    'reviews.read', 'reviews.submit',
+    'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
     'sessions.manage', 'sessions.read', 'system.read'
   ]);
-  assert.equal(first.scopes.includes('tasks.write'), false);
+  assert.equal(first.scopes.includes('tasks.write'), true);
   assert.doesNotThrow(() => authentication.assertIssuedAgentPrincipal(first));
   assert.equal(Object.hasOwn(authentication, 'issueFixedRendererPrincipal'), false);
   assert.deepEqual(Object.keys(authentication).filter((name) => /^issue/i.test(name)), []);
@@ -97,9 +97,12 @@ test('renderer business allowlist is exact, frozen, and module-owned', () => {
   assert.deepEqual(authentication.migratedRendererBusinessOperations, [
     'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
     'questions.mark_mastery', 'questions.submit_review',
-    'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets'
+    'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets',
+    'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete',
+    'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list'
   ]);
   assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);
-  assert.equal(authentication.isMigratedRendererBusinessOperation('tasks.create'), false);
+  assert.equal(authentication.isMigratedRendererBusinessOperation('tasks.create'), true);
+  assert.equal(authentication.isMigratedRendererBusinessOperation('questions.undo_review'), false);
 });

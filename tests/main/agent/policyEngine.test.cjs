@@ -48,7 +48,7 @@ function evaluate(composition, principal, operation, overrides = {}) {
 test.beforeEach(() => environment.resetControlPlaneEnvironment());
 test.after(() => environment.cleanupControlPlaneRoot());
 
-test('renderer admits only migrated questions while preserving the recovery allowlist and catalog fence', async () => {
+test('renderer admits only migrated B6-B7 operations while preserving the recovery allowlist and catalog fence', async () => {
   const composition = await setup();
   const settings = await composition.registry.getSettings();
   const forged = { ...composition.renderer.principal(), renderer: false };
@@ -57,7 +57,7 @@ test('renderer admits only migrated questions while preserving the recovery allo
   assert.equal(evaluate(composition, renderer, 'agent.status.get', { settings }).disposition, 'execute');
   assert.equal(evaluate(composition, renderer, 'questions.list', { settings }).disposition, 'execute');
   assert.equal(evaluate(composition, renderer, 'questions.submit_review', { settings }).disposition, 'execute');
-  assert.equal(evaluate(composition, renderer, 'tasks.create', { settings }).disposition, 'deny');
+  assert.equal(evaluate(composition, renderer, 'tasks.create', { settings }).disposition, 'execute');
   for (const operation of authentication.migratedRendererBusinessOperations) {
     assert.notEqual(evaluate(composition, renderer, operation, { settings }).disposition, 'deny', operation);
   }
@@ -70,6 +70,7 @@ test('renderer admits only migrated questions while preserving the recovery allo
   const mismatched = { ...settings, catalog: { ...settings.catalog, hash: agent.hashCanonicalJson({ catalog: 'old' }) } };
   assert.equal(evaluate(composition, renderer, 'agent.status.get', { settings: mismatched }).disposition, 'execute');
   assert.throws(() => evaluate(composition, renderer, 'questions.list', { settings: mismatched }), (error) => error.code === 'CATALOG_VERSION_MISMATCH');
+  assert.throws(() => evaluate(composition, renderer, 'tasks.list', { settings: mismatched }), (error) => error.code === 'CATALOG_VERSION_MISMATCH');
 });
 
 test('removed Renderer operations remain available to properly scoped external principals', async () => {

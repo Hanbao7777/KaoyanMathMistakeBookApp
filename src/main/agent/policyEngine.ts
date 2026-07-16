@@ -44,6 +44,7 @@ function canonicalDescriptor(supplied: OperationDescriptor): OperationDescriptor
 
 export interface ResolvedPolicyState {
   readonly affectedEntityCount: number;
+  readonly recursiveAffectedEntityCount?: number;
   readonly affectedSetHash?: string;
   readonly targetHash?: string;
   readonly managedFileCount?: number;
@@ -86,7 +87,7 @@ function resolveRisk(descriptor: OperationDescriptor, input: Readonly<Record<str
       risk = state.affectedEntityCount > 1 ? 'R3' : descriptor.policyBounds.minimumRisk;
       break;
     case 'task_delete':
-      risk = input.recursive === true || state.affectedEntityCount > 1 ? 'R3' : descriptor.policyBounds.minimumRisk;
+      risk = (state.recursiveAffectedEntityCount ?? state.affectedEntityCount) > 1 ? 'R3' : descriptor.policyBounds.minimumRisk;
       break;
     case 'static':
       break;

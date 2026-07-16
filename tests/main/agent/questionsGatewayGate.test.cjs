@@ -14,7 +14,9 @@ const authentication = fs.readFileSync(authenticationPath, 'utf8');
 const rendererOperations = [
   'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
   'questions.mark_mastery', 'questions.submit_review', 'questions.list', 'questions.get',
-  'questions.review_logs', 'questions.review_buckets'
+  'questions.review_logs', 'questions.review_buckets',
+  'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete',
+  'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list'
 ];
 
 test('migrated Renderer question writes have one authenticated Gateway path and no fallback', () => {
@@ -39,12 +41,12 @@ test('fixed Renderer adapter exposes no generic operation or caller identity for
   assert.doesNotMatch(register, /questions:[^']+'[^\n]*getQuestionsApplication/);
 });
 
-test('Renderer business allowlist exactly matches the B6 adapter operation set', () => {
+test('Renderer business allowlist retains B6 and adds only accepted B7 operations', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block, 'Missing migrated Renderer operation allowlist');
   const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(allowlist, rendererOperations);
-  for (const operation of rendererOperations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
+  for (const operation of rendererOperations.slice(0, 10)) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   for (const operation of ['questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge']) {
     assert.doesNotMatch(adapter, new RegExp(`type: '${operation.replace('.', '\\.')}'`));
   }

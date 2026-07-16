@@ -8,6 +8,7 @@ import { createReadOnlyDatabaseFacade, QueryBus, type ReadOnlyDatabaseFacade } f
 import { CommandBus, DomainEventBus } from '../application';
 import { createInternalExecutionContext } from '../application/executionContext';
 import { registerQuestions, type QuestionsApplication } from '../application/questions';
+import { registerTickTick, type TickTickApplication } from '../application/ticktick';
 import { bootstrapAgentGateway, type AgentGatewayBootstrapOptions, type AgentGatewayComposition } from '../agent/bootstrap';
 import {
   atomicPersist, bootstrapControlMetadata,
@@ -60,6 +61,7 @@ let db: Database | null = null;
 let databaseCoordinator: DatabaseCoordinator | null = null;
 let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
 let questionsApplication: QuestionsApplication | null = null;
+let tickTickApplication: TickTickApplication | null = null;
 let agentControlPlane: AgentGatewayComposition | null = null;
 const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
@@ -260,6 +262,12 @@ export async function getQuestionsApplication(): Promise<QuestionsApplication> {
   if (!questionsApplication) await initializeDatabase();
   if (!questionsApplication) throw new Error('Questions application is unavailable');
   return questionsApplication;
+}
+
+export async function getTickTickApplication(): Promise<TickTickApplication> {
+  if (!tickTickApplication) await initializeDatabase();
+  if (!tickTickApplication) throw new Error('TickTick application is unavailable');
+  return tickTickApplication;
 }
 
 export async function getAgentControlPlane(): Promise<AgentGatewayComposition> {
@@ -624,6 +632,7 @@ async function createAgentControlPlane(
   coordinator: DatabaseCoordinator,
   readDatabase: ReadOnlyDatabaseFacade,
   application: QuestionsApplication,
+  tickTick: TickTickApplication,
   dependencies: DatabaseInitializationDependencies = {},
   onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
 ): Promise<AgentGatewayComposition> {
@@ -647,8 +656,11 @@ async function createAgentControlPlane(
     cursorSecret: dependencies.agent?.cursorSecret ?? createHash('sha256').update(appInstanceId).digest(),
     now,
     randomUUID: randomId,
-    resolveState: (envelope, descriptor) => application.gateway.resolveState(envelope, descriptor),
+    resolveState: (envelope, descriptor) => descriptor.domain === 'questions'
+      ? application.gateway.resolveState(envelope, descriptor)
+      : tickTick.resolveState(envelope, descriptor),
     executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command, context, dispatch),
+    tickTickApplication: tickTick,
     onRecoveryStage(stage) {
       onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : 'agent_receipts_reconciled');
     }
@@ -747,6 +759,7 @@ async function initializeDatabaseOnce(
     return db;
   });
   questionsApplication = registerQuestions({ coordinator, readOnlyDatabase });
+  tickTickApplication = registerTickTick({ coordinator, readOnlyDatabase });
   onStage('coordinator_created');
 
   const dataJournalRoot = path.normalize(dependencies.dataJournalRoot ?? path.join(paths.data, 'operation-journal'));
@@ -765,7 +778,7 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
-      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, dependencies, onStage);
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
         const gatewayFailureLease = await coordinator.beginMaintenance();
@@ -2067,6 +2080,7 @@ export function resetDatabaseConnection() {
   databaseCoordinator = null;
   readOnlyDatabase = null;
   questionsApplication = null;
+  tickTickApplication = null;
   agentControlPlane = null;
   initializationPromise = null;
   initializationResult = null;

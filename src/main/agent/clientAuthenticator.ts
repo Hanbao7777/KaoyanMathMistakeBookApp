@@ -48,7 +48,16 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'questions.list',
   'questions.get',
   'questions.review_logs',
-  'questions.review_buckets'
+  'questions.review_buckets',
+  'tasks.create',
+  'tasks.update',
+  'tasks.complete',
+  'tasks.uncomplete',
+  'tasks.delete',
+  'tasks.list',
+  'tasks.get',
+  'focus.sessions.create',
+  'focus.sessions.list'
 ] as const);
 
 const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
@@ -60,7 +69,7 @@ export function isMigratedRendererBusinessOperation(operation: string): boolean 
 const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
   'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
-  'reviews.read', 'reviews.submit',
+  'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
   'sessions.manage', 'sessions.read', 'system.read'
 ]);
 

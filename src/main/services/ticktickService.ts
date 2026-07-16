@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type { Database, SqlValue } from 'sql.js';
 import type { ReadOnlyDatabaseFacade } from '../application/queryBus';
+import { createInternalExecutionContext } from '../application/executionContext';
+import type { TickTickCommand, TickTickQuery } from '../application/ticktick';
 import type { DatabaseMutationResult } from '../persistence';
 import {
   allSql,
   getDatabaseCoordinator,
   getQuestionsApplication,
+  getTickTickApplication,
   getReadOnlyDatabase,
   oneSql,
   runSql
@@ -82,6 +85,16 @@ async function executeLegacyMutation<T>(
     }));
   }
   return result.value;
+}
+
+async function executeTickTickCommand<C extends TickTickCommand>(command: C) {
+  const application = await getTickTickApplication();
+  return (await application.execute(command, createInternalExecutionContext({ concurrency: 'none' }))).value;
+}
+
+async function executeTickTickQuery<Q extends TickTickQuery>(query: Q) {
+  const application = await getTickTickApplication();
+  return application.query(query, createInternalExecutionContext({ concurrency: 'none' })).value;
 }
 
 // ── ID Generator ──
@@ -211,8 +224,7 @@ function hydrateTask(database: TickTickReadDatabase, task: TickTickTask): TickTi
 }
 
 export async function listTickTickTasks(filters: TickTickTaskFilters = {}): Promise<TickTickTask[]> {
-  const database = await getReadOnlyDatabase();
-  return listTickTickTasksFrom(database, filters);
+  return executeTickTickQuery({ type: 'tasks.list', payload: { filters } });
 }
 
 function listTickTickTasksFrom(database: TickTickReadDatabase, filters: TickTickTaskFilters = {}): TickTickTask[] {
@@ -291,7 +303,7 @@ function listTickTickTasksFrom(database: TickTickReadDatabase, filters: TickTick
 }
 
 export async function getTickTickTask(taskId: string): Promise<TickTickTask | null> {
-  return getTickTickTaskFrom(await getReadOnlyDatabase(), taskId);
+  return executeTickTickQuery({ type: 'tasks.get', payload: { taskId } });
 }
 
 function getTickTickTaskFrom(database: TickTickReadDatabase, taskId: string): TickTickTask | null {
@@ -300,146 +312,15 @@ function getTickTickTaskFrom(database: TickTickReadDatabase, taskId: string): Ti
 }
 
 export async function createTickTickTask(input: TickTickTaskInput): Promise<TickTickTask> {
-  const listId = input.list_id?.trim();
-  if (!listId) throw new Error('请先创建或选择一个清单');
-  const title = input.title.trim();
-  if (!title) throw new Error('任务标题不能为空');
-  return executeLegacyMutation('ticktick-task-create', (database) => {
-    const listExists = readOne<{ cnt: number }>(database, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
-    if (!listExists) throw new Error('清单不存在，请刷新后重试');
-    const taskId = id('task');
-    const timestamp = nowIso();
-    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_tasks WHERE list_id = ?', [listId]);
-    const sortOrder = (maxOrder?.m ?? -1) + 1;
-    let changed = runMutation(
-      database,
-      `INSERT INTO ticktick_tasks (
-         id, list_id, title, note, due_date, due_time, priority,
-         is_completed, completed_at, parent_id, sort_order, tags,
-         recurrence_rule, estimated_minutes, actual_minutes,
-         pomodoro_sessions, source, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)`,
-      [taskId, listId, title, input.note || '', input.due_date ?? null, input.due_time ?? null,
-        input.priority || 'none', input.parent_id ?? null, sortOrder, JSON.stringify(input.tags || []),
-        input.recurrence_rule ?? null, input.estimated_minutes ?? 0, input.source || 'manual', timestamp, timestamp]
-    );
-    for (const tag of input.tags || []) {
-      changed = runMutation(database, 'INSERT OR IGNORE INTO ticktick_tags (id, name, color) VALUES (?, ?, ?)', [`tag_${tag}`, tag, '#999999']) || changed;
-    }
-    return { changed, value: getTickTickTaskFrom(database, taskId)! };
-  });
+  return executeTickTickCommand({ type: 'tasks.create', payload: { input } });
 }
 
 export async function updateTickTickTask(taskId: string, partial: Partial<TickTickTaskInput & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }>): Promise<TickTickTask | null> {
-  return executeLegacyMutation('ticktick-task-update', (database) => {
-    const current = getTickTickTaskFrom(database, taskId);
-    if (!current) return { changed: false, value: null };
-    const sets: string[] = [];
-    const values: SqlValue[] = [];
-
-  if (partial.list_id !== undefined) {
-    const listId = partial.list_id?.trim();
-    if (!listId) throw new Error('请先创建或选择一个清单');
-    const listExists = readOne<{ cnt: number }>(database, 'SELECT 1 AS cnt FROM ticktick_lists WHERE id = ?', [listId]);
-    if (!listExists) throw new Error('清单不存在，请刷新后重试');
-    sets.push('list_id = ?');
-    values.push(listId);
-  }
-  if (partial.title !== undefined) {
-    const title = partial.title.trim();
-    if (!title) throw new Error('任务标题不能为空');
-    sets.push('title = ?');
-    values.push(title);
-  }
-  if (partial.note !== undefined) {
-    sets.push('note = ?');
-    values.push(partial.note);
-  }
-  if (partial.due_date !== undefined) {
-    sets.push('due_date = ?');
-    values.push(partial.due_date);
-  }
-  if (partial.due_time !== undefined) {
-    sets.push('due_time = ?');
-    values.push(partial.due_time);
-  }
-  if (partial.priority !== undefined) {
-    sets.push('priority = ?');
-    values.push(partial.priority);
-  }
-  if (partial.parent_id !== undefined) {
-    sets.push('parent_id = ?');
-    values.push(partial.parent_id);
-  }
-  if (partial.tags !== undefined) {
-    sets.push('tags = ?');
-    values.push(JSON.stringify(partial.tags));
-  }
-  if (partial.recurrence_rule !== undefined) {
-    sets.push('recurrence_rule = ?');
-    values.push(partial.recurrence_rule);
-  }
-  if (partial.estimated_minutes !== undefined) {
-    sets.push('estimated_minutes = ?');
-    values.push(partial.estimated_minutes);
-  }
-  if (partial.actual_minutes !== undefined) {
-    sets.push('actual_minutes = ?');
-    values.push(partial.actual_minutes);
-  }
-  if (partial.pomodoro_sessions !== undefined) {
-    sets.push('pomodoro_sessions = ?');
-    values.push(partial.pomodoro_sessions);
-  }
-  if (partial.source !== undefined) {
-    sets.push('source = ?');
-    values.push(partial.source);
-  }
-  if (partial.sort_order !== undefined) {
-    sets.push('sort_order = ?');
-    values.push(partial.sort_order);
-  }
-
-  // Handle is_completed specially
-  if (partial.is_completed !== undefined) {
-    sets.push('is_completed = ?');
-    values.push(partial.is_completed);
-    if (partial.is_completed === 1 && !current.completed_at) {
-      sets.push('completed_at = ?');
-      values.push(nowIso());
-    } else if (partial.is_completed === 0) {
-      sets.push('completed_at = NULL');
-    }
-  }
-
-    if (sets.length === 0) return { changed: false, value: current };
-
-  sets.push('updated_at = ?');
-  values.push(nowIso());
-  values.push(taskId);
-
-    const changed = runMutation(database, `UPDATE ticktick_tasks SET ${sets.join(', ')} WHERE id = ?`, values);
-    return { changed, value: getTickTickTaskFrom(database, taskId) };
-  });
+  return executeTickTickCommand({ type: 'tasks.update', payload: { taskId, input: partial } });
 }
 
 export async function deleteTickTickTask(taskId: string): Promise<boolean> {
-  return executeLegacyMutation('ticktick-task-delete', (database) => {
-    // Recursively collect all descendant IDs
-    const allIds: string[] = [taskId];
-    for (let i = 0; i < allIds.length; i++) {
-      const children = readAll<{ id: string }>(database, 'SELECT id FROM ticktick_tasks WHERE parent_id = ?', [allIds[i]]);
-      for (const child of children) allIds.push(child.id);
-    }
-    // FK CASCADE handles bridge cleanup, but we also clean manually for existing DBs
-    let changed = false;
-    for (const id of allIds) changed = runMutation(database, 'DELETE FROM ticktick_bridge WHERE ticktick_task_id = ?', [id]) || changed;
-    // Delete all descendant tasks (order doesn't matter with FK CASCADE on subtasks)
-    for (const id of allIds) {
-      changed = runMutation(database, 'DELETE FROM ticktick_tasks WHERE id = ?', [id]) || changed;
-    }
-    return { changed, value: true };
-  });
+  return executeTickTickCommand({ type: 'tasks.delete', payload: { taskId } });
 }
 
 export async function completeTickTickTask(taskId: string): Promise<TickTickTask | null> {
@@ -527,52 +408,11 @@ export async function listTickTickFocusSessions(filters?: {
   date?: string;
   taskId?: string;
 }): Promise<TickTickFocusSession[]> {
-  const database = await getReadOnlyDatabase();
-  const where: string[] = [];
-  const params: SqlValue[] = [];
-
-  if (filters?.date) {
-    where.push("date(fs.start_time) = ?");
-    params.push(filters.date);
-  }
-  if (filters?.taskId) {
-    where.push('fs.task_id = ?');
-    params.push(filters.taskId);
-  }
-
-  const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-  return readAll<TickTickFocusSession & { task_title: string }>(
-    database,
-    `SELECT fs.*, t.title AS task_title
-     FROM ticktick_focus_sessions fs
-     LEFT JOIN ticktick_tasks t ON t.id = fs.task_id
-     ${whereClause}
-     ORDER BY fs.start_time DESC`,
-    params
-  );
+  return executeTickTickQuery({ type: 'focus.sessions.list', payload: { filters: filters ?? {} } });
 }
 
 export async function createTickTickFocusSession(input: TickTickFocusSessionInput): Promise<TickTickFocusSession> {
-  return executeLegacyMutation('ticktick-focus-create', (database) => {
-    const sessionId = id('focus');
-    const timestamp = nowIso();
-    const changed = runMutation(
-      database,
-      `INSERT INTO ticktick_focus_sessions (
-         id, task_id, start_time, end_time, duration_minutes,
-         session_type, completed, white_noise, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [sessionId, input.task_id ?? null, input.start_time, input.end_time ?? null, input.duration_minutes,
-        input.session_type || 'focus', input.completed ?? 1, input.white_noise ?? null, timestamp]
-    );
-    const value = readOne<TickTickFocusSession & { task_title: string }>(
-      database,
-      `SELECT fs.*, t.title AS task_title FROM ticktick_focus_sessions fs
-       LEFT JOIN ticktick_tasks t ON t.id = fs.task_id WHERE fs.id = ?`,
-      [sessionId]
-    )!;
-    return { changed, value };
-  });
+  return executeTickTickCommand({ type: 'focus.sessions.create', payload: { input } });
 }
 
 // ── Bridge ──

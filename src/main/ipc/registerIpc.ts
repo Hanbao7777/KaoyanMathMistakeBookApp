@@ -102,16 +102,26 @@ import {
 } from '../services/studySupervisorService';
 import {
   listTickTickLists, getTickTickList, createTickTickList, updateTickTickList, deleteTickTickList, reorderTickTickLists,
-  listTickTickTasks, getTickTickTask, createTickTickTask, updateTickTickTask, deleteTickTickTask,
   getTodayTickTickTasks,
   listTickTickTags,
-  listTickTickFocusSessions, createTickTickFocusSession,
+  createTickTickFocusSession,
   getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
   getTickTickCalendarMonth,
   getTickTickSettings, saveTickTickSettings,
   listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
-import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted, completeTaskWithReviewSync, uncompleteTaskWithReviewSync } from '../services/bridgeService';
+import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
+import {
+  completeTickTickTaskFromRenderer,
+  createTickTickFocusSessionFromRenderer,
+  createTickTickTaskFromRenderer,
+  deleteTickTickTaskFromRenderer,
+  getTickTickTaskFromRenderer,
+  listTickTickFocusSessionsFromRenderer,
+  listTickTickTasksFromRenderer,
+  uncompleteTickTickTaskFromRenderer,
+  updateTickTickTaskFromRenderer
+} from './adapters/ticktickIpc';
 import { FocusTimerEngine } from '../services/focusTimerEngine';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
@@ -532,21 +542,21 @@ export function registerIpc() {
   handle('ticktick:lists:reorder', (ids: string[]) => reorderTickTickLists(ids));
 
   // TickTick Tasks
-  handle('ticktick:tasks:list', (filters?: TickTickTaskFilters) => listTickTickTasks(filters));
-  handle('ticktick:tasks:get', (id: string) => getTickTickTask(id));
-  handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTask(input));
-  handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTask(id, input));
-  handle('ticktick:tasks:delete', (id: string) => deleteTickTickTask(id));
-  handle('ticktick:tasks:complete', (id: string) => completeTaskWithReviewSync(id));
-  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTaskWithReviewSync(id));
+  handle('ticktick:tasks:list', (filters?: TickTickTaskFilters) => listTickTickTasksFromRenderer(filters));
+  handle('ticktick:tasks:get', (id: string) => getTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTaskFromRenderer(input));
+  handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTaskFromRenderer(id, input));
+  handle('ticktick:tasks:delete', (id: string) => deleteTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:complete', (id: string) => completeTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTickTickTaskFromRenderer(id));
   handle('ticktick:tasks:today', () => getTodayTickTickTasks());
 
   // TickTick Tags
   handle('ticktick:tags:list', () => listTickTickTags());
 
   // TickTick Focus
-  handle('ticktick:focus:list', (filters?: { date?: string; taskId?: string }) => listTickTickFocusSessions(filters));
-  handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSession(input));
+  handle('ticktick:focus:list', (filters?: { date?: string; taskId?: string }) => listTickTickFocusSessionsFromRenderer(filters));
+  handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSessionFromRenderer(input));
 
   // TickTick Bridge
   handle('ticktick:bridge:task', (taskId: string) => getTickTickTaskBridges(taskId));

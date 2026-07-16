@@ -103,8 +103,10 @@ test('question IPC registrations use the adapter boundary', () => {
   const adapterPath = path.join(projectRoot, 'src/main/ipc/adapters/questionsIpc.ts');
   const adapterSource = readSource(adapterPath);
   assert.match(registerIpcSource, /from '\.\/adapters\/questionsIpc'/);
-  assert.match(adapterSource, /getQuestionsApplication/);
-  assert.match(adapterSource, /createRendererExecutionContext/);
+  assert.match(adapterSource, /getAgentControlPlane/);
+  assert.match(adapterSource, /renderer\.principal\(\)/);
+  assert.doesNotMatch(adapterSource, /getQuestionsApplication/);
+  assert.doesNotMatch(adapterSource, /createRendererExecutionContext/);
   assert.doesNotMatch(registerIpcSource, /handle\('questions:(create|update|delete|markMastery)'[^\n]*(?<!FromRenderer)(createQuestion|updateQuestion|deleteQuestion|markMastery)\(/);
 });
 
