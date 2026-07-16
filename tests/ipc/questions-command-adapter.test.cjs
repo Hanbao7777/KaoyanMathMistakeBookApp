@@ -66,12 +66,15 @@ test('renderer adapter preserves CRUD, review, and image payloads', async () => 
   assert.equal(await adapter.getQuestionFromRenderer(deletable.id), null);
 });
 
-test('listed renderer writers dispatch through the question application', () => {
+test('listed renderer writers dispatch only through the authenticated Gateway', () => {
   for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult']) {
     assert.match(registerSource, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));
   }
-  assert.match(adapterSource, /createRendererExecutionContext\(\{ expectedVersion: version \}\)/);
+  assert.match(adapterSource, /controlPlane\.gateway\.execute\(/);
+  assert.match(adapterSource, /controlPlane\.gateway\.query\(/);
+  assert.match(adapterSource, /controlPlane\.renderer\.principal\(\)/);
   assert.match(adapterSource, /coordinator\.currentVersion\(\)/);
+  assert.doesNotMatch(adapterSource, /getQuestionsApplication|application\.execute|application\.query|CommandBus|QueryBus/);
   for (const forbidden of ['createQuestion(', 'updateQuestion(', 'deleteQuestion(', 'markMastery(', 'removeImage(', 'addReviewLog(', 'submitReviewResult(']) {
     assert.doesNotMatch(registerSource, new RegExp(`\\b${forbidden.replace('(', '\\(')}`));
   }
@@ -79,7 +82,19 @@ test('listed renderer writers dispatch through the question application', () => 
 
 test('adapter does not accept renderer identity or source fields', () => {
   assert.doesNotMatch(adapterSource, /event\.sender|source\s*:/);
-  assert.match(adapterSource, /createRendererExecutionContext/);
+  assert.match(adapterSource, /controlPlane\.renderer\.principal\(\)/);
+});
+
+test('same renderer request replays exactly and a mismatched payload conflicts', async () => {
+  const requestId = '10000000-0000-4000-8000-000000000001';
+  const created = await adapter.createQuestionFromRenderer(input({ title: 'Stable renderer retry' }), requestId);
+  const replayed = await adapter.createQuestionFromRenderer(input({ title: 'Stable renderer retry' }), requestId);
+  assert.deepEqual(replayed, created);
+  assert.equal((await adapter.listQuestionsFromRenderer({})).length, 1);
+  await assert.rejects(
+    adapter.createQuestionFromRenderer(input({ title: 'Mismatched retry' }), requestId),
+    (error) => error?.code === 'IDEMPOTENCY_CONFLICT'
+  );
 });
 
 test('renderer payload cannot inject execution identity or concurrency metadata', async () => {

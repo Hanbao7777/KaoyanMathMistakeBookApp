@@ -38,9 +38,30 @@ export function fingerprintCredential(value: string): string {
   return `sha256-v1:${createHash('sha256').update(value, 'utf8').digest('hex')}`;
 }
 
+export const migratedRendererBusinessOperations = Object.freeze([
+  'questions.create',
+  'questions.update',
+  'questions.delete',
+  'questions.remove_image',
+  'questions.mark_mastery',
+  'questions.submit_review',
+  'questions.list',
+  'questions.get',
+  'questions.review_logs',
+  'questions.review_buckets'
+] as const);
+
+const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
+
+export function isMigratedRendererBusinessOperation(operation: string): boolean {
+  return migratedRendererBusinessOperationSet.has(operation);
+}
+
 const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
-  'policy.manage', 'policy.read', 'sessions.manage', 'sessions.read', 'system.read'
+  'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
+  'reviews.read', 'reviews.submit',
+  'sessions.manage', 'sessions.read', 'system.read'
 ]);
 
 export interface AuthenticationAdapters {

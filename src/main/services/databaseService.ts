@@ -623,13 +623,14 @@ async function publishInitializedDatabase(
 async function createAgentControlPlane(
   coordinator: DatabaseCoordinator,
   readDatabase: ReadOnlyDatabaseFacade,
+  application: QuestionsApplication,
   dependencies: DatabaseInitializationDependencies = {},
   onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
 ): Promise<AgentGatewayComposition> {
   const now = dependencies.now ?? (() => new Date().toISOString());
   const randomId = dependencies.randomId ?? randomUUID;
-  const commandBus = dependencies.agent?.commandBus ?? new CommandBus(coordinator, new DomainEventBus());
-  const queryBus = dependencies.agent?.queryBus ?? new QueryBus(readDatabase, coordinator);
+  const commandBus = dependencies.agent?.commandBus ?? application.gateway.commandBus;
+  const queryBus = dependencies.agent?.queryBus ?? application.gateway.queryBus;
   const appInstanceId = dependencies.agent?.appInstanceId ?? defaultAgentInstanceId;
   const credentialVerifier = dependencies.agent?.credentialVerifier ?? Object.freeze({
     verify(): never {
@@ -646,6 +647,8 @@ async function createAgentControlPlane(
     cursorSecret: dependencies.agent?.cursorSecret ?? createHash('sha256').update(appInstanceId).digest(),
     now,
     randomUUID: randomId,
+    resolveState: (envelope, descriptor) => application.gateway.resolveState(envelope, descriptor),
+    executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command, context, dispatch),
     onRecoveryStage(stage) {
       onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : 'agent_receipts_reconciled');
     }
@@ -762,7 +765,7 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
-      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, dependencies, onStage);
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
         const gatewayFailureLease = await coordinator.beginMaintenance();

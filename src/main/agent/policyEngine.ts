@@ -16,7 +16,7 @@ import {
   validateOperationPolicyOverride
 } from '../../shared/agent/v1/gatewaySchemas';
 import { operationCatalogIdentity, resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
-import { assertIssuedAgentPrincipal } from './clientAuthenticator';
+import { assertIssuedAgentPrincipal, isMigratedRendererBusinessOperation } from './clientAuthenticator';
 import type { AgentControlSettings } from './clientRegistry';
 
 const riskOrder: readonly RiskLevel[] = ['R0', 'R1', 'R2', 'R3', 'R4'];
@@ -46,6 +46,7 @@ export interface ResolvedPolicyState {
   readonly affectedEntityCount: number;
   readonly affectedSetHash?: string;
   readonly targetHash?: string;
+  readonly managedFileCount?: number;
 }
 
 export interface PolicyEvaluation {
@@ -74,8 +75,12 @@ function resolveRisk(descriptor: OperationDescriptor, input: Readonly<Record<str
   let risk = descriptor.policyBounds.minimumRisk;
   switch (descriptor.riskResolver) {
     case 'question_delete':
+      if (input.deleteImages === true && (state.managedFileCount ?? 0) > 0) risk = 'R4';
+      else if (input.physicalDelete === true || input.deleteManagedFiles === true) risk = 'R4';
+      break;
     case 'image_delete':
-      if (input.physicalDelete === true || input.deleteManagedFiles === true) risk = 'R4';
+      if (input.deleteFile === true && (state.managedFileCount ?? 0) > 0) risk = 'R4';
+      else if (input.physicalDelete === true || input.deleteManagedFiles === true) risk = 'R4';
       break;
     case 'bounded_batch':
       risk = state.affectedEntityCount > 1 ? 'R3' : descriptor.policyBounds.minimumRisk;
@@ -113,7 +118,8 @@ export class PolicyEngine {
     const nowMilliseconds = canonicalTimestampMs(this.now());
     const descriptor = canonicalDescriptor(evaluation.descriptor);
     assertIssuedAgentPrincipal(principal);
-    if (principal.renderer && (!descriptor.rendererManagement || !descriptor.allowedWhenExternalControlDisabled)) {
+    const migratedRendererBusiness = principal.renderer && isMigratedRendererBusinessOperation(descriptor.name);
+    if (principal.renderer && !migratedRendererBusiness && (!descriptor.rendererManagement || !descriptor.allowedWhenExternalControlDisabled)) {
       return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'RENDERER_MANAGEMENT_ONLY');
     }
     let catalogMatches = true;
@@ -122,7 +128,7 @@ export class PolicyEngine {
       if (descriptor.catalogVersion !== settings.catalog.version) throw new AgentError('CATALOG_VERSION_MISMATCH');
     } catch (error) {
       catalogMatches = false;
-      if (!principal.renderer || !descriptor.rendererManagement || !descriptor.allowedWhenExternalControlDisabled) throw error;
+      if (!principal.renderer || migratedRendererBusiness || !descriptor.rendererManagement || !descriptor.allowedWhenExternalControlDisabled) throw error;
     }
     const override = catalogMatches ? overrideFor(settings, descriptor) : undefined;
     const resolvedRisk = resolveRisk(descriptor, input, state);
@@ -152,24 +158,28 @@ export class PolicyEngine {
     if (principal.trust === 'observer' && riskOrder.indexOf(risk) > 1) {
       disposition = 'deny'; reasonCode = 'TRUST_PROFILE_DENIED';
     } else if (risk === 'R4') {
-      if (!evaluation.r4Grant || !state.targetHash) throw new AgentError('R4_GRANT_REQUIRED');
-      assertR4GrantBinding(evaluation.r4Grant, descriptor, {
-        catalog: settings.catalog,
-        operation: descriptor.name,
-        payloadHash: hashCanonicalJson(input),
-        targetHash: state.targetHash,
-        resolvedRisk: 'R4',
-        recovery: descriptor.recovery,
-        maxAffectedEntities: evaluation.r4Grant.maxAffectedEntities
-      });
-      if (
-        evaluation.r4Grant.status !== 'active' ||
-        evaluation.r4Grant.clientId !== principal.clientId ||
-        canonicalTimestampMs(evaluation.r4Grant.issuedAt) > nowMilliseconds ||
-        canonicalTimestampMs(evaluation.r4Grant.expiresAt) <= nowMilliseconds ||
-        state.affectedEntityCount > evaluation.r4Grant.maxAffectedEntities
-      ) throw new AgentError('R4_GRANT_INVALID');
-      disposition = 'execute'; reasonCode = 'R4_GRANT_BOUND';
+      if (migratedRendererBusiness) {
+        disposition = 'execute'; reasonCode = 'LOCAL_RENDERER_USER_ACTION';
+      } else {
+        if (!evaluation.r4Grant || !state.targetHash) throw new AgentError('R4_GRANT_REQUIRED');
+        assertR4GrantBinding(evaluation.r4Grant, descriptor, {
+          catalog: settings.catalog,
+          operation: descriptor.name,
+          payloadHash: hashCanonicalJson(input),
+          targetHash: state.targetHash,
+          resolvedRisk: 'R4',
+          recovery: descriptor.recovery,
+          maxAffectedEntities: evaluation.r4Grant.maxAffectedEntities
+        });
+        if (
+          evaluation.r4Grant.status !== 'active' ||
+          evaluation.r4Grant.clientId !== principal.clientId ||
+          canonicalTimestampMs(evaluation.r4Grant.issuedAt) > nowMilliseconds ||
+          canonicalTimestampMs(evaluation.r4Grant.expiresAt) <= nowMilliseconds ||
+          state.affectedEntityCount > evaluation.r4Grant.maxAffectedEntities
+        ) throw new AgentError('R4_GRANT_INVALID');
+        disposition = 'execute'; reasonCode = 'R4_GRANT_BOUND';
+      }
     } else if (descriptor.policyBounds.requiresChangeSet || override?.requireChangeSet) {
       disposition = 'requires_changeset'; reasonCode = 'CHANGESET_REQUIRED';
     } else if (descriptor.policyBounds.approval === 'always' || override?.requireApproval) {

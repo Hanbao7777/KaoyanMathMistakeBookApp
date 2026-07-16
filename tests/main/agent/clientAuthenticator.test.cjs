@@ -73,7 +73,13 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
   assert.equal(first, second);
   assert.equal(first.clientId, 'local-renderer-management');
   assert.equal(first.renderer, true);
-  assert.equal(first.scopes.includes('questions.write'), false);
+  assert.deepEqual(first.scopes, [
+    'audit.export', 'audit.read', 'clients.manage', 'clients.read', 'control.manage',
+    'policy.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
+    'reviews.read', 'reviews.submit',
+    'sessions.manage', 'sessions.read', 'system.read'
+  ]);
+  assert.equal(first.scopes.includes('tasks.write'), false);
   assert.doesNotThrow(() => authentication.assertIssuedAgentPrincipal(first));
   assert.equal(Object.hasOwn(authentication, 'issueFixedRendererPrincipal'), false);
   assert.deepEqual(Object.keys(authentication).filter((name) => /^issue/i.test(name)), []);
@@ -85,4 +91,15 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
     renderer: true
   });
   assert.throws(() => authentication.assertIssuedAgentPrincipal(constructed), (error) => error.code === 'POLICY_DENIED');
+});
+
+test('renderer business allowlist is exact, frozen, and module-owned', () => {
+  assert.deepEqual(authentication.migratedRendererBusinessOperations, [
+    'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
+    'questions.mark_mastery', 'questions.submit_review',
+    'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets'
+  ]);
+  assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
+  assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);
+  assert.equal(authentication.isMigratedRendererBusinessOperation('tasks.create'), false);
 });

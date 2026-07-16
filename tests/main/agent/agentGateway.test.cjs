@@ -348,7 +348,7 @@ test('terminating a session through the Gateway revokes its issued principal imm
   assert.equal((await current.gateway.query(queryEnvelope(), current.principal)).error.code, 'CLIENT_REVOKED');
 });
 
-test('disabled control denies external principals while renderer keeps only recovery management operations', async () => {
+test('disabled control denies external principals while renderer keeps recovery management and migrated questions', async () => {
   const current = await realComposition();
   await current.b3.registry.setExternalControlEnabled(false);
   const external = await current.gateway.query(queryEnvelope(), current.principal);
@@ -357,7 +357,7 @@ test('disabled control denies external principals while renderer keeps only reco
   const status = await current.gateway.query(queryEnvelope({ operation: 'agent.status.get' }), renderer);
   assert.equal(status.kind, 'completed');
   const business = await current.gateway.query(queryEnvelope(), renderer);
-  assert.equal(business.error.code, 'POLICY_DENIED');
+  assert.equal(business.kind, 'completed');
 });
 
 test('database restart verifies audit then reconciles orphan admission before Gateway readiness', async () => {

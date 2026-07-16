@@ -48,17 +48,59 @@ function evaluate(composition, principal, operation, overrides = {}) {
 test.beforeEach(() => environment.resetControlPlaneEnvironment());
 test.after(() => environment.cleanupControlPlaneRoot());
 
-test('default-denies external control and limits renderer to the explicit recovery allowlist', async () => {
+test('renderer admits only migrated questions while preserving the recovery allowlist and catalog fence', async () => {
   const composition = await setup();
   const settings = await composition.registry.getSettings();
   const forged = { ...composition.renderer.principal(), renderer: false };
   assert.throws(() => evaluate(composition, forged, 'questions.list', { settings }), (error) => error.code === 'POLICY_DENIED');
   const renderer = composition.renderer.principal();
   assert.equal(evaluate(composition, renderer, 'agent.status.get', { settings }).disposition, 'execute');
-  assert.equal(evaluate(composition, renderer, 'questions.list', { settings }).disposition, 'deny');
+  assert.equal(evaluate(composition, renderer, 'questions.list', { settings }).disposition, 'execute');
+  assert.equal(evaluate(composition, renderer, 'questions.submit_review', { settings }).disposition, 'execute');
+  assert.equal(evaluate(composition, renderer, 'tasks.create', { settings }).disposition, 'deny');
+  for (const operation of authentication.migratedRendererBusinessOperations) {
+    assert.notEqual(evaluate(composition, renderer, operation, { settings }).disposition, 'deny', operation);
+  }
+  for (const operation of [
+    'questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge',
+    'questions.bulk_upsert', 'questions.import', 'questions.replace_all', 'questions.clear_all'
+  ]) {
+    assert.equal(evaluate(composition, renderer, operation, { settings }).disposition, 'deny', operation);
+  }
   const mismatched = { ...settings, catalog: { ...settings.catalog, hash: agent.hashCanonicalJson({ catalog: 'old' }) } };
   assert.equal(evaluate(composition, renderer, 'agent.status.get', { settings: mismatched }).disposition, 'execute');
-  assert.equal(evaluate(composition, renderer, 'questions.list', { settings: mismatched }).disposition, 'deny');
+  assert.throws(() => evaluate(composition, renderer, 'questions.list', { settings: mismatched }), (error) => error.code === 'CATALOG_VERSION_MISMATCH');
+});
+
+test('removed Renderer operations remain available to properly scoped external principals', async () => {
+  const composition = await setup([
+    'questions.write', 'reviews.submit', 'knowledge.write', 'operations.batch'
+  ]);
+  const principal = await external(composition);
+  const settings = await composition.registry.getSettings();
+  for (const operation of ['questions.undo_review', 'questions.link_knowledge']) {
+    assert.equal(evaluate(composition, principal, operation, { settings }).disposition, 'execute', operation);
+  }
+  for (const operation of ['questions.migrate_categories', 'questions.rematch_knowledge']) {
+    assert.equal(evaluate(composition, principal, operation, { settings }).disposition, 'requires_changeset', operation);
+  }
+});
+
+test('renderer physical image risk remains authoritative without changing external R4 grants', async () => {
+  const composition = await setup();
+  const settings = await composition.registry.getSettings();
+  const renderer = composition.renderer.principal();
+  const local = evaluate(composition, renderer, 'questions.remove_image', {
+    settings, input: { deleteFile: true }, state: { affectedEntityCount: 1, managedFileCount: 1 }
+  });
+  assert.equal(local.risk, 'R4');
+  assert.equal(local.reasonCode, 'LOCAL_RENDERER_USER_ACTION');
+
+  const principal = await external(composition);
+  const externalSettings = await composition.registry.getSettings();
+  assert.throws(() => evaluate(composition, principal, 'questions.remove_image', {
+    settings: externalSettings, input: { deleteFile: true }, state: { affectedEntityCount: 1, managedFileCount: 1 }
+  }), (error) => error.code === 'R4_GRANT_REQUIRED');
 });
 
 test('enforces live scopes, descriptor resource bounds, page bounds, and resolved risk', async () => {

@@ -85,6 +85,11 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
     descriptor: OperationDescriptor,
     principal: AgentPrincipal
   ) => Promise<GatewayResolvedState> | GatewayResolvedState;
+  readonly executeBusinessCommand?: (
+    command: AppCommand,
+    context: TrustedExecutionContext,
+    dispatch: () => Promise<CommandResult>
+  ) => Promise<CommandResult>;
 }
 
 export interface AgentGatewayComposition {
@@ -253,7 +258,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     return Object.freeze({ settings: await registry.getSettings() });
   };
 
-  const resolveState = options.resolveState ?? ((envelope: AgentCommandEnvelope | AgentQueryEnvelope) => {
+  const fallbackResolveState = (envelope: AgentCommandEnvelope | AgentQueryEnvelope) => {
     const affectedEntities = normalizedAffectedEntities(envelope.payload);
     return Object.freeze({
       affectedEntityCount: affectedEntities.length,
@@ -262,7 +267,31 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       targetHash: hashCanonicalJson({ operation: envelope.operation, affectedEntities }),
       dataVersion: Object.freeze({ ...options.coordinator.currentVersion() })
     });
-  });
+  };
+  const questionStateBindings = new Map<string, { payloadHash: string; state: GatewayResolvedState }>();
+  const resolveState = (
+    envelope: AgentCommandEnvelope | AgentQueryEnvelope,
+    descriptor: OperationDescriptor,
+    principal: AgentPrincipal
+  ) => {
+    if (descriptor.domain !== 'questions' || !options.resolveState) return fallbackResolveState(envelope);
+    if (envelope.kind === 'agent-query') return options.resolveState(envelope, descriptor, principal);
+    const key = `${principal.clientId}\0${envelope.requestId}`;
+    const payloadHash = hashCanonicalJson(envelope.payload);
+    const existing = questionStateBindings.get(key);
+    if (existing?.payloadHash === payloadHash) return existing.state;
+    const resolved = options.resolveState(envelope, descriptor, principal);
+    if (resolved instanceof Promise) {
+      return resolved.then((state) => {
+        questionStateBindings.set(key, { payloadHash, state });
+        if (questionStateBindings.size > 1_000) questionStateBindings.delete(questionStateBindings.keys().next().value!);
+        return state;
+      });
+    }
+    questionStateBindings.set(key, { payloadHash, state: resolved });
+    if (questionStateBindings.size > 1_000) questionStateBindings.delete(questionStateBindings.keys().next().value!);
+    return resolved;
+  };
 
   const validateBusinessCommand = (envelope: AgentCommandEnvelope) => {
     if (!(gatewayBusinessCommandTypes as readonly string[]).includes(envelope.operation)) throw new AgentError('VALIDATION_ERROR');
@@ -432,14 +461,16 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     },
     admit: (request) => idempotency.admit(request),
     dispatchCommand(plan, context, prepared, approval, changeSet) {
-      return options.commandBus.executeWithExecutionReceipt(
+      const command = { type: plan.operation, payload: plan.payload } as AppCommand;
+      const dispatch = () => options.commandBus.executeWithExecutionReceipt(
         receiptCapability,
-        { apiVersion: agentApiVersion, kind: 'command', context, command: { type: plan.operation, payload: plan.payload } as AppCommand },
+        { apiVersion: agentApiVersion, kind: 'command', context, command },
         receipts.createTerminalHook(prepared, {
           ...(approval ? { approval } : {}),
           ...(plan.changeSetApply || changeSet ? { changeSet: plan.changeSetApply ?? changeSet } : {})
         })
       );
+      return options.executeBusinessCommand ? options.executeBusinessCommand(command, context, dispatch) : dispatch();
     },
     async dispatchManagement(envelope, principal, decision, prepared) {
       const command = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowCommand;
