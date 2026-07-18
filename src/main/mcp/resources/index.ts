@@ -6,7 +6,7 @@ import { visibleToPrincipal } from '../tools';
 export interface McpResourceDefinition {
   readonly descriptor: McpRegistryDescriptor;
   readonly operation?: OperationName;
-  readonly kind: 'summary' | 'question' | 'task' | 'capabilities';
+  readonly kind: 'summary' | 'question' | 'task' | 'job' | 'job-result' | 'capabilities';
 }
 
 export const mcpV1Resources: readonly McpResourceDefinition[] = Object.freeze([
@@ -17,7 +17,9 @@ export const mcpV1Resources: readonly McpResourceDefinition[] = Object.freeze([
 
 export const mcpV1ResourceTemplates: readonly McpResourceDefinition[] = Object.freeze([
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'questions.view')!, operation: 'questions.get' as const, kind: 'question' as const }),
-  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'tasks.view')!, operation: 'tasks.get' as const, kind: 'task' as const })
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'tasks.view')!, operation: 'tasks.get' as const, kind: 'task' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'jobs.view')!, operation: 'jobs.get' as const, kind: 'job' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'jobs.result.view')!, operation: 'jobs.result' as const, kind: 'job-result' as const })
 ]);
 
 export function visibleResources(principal: AgentPrincipal): readonly McpResourceDefinition[] {

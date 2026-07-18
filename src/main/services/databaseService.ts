@@ -77,6 +77,7 @@ export const databaseLifecycleStages = [
   'operation_journal_recovered',
   'audit_ledger_verified',
   'agent_receipts_reconciled',
+  'agent_jobs_reconciled',
   'agent_gateway_ready',
   'ready',
   'needs_recovery'
@@ -97,6 +98,9 @@ export interface DatabaseInitializationDependencies {
     readonly cursorSecret?: Uint8Array | string;
     readonly commandBus?: CommandBus;
     readonly queryBus?: QueryBus;
+    readonly jobResultRoot?: string;
+    readonly jobStoreHook?: AgentGatewayBootstrapOptions['jobStoreHook'];
+    readonly jobExecutorOnError?: AgentGatewayBootstrapOptions['jobExecutorOnError'];
   };
   onStage?: (stage: DatabaseLifecycleStage) => void;
 }
@@ -633,6 +637,7 @@ async function createAgentControlPlane(
   readDatabase: ReadOnlyDatabaseFacade,
   application: QuestionsApplication,
   tickTick: TickTickApplication,
+  operationJournalStores: readonly OperationManifestStore[],
   dependencies: DatabaseInitializationDependencies = {},
   onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
 ): Promise<AgentGatewayComposition> {
@@ -654,6 +659,10 @@ async function createAgentControlPlane(
     appInstanceId,
     credentialVerifier,
     cursorSecret: dependencies.agent?.cursorSecret ?? createHash('sha256').update(appInstanceId).digest(),
+    jobResultRoot: path.normalize(dependencies.agent?.jobResultRoot ?? path.join(getPaths().data, 'agent-jobs', 'results')),
+    operationJournalStores,
+    jobStoreHook: dependencies.agent?.jobStoreHook,
+    jobExecutorOnError: dependencies.agent?.jobExecutorOnError,
     now,
     randomUUID: randomId,
     resolveState: (envelope, descriptor) => descriptor.domain === 'questions'
@@ -662,7 +671,7 @@ async function createAgentControlPlane(
     executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command, context, dispatch),
     tickTickApplication: tickTick,
     onRecoveryStage(stage) {
-      onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : 'agent_receipts_reconciled');
+      onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : stage === 'receipts_reconciled' ? 'agent_receipts_reconciled' : 'agent_jobs_reconciled');
     }
   });
   onStage('agent_gateway_ready');
@@ -766,8 +775,9 @@ async function initializeDatabaseOnce(
   const externalJournalRoot = path.normalize(
     dependencies.externalJournalRoot ?? path.join(app.getPath('userData'), 'agent-recovery', 'operation-journal')
   );
+  const operationJournalStores = [new OperationManifestStore(dataJournalRoot), new OperationManifestStore(externalJournalRoot)] as const;
   const journalRecovery = await (dependencies.recoverOperations ?? recoverOperationStores)(
-    [new OperationManifestStore(dataJournalRoot), new OperationManifestStore(externalJournalRoot)],
+    operationJournalStores,
     () => coordinator.currentVersion()
   );
   onStage('operation_journal_recovered');
@@ -778,7 +788,7 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
-      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, dependencies, onStage);
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, operationJournalStores, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
         const gatewayFailureLease = await coordinator.beginMaintenance();
@@ -2073,6 +2083,7 @@ export function resetDatabaseConnection() {
   if (databaseCoordinator?.pendingWrites) {
     throw new Error('Cannot reset the database while coordinator writes are pending');
   }
+  agentControlPlane?.jobExecutor.stop();
   if (db) {
     db.close();
     db = null;
@@ -2102,6 +2113,7 @@ export function shutdownDatabase(): Promise<void> {
 async function shutdownDatabaseOnce(): Promise<void> {
   const coordinator = databaseCoordinator;
   if (!coordinator) return;
+  agentControlPlane?.jobExecutor.stop();
   await coordinator.shutdown();
 }
 

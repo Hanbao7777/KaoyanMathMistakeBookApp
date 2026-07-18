@@ -10,7 +10,12 @@ const mcpAdditionalMapperOperations = Object.freeze([
   'questions.get',
   'tasks.get',
   'questions.review_buckets',
-  'tasks.list'
+  'tasks.list',
+  'jobs.create',
+  'jobs.get',
+  'jobs.list',
+  'jobs.cancel',
+  'jobs.result'
 ] as const);
 
 function toolError(error: SerializedAgentError, field?: string): McpStructuredOutcome {

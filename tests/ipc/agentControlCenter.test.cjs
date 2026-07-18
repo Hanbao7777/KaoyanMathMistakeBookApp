@@ -40,6 +40,7 @@ async function runtime() {
     appInstanceId,
     credentialVerifier: verifier,
     cursorSecret: crypto.randomBytes(32),
+    jobResultRoot: environment.resultRoot,
     randomUUID: crypto.randomUUID,
     resolveState: (envelope, descriptor) => descriptor.domain === 'questions'
       ? questions.gateway.resolveState(envelope, descriptor)

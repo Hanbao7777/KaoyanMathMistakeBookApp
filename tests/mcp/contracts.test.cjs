@@ -13,10 +13,10 @@ const mapping = require(path.join(projectRoot, 'dist/main/main/mcp/resultMapping
 const requestId = '123e4567-e89b-42d3-a456-426614174000';
 const hash = 'sha256-v1:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 
-test('measured protocol compatibility is exact and Tasks are disabled', () => {
+test('measured client compatibility remains exact while optional Tasks are server-enabled', () => {
   assert.deepEqual(mcp.mcpProtocolVersions, ['2025-06-18', '2025-11-25']);
   assert.equal(mcp.mcpCurrentProtocolVersion, '2025-11-25');
-  assert.equal(mcp.mcpTasksEnabled, false);
+  assert.equal(mcp.mcpTasksEnabled, true);
   assert.equal(mcp.negotiateMcpProtocol(['2025-06-18']), '2025-06-18');
   assert.equal(mcp.negotiateMcpProtocol(['2025-11-25', '2025-06-18']), '2025-11-25');
   assert.throws(() => mcp.negotiateMcpProtocol(['2024-11-05']), /negotiation failed/i);
@@ -59,7 +59,7 @@ test('external manifest and registry expose exactly the accepted 19 operations',
     assert.equal(descriptor.outputValidator, mcp.validateMcpStructuredOutcome);
     assert.deepEqual(descriptor.catalog, agent.operationCatalogIdentity);
   }
-  assert.equal(registry.mcpV1CapabilitySummary.tasks, false);
+  assert.equal(registry.mcpV1CapabilitySummary.tasks, true);
   assert.equal(registry.mcpV1ServerMetadata.currentProtocolVersion, '2025-11-25');
 });
 

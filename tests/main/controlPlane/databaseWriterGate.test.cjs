@@ -171,7 +171,8 @@ function scanTransactionsAndMutators() {
     const coordinatorRanges = [
       ...invocationRanges(source, /\bexecuteLegacyMutation\s*\(/g),
       ...invocationRanges(source, /\.executeWrite\s*\(/g),
-      ...invocationRanges(source, /\bexecuteWriteWithVerifiedSnapshot\s*\(/g)
+      ...invocationRanges(source, /\bexecuteWriteWithVerifiedSnapshot\s*\(/g),
+      ...(name === 'src/main/agent/bootstrap.ts' ? invocationRanges(source, /\bexecuteControlWrite\s*\(/g) : [])
     ];
     const agentRegistryControlRanges = name === 'src/main/agent/clientRegistry.ts'
       ? invocationRanges(source, /\bthis\.write\s*\(/g)
@@ -201,6 +202,7 @@ function scanTransactionsAndMutators() {
       'src/main/agent/auditLedger.ts',
       'src/main/agent/executionReceipts.ts',
       'src/main/agent/idempotencyStore.ts',
+      'src/main/agent/jobStore.ts',
       'src/main/agent/sqlRows.ts',
       'src/main/agent/workflows.ts'
     ]);
@@ -274,7 +276,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 233,
+    line: 237,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -301,13 +303,13 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator control invocation scope': 7,
-    'coordinator invocation scope': 29,
+    'coordinator invocation scope': 33,
     'coordinator transaction/revision primitive': 24,
-    'coordinator-scoped agent durability collaborator': 25,
+    'coordinator-scoped agent durability collaborator': 42,
     'coordinator-scoped registry mutation seam': 14,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 34,
-    'database bootstrap/migration schema': 2,
+    'database bootstrap/migration schema': 4,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,
     'verified read-only database SQL call': 11

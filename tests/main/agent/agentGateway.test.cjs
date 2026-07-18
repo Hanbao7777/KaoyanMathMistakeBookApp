@@ -195,6 +195,7 @@ async function realComposition(options = {}) {
       }
     },
     cursorSecret: 'g'.repeat(32),
+    jobResultRoot: environment.resultRoot,
     now: () => now,
     randomUUID: uuid
   });
@@ -252,7 +253,8 @@ async function isolatedManagementRuntime(livePath, shouldFailPublication = () =>
   const queryBus = new application.QueryBus(readOnly, coordinator);
   const composition = await bootstrap.bootstrapAgentGateway({
     coordinator, commandBus, queryBus, selectedCandidateEvidence: true, appInstanceId: 'management-lost-instance',
-    credentialVerifier: { verify() { throw new Error('unused'); } }, cursorSecret: 'l'.repeat(32), now: () => now, randomUUID: uuid
+    credentialVerifier: { verify() { throw new Error('unused'); } }, cursorSecret: 'l'.repeat(32), now: () => now, randomUUID: uuid,
+    jobResultRoot: path.join(path.dirname(livePath), 'job-results')
   });
   return { coordinator, composition };
 }

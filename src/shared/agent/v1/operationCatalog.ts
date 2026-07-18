@@ -21,7 +21,7 @@ import {
   validateOperationCatalog
 } from './gatewaySchemas';
 
-export const operationCatalogVersion = 'agent-catalog-v1@1' as const;
+export const operationCatalogVersion = 'agent-catalog-v1@2' as const;
 
 interface DescriptorDefinition {
   readonly kind: OperationKind;
@@ -105,6 +105,11 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'agent.clients.register_key': managementCommand(['clients.manage'], 'R2', { rendererManagement: true, visibility: 'owner-or-admin' }),
   'agent.clients.rotate_key': managementCommand(['clients.manage'], 'R2', { rendererManagement: true, visibility: 'owner-or-admin' }),
   'agent.receipts.get_status': { ...managementQuery(['system.read']), visibility: 'owner-or-admin' },
+  'jobs.create': managementCommand(['jobs.execute'], 'R1', { visibility: 'owner-or-admin' }),
+  'jobs.cancel': managementCommand(['jobs.cancel'], 'R1', { visibility: 'owner-or-admin' }),
+  'jobs.get': managementQuery(['jobs.read']),
+  'jobs.list': managementQuery(['jobs.read']),
+  'jobs.result': managementQuery(['jobs.read']),
   'questions.create': businessCommand('questions', ['questions.write'], 'R2', 'inverse'),
   'questions.update': businessCommand('questions', ['questions.write'], 'R2', 'inverse'),
   'questions.delete': businessCommand('questions', ['questions.archive'], 'R2', 'quarantine', {

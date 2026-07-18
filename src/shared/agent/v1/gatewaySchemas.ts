@@ -1,5 +1,6 @@
 import { AgentError, agentErrorCodes } from '../errors';
 import { agentApiVersion } from '../versions';
+import { validateJobCancelInput, validateJobCreateInput, validateJobGetInput, validateJobListInput, validateJobResultInput } from './jobs';
 import {
   agentScopes,
   approvalRequirements,
@@ -324,7 +325,7 @@ export function assertCatalogIdentity(actual: CatalogIdentity, expected: Catalog
 
 export function validateAgentPrincipalClaims(value: unknown, path = 'principal'): asserts value is AgentPrincipalClaims {
   const result = exact(value, [
-    'apiVersion', 'kind', 'clientId', 'subjectId', 'displayName', 'scopes', 'trust', 'credentialBinding', 'authenticatedAt', 'renderer'
+    'apiVersion', 'kind', 'clientId', 'subjectId', 'displayName', 'scopes', 'trust', 'credentialBinding', 'sessionId', 'authenticatedAt', 'renderer'
   ], path);
   required(result, ['apiVersion', 'kind', 'clientId', 'subjectId', 'displayName', 'scopes', 'trust', 'credentialBinding', 'authenticatedAt', 'renderer'], path);
   validateApiVersion(result.apiVersion, `${path}.apiVersion`);
@@ -335,8 +336,10 @@ export function validateAgentPrincipalClaims(value: unknown, path = 'principal')
   uniqueStringArray(result.scopes, agentScopes, `${path}.scopes`);
   oneOf(result.trust, trustProfiles, `${path}.trust`);
   string(result.credentialBinding, `${path}.credentialBinding`, 500);
+  if (result.sessionId !== undefined) uuid(result.sessionId, `${path}.sessionId`);
   timestamp(result.authenticatedAt, `${path}.authenticatedAt`);
   boolean(result.renderer, `${path}.renderer`);
+  if (result.renderer === (result.sessionId !== undefined)) fail(`${path}.sessionId`);
 }
 
 function normalizedCredentialKey(key: string): string {
@@ -603,7 +606,7 @@ export function validateApprovalRecord(value: unknown, path = 'approval'): asser
   validateApiVersion(result.apiVersion, `${path}.apiVersion`); uuid(result.approvalId, `${path}.approvalId`); string(result.nonce, `${path}.nonce`, 500);
   safeName(result.clientId, `${path}.clientId`); string(result.credentialBinding, `${path}.credentialBinding`, 500); validateOperationName(result.operation, `${path}.operation`);
   hash(result.payloadHash, `${path}.payloadHash`); hash(result.affectedSetHash, `${path}.affectedSetHash`); validateGatewayDataVersion(result.baseVersion, `${path}.baseVersion`);
-  validateCatalogIdentity(result.catalog, `${path}.catalog`); safeName(result.policyVersion, `${path}.policyVersion`); oneOf(result.risk, riskLevels, `${path}.risk`);
+  validateCatalogIdentity(result.catalog, `${path}.catalog`); string(result.policyVersion, `${path}.policyVersion`, 200); oneOf(result.risk, riskLevels, `${path}.risk`);
   uniqueStringArray(result.requiredScopes, agentScopes, `${path}.requiredScopes`); oneOf(result.recovery, recoveryRequirements, `${path}.recovery`);
   if (result.source !== undefined) oneOf(result.source, approvalSources, `${path}.source`); oneOf(result.status, approvalStatuses, `${path}.status`);
   timestamp(result.createdAt, `${path}.createdAt`); timestamp(result.expiresAt, `${path}.expiresAt`); if (result.expiresAt <= result.createdAt) fail(`${path}.expiresAt`);
@@ -872,18 +875,24 @@ export function validateGatewayManagementCommand(value: unknown, path = 'command
   const command = exact(value, ['type', 'payload'], path);
   required(command, ['type', 'payload'], path);
   oneOf(command.type, gatewayManagementCommandTypes, `${path}.type`);
-  validatePublicKeyBinding(command.payload, `${path}.payload`);
+  if (command.type === 'agent.clients.register_key' || command.type === 'agent.clients.rotate_key') validatePublicKeyBinding(command.payload, `${path}.payload`);
+  else if (command.type === 'jobs.create') validateJobCreateInput(command.payload, `${path}.payload`);
+  else validateJobCancelInput(command.payload, `${path}.payload`);
 }
 
 export function validateGatewayManagementQuery(value: unknown, path = 'query'): asserts value is GatewayManagementQuery {
   const query = exact(value, ['type', 'payload'], path);
   required(query, ['type', 'payload'], path);
-  if (query.type !== 'agent.receipts.get_status') fail(`${path}.type`);
-  const payload = exact(query.payload, ['clientId', 'requestId'], `${path}.payload`);
-  required(payload, ['clientId', 'requestId'], `${path}.payload`);
-  safeName(payload.clientId, `${path}.payload.clientId`);
-  uuid(payload.requestId, `${path}.payload.requestId`);
-  rejectCredentialMaterial(payload, `${path}.payload`);
+  oneOf(query.type, gatewayManagementQueryTypes, `${path}.type`);
+  if (query.type === 'agent.receipts.get_status') {
+    const payload = exact(query.payload, ['clientId', 'requestId'], `${path}.payload`);
+    required(payload, ['clientId', 'requestId'], `${path}.payload`);
+    safeName(payload.clientId, `${path}.payload.clientId`);
+    uuid(payload.requestId, `${path}.payload.requestId`);
+    rejectCredentialMaterial(payload, `${path}.payload`);
+  } else if (query.type === 'jobs.list') validateJobListInput(query.payload, `${path}.payload`);
+  else if (query.type === 'jobs.result') validateJobResultInput(query.payload, `${path}.payload`);
+  else validateJobGetInput(query.payload, `${path}.payload`);
 }
 
 export function validateSafeClientKeyBindingResult(value: unknown, path = 'result'): void {

@@ -45,6 +45,7 @@ test('initializeDatabase creates critical application tables', async () => {
     'agent_changeset_operations',
     'agent_audit_segments',
     'agent_audit_events',
+    'agent_jobs',
     'ticktick_lists',
     'ticktick_tasks',
     'ticktick_bridge'
@@ -131,6 +132,9 @@ test('initializeDatabase creates constrained agent identity indexes', async () =
   assert.equal(indexExists(db, 'idx_agent_audit_segments_open'), true);
   assert.equal(indexExists(db, 'idx_agent_audit_events_search'), true);
   assert.equal(indexExists(db, 'idx_agent_audit_events_receipt'), true);
+  assert.equal(indexExists(db, 'idx_agent_jobs_fifo'), true);
+  assert.equal(indexExists(db, 'idx_agent_jobs_owner_session'), true);
+  assert.equal(indexExists(db, 'idx_agent_jobs_retention'), true);
 });
 
 test('agent durability tables enforce terminal and append-only workflow constraints', async () => {

@@ -4,8 +4,11 @@ import { AgentError } from '../../shared/agent/errors';
 import { agentApiVersion } from '../../shared/agent/versions';
 import type { AppCommand, AppQuery, CommandResult, EntityRef, QueryResult, TrustedExecutionContext } from '../../shared/agent/v1/contracts';
 import {
+  agentScopes,
   gatewayBusinessCommandTypes,
   gatewayBusinessQueryTypes,
+  gatewayManagementCommandTypes,
+  gatewayManagementQueryTypes,
   type AgentCommandEnvelope,
   type AgentPrincipal,
   type AgentQueryEnvelope,
@@ -26,8 +29,10 @@ import {
 } from '../../shared/agent/v1/gatewayContracts';
 import {
   assertCatalogIdentity,
+  canonicalizeJson,
   hashCanonicalJson,
   validateR4Grant,
+  validateOperationPolicyOverride,
   validateGatewayManagementCommand,
   validateGatewayManagementQuery,
   validateGatewayWorkflowCommand,
@@ -55,12 +60,14 @@ import {
   type DatabaseMutationScope,
   type DatabaseCoordinator
 } from '../persistence/databaseCoordinator';
+import type { OperationManifestStore } from '../persistence/operationJournal';
 import { AgentGateway, type GatewayCommandPlan, type GatewayResolvedState, type GatewayWorkflowBinding } from './agentGateway';
 import { AuditLedger } from './auditLedger';
 import {
   assertIssuedAgentPrincipal,
   createAuthenticationAdapters,
   createRegistryPrincipalAuthenticator,
+  createDurableJobPrincipal,
   type RawCredentialVerifier,
   type VerifiedCredentialBindings
 } from './clientAuthenticator';
@@ -72,12 +79,19 @@ import { PolicyEngine } from './policyEngine';
 import type { RendererIdentityAdapter } from './rendererAdapter';
 import { StdioPublicKeyAuthenticator } from '../mcp/auth/stdioAuthenticator';
 import { WorkflowStore, type ChangeSetApplyBinding, type WorkflowBinding } from './workflows';
+import { JobStore } from './jobStore';
+import { JobExecutor } from './jobExecutor';
+import { JobRecovery, type VerifiedJobJournalEvidence } from './jobRecovery';
 
 export interface AgentB3BootstrapOptions {
   readonly coordinator: DatabaseCoordinator;
   readonly appInstanceId: string;
   readonly credentialVerifier: RawCredentialVerifier;
   readonly cursorSecret: Uint8Array | string;
+  readonly jobResultRoot?: string;
+  readonly operationJournalStores?: readonly OperationManifestStore[];
+  readonly jobStoreHook?: import('./jobStore').JobStoreDependencies['hook'];
+  readonly jobExecutorOnError?: (error: unknown) => void;
   readonly now?: () => string;
   readonly randomUUID?: () => string;
 }
@@ -94,7 +108,7 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
   readonly commandBus: CommandBus;
   readonly queryBus: QueryBus;
   readonly selectedCandidateEvidence: true;
-  readonly onRecoveryStage?: (stage: 'audit_verified' | 'receipts_reconciled') => void;
+  readonly onRecoveryStage?: (stage: 'audit_verified' | 'receipts_reconciled' | 'jobs_reconciled') => void;
   readonly resolveState?: (
     envelope: AgentCommandEnvelope | AgentQueryEnvelope,
     descriptor: OperationDescriptor,
@@ -114,6 +128,8 @@ export interface AgentGatewayComposition {
   readonly renderer: RendererIdentityAdapter;
   readonly stdioAuthenticator: StdioPublicKeyAuthenticator;
   readonly externalControlEnabled: () => Promise<boolean>;
+  readonly jobs: JobStore;
+  readonly jobExecutor: JobExecutor;
 }
 
 function normalizedAffectedEntities(payload: JsonObject): readonly EntityRef[] {
@@ -209,11 +225,52 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID: uuid });
   const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID: uuid });
   const idempotency = new IdempotencyStore({ executeControlWrite, audit, workflows, now, randomUUID: uuid });
+  const jobs = new JobStore({
+    executeControlWrite,
+    resultRoot: options.jobResultRoot ?? (() => { throw new Error('An App-owned job result root is required'); })(),
+    now,
+    randomUUID: uuid,
+    hook: options.jobStoreHook
+  });
 
   try {
     if (options.selectedCandidateEvidence !== true) throw new AgentError('RECOVERY_FENCE');
     const verification = await audit.verify();
     options.onRecoveryStage?.('audit_verified');
+    await executeControlWrite({ requestId: 'agent-catalog-c8-migration', execute: (database, scope) => {
+      const settings = database.exec('SELECT catalog_version, catalog_hash, policy_json, policy_hash FROM agent_control_settings WHERE id = 1')[0];
+      if (!settings?.values[0]) return { changed: false, value: undefined };
+      const [catalogVersion, catalogHash, policyText, policyHash] = settings.values[0];
+      if (catalogVersion === operationCatalogIdentity.version && catalogHash === operationCatalogIdentity.hash) return { changed: false, value: undefined };
+      if (catalogVersion !== 'agent-catalog-v1@1' || catalogHash !== 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2') throw new AgentError('RECOVERY_FENCE');
+      let policy: unknown;
+      try { policy = JSON.parse(String(policyText)); } catch { throw new AgentError('POLICY_INVARIANT_VIOLATION'); }
+      if (!Array.isArray(policy) || canonicalizeJson(policy) !== policyText || hashCanonicalJson(policy) !== policyHash) throw new AgentError('POLICY_INVARIANT_VIOLATION');
+      const migratedPolicy = policy.map((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new AgentError('POLICY_INVARIANT_VIOLATION');
+        return Object.freeze({ ...(entry as Record<string, unknown>), catalog: operationCatalogIdentity });
+      });
+      const migratedOperations = new Set<string>();
+      for (const entry of migratedPolicy) {
+        const operation = (entry as { readonly operation?: unknown }).operation;
+        if (typeof operation !== 'string' || migratedOperations.has(operation)) throw new AgentError('POLICY_INVARIANT_VIOLATION');
+        migratedOperations.add(operation);
+        let descriptor: OperationDescriptor;
+        try { descriptor = resolveOperationDescriptor(operation as OperationName); } catch { throw new AgentError('POLICY_INVARIANT_VIOLATION'); }
+        validateOperationPolicyOverride(entry, descriptor, operationCatalogIdentity);
+      }
+      const scopeRows = database.exec('SELECT scope, catalog_version FROM agent_client_scopes ORDER BY client_id, scope')[0]?.values ?? [];
+      if (scopeRows.some(([clientScope, scopeCatalog]) => !agentScopes.includes(clientScope as typeof agentScopes[number]) || scopeCatalog !== catalogVersion)) throw new AgentError('RECOVERY_FENCE');
+      const policyJson = canonicalizeJson(migratedPolicy);
+      database.run('UPDATE agent_control_settings SET catalog_version = ?, catalog_hash = ?, policy_json = ?, policy_hash = ?, updated_at = ? WHERE id = 1', [
+        operationCatalogIdentity.version, operationCatalogIdentity.hash, policyJson, hashCanonicalJson(migratedPolicy), now()
+      ]);
+      database.run('UPDATE agent_client_scopes SET catalog_version = ?', [operationCatalogIdentity.version]);
+      audit.appendWorkflowControlInTransaction(database, scope, {
+        clientId: 'maintenance-kernel', operation: 'agent.catalog.get', summary: Object.freeze({ action: 'catalog_changed', fromVersion: String(catalogVersion), toVersion: operationCatalogIdentity.version })
+      });
+      return { changed: true, value: undefined };
+    }});
     const recoveryEvidence: ReceiptRecoveryEvidence = Object.freeze({ selectedCandidate: true, ledgerVerified: verification.valid });
     await idempotency.reconcileInterruptedPrecommit(recoveryEvidence);
     options.onRecoveryStage?.('receipts_reconciled');
@@ -237,6 +294,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   }
   const pendingBindings = new WeakMap<object, VerifiedCredentialBindings>();
   const liveBindings = new WeakMap<object, VerifiedCredentialBindings>();
+  const durableJobPrincipals = new WeakSet<object>();
   const authentication = createAuthenticationAdapters(registry, Object.freeze({
     async verify(credentials: RawClientCredentials) {
       const bindings = await options.credentialVerifier.verify(credentials);
@@ -265,12 +323,18 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   const authorize = async (principal: AgentPrincipal) => {
     assertIssuedAgentPrincipal(principal);
     if (principal.renderer) return Object.freeze({ settings: await registry.getSettings() });
+    if (durableJobPrincipals.has(principal as object)) {
+      const current = await registry.getActiveClientSummary(principal.clientId);
+      if (current.trust !== principal.trust || current.scopes.length !== principal.scopes.length || current.scopes.some((scope, index) => scope !== principal.scopes[index])) throw new AgentError('CLIENT_REVOKED');
+      return Object.freeze({ settings: await registry.getSettings() });
+    }
     const bindings = liveBindings.get(principal);
     if (!bindings) throw new AgentError('CLIENT_REVOKED');
     const live = await registry.authenticate(bindings.credentialFingerprint, bindings.sessionFingerprint);
     if (
       live.clientId !== principal.clientId || live.subjectId !== principal.subjectId || live.displayName !== principal.displayName ||
       live.credentialBinding !== principal.credentialBinding || live.trust !== principal.trust ||
+      live.sessionId !== principal.sessionId ||
       live.scopes.length !== principal.scopes.length || live.scopes.some((scope, index) => scope !== principal.scopes[index])
     ) throw new AgentError('CLIENT_REVOKED');
     return Object.freeze({ settings: await registry.getSettings() });
@@ -368,6 +432,23 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     if (descriptor.requiredScopes.some((scope) => !principal.scopes.includes(scope))) throw new AgentError('SCOPE_DENIED');
     const changeSetId = String(envelope.payload.changeSetId);
     const changeSet = await workflows.getChangeSet(changeSetId);
+    const waitingJob = await jobs.findWaitingWorkflow('changeset', changeSetId);
+    if (waitingJob) {
+      if (
+        !changeSet || !['draft', 'waiting_approval'].includes(changeSet.status) ||
+        changeSet.clientId !== waitingJob.ownerClientId || (!principal.renderer && changeSet.clientId !== principal.clientId) ||
+        changeSet.catalog.version !== operationCatalogIdentity.version || changeSet.catalog.hash !== operationCatalogIdentity.hash ||
+        changeSet.operations.length !== 1
+      ) throw new AgentError('APPROVAL_INVALID');
+      return Object.freeze({
+        descriptor,
+        payload: envelope.payload,
+        state: fallbackResolveState(envelope),
+        dispatch: 'management' as const,
+        operation: envelope.operation,
+        workflowResume: true as const
+      });
+    }
     if (
       !changeSet || !['approved', 'applied'].includes(changeSet.status) || (!principal.renderer && changeSet.clientId !== principal.clientId) ||
       changeSet.catalog.version !== operationCatalogIdentity.version || changeSet.catalog.hash !== operationCatalogIdentity.hash ||
@@ -431,6 +512,8 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     switch (command.type) {
       case 'agent.clients.register_key': return registry.registerPublicKeyInTransaction(database, scope, command.payload, false);
       case 'agent.clients.rotate_key': return registry.registerPublicKeyInTransaction(database, scope, command.payload, true);
+      case 'jobs.create': return jobs.createInTransaction(database, scope, command.payload, principal);
+      case 'jobs.cancel': return jobs.cancelInTransaction(database, scope, command.payload.jobId, principal);
       case 'agent.control.set_enabled': return controlValue(registry.setExternalControlEnabledInTransaction(database, scope, command.payload.enabled), { enabled: command.payload.enabled });
       case 'agent.clients.update_access': return controlValue(registry.updateClientAccessInTransaction(database, scope, command.payload.clientId, command.payload.scopes, command.payload.trust), { clientId: command.payload.clientId, scopes: command.payload.scopes, trust: command.payload.trust });
       case 'agent.clients.revoke': return controlValue(registry.revokeClientInTransaction(database, scope, command.payload.clientId), { clientId: command.payload.clientId, revoked: true });
@@ -466,11 +549,28 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         return workflows.createR4GrantInTransaction(database, scope, grant);
       }
       case 'agent.r4_grants.revoke': return controlValue(workflows.revokeR4GrantInTransaction(database, scope, command.payload.grantId, principal.clientId, principal.renderer), { grantId: command.payload.grantId, revoked: true });
-      case 'agent.approvals.approve': return workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'approved', principal.renderer ? 'user' : 'policy');
-      case 'agent.approvals.reject': return workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'rejected', principal.renderer ? 'user' : 'policy');
-      case 'agent.changesets.reject': return workflows.transitionChangeSetInTransaction(database, scope, command.payload.changeSetId, 'rejected');
+      case 'agent.approvals.approve': {
+        const result = workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'approved', principal.renderer ? 'user' : 'policy');
+        jobs.resolveWaitingWorkflowInTransaction(database, scope, 'approval', command.payload.approvalId, 'approved');
+        return result;
+      }
+      case 'agent.approvals.reject': {
+        const result = workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'rejected', principal.renderer ? 'user' : 'policy');
+        jobs.resolveWaitingWorkflowInTransaction(database, scope, 'approval', command.payload.approvalId, 'rejected');
+        return result;
+      }
+      case 'agent.changesets.reject': {
+        const result = workflows.transitionChangeSetInTransaction(database, scope, command.payload.changeSetId, 'rejected');
+        jobs.resolveWaitingWorkflowInTransaction(database, scope, 'changeset', command.payload.changeSetId, 'rejected');
+        return result;
+      }
       case 'agent.changesets.rollback': throw new AgentError('HANDLER_NOT_FOUND');
-      case 'agent.changesets.apply': throw new AgentError('APPROVAL_INVALID');
+      case 'agent.changesets.apply': {
+        const result = workflows.transitionChangeSetInTransaction(database, scope, command.payload.changeSetId, 'approved');
+        const resumed = jobs.resolveWaitingWorkflowInTransaction(database, scope, 'changeset', command.payload.changeSetId, 'approved');
+        if (!resumed.value) throw new AgentError('APPROVAL_INVALID');
+        return result;
+      }
       case 'agent.policy.update': return controlValue(
         registry.updatePolicyInTransaction(database, scope, command.payload.policyVersion, command.payload.overrides as readonly OperationPolicyOverride[]),
         { policyVersion: command.payload.policyVersion }
@@ -516,11 +616,12 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       settings: input.settings,
       pageSize: input.pageSize,
       r4Grant: input.r4Grant,
-      localApprovedChangeSet: input.localApprovedChangeSet
+      localApprovedChangeSet: input.localApprovedChangeSet,
+      workflowResume: input.workflowResume
     }),
     validateCommand(envelope, descriptor) {
       if (descriptor.domain === 'management') {
-        if ((['agent.clients.register_key', 'agent.clients.rotate_key'] as readonly string[]).includes(envelope.operation)) {
+        if ((gatewayManagementCommandTypes as readonly string[]).includes(envelope.operation)) {
           validateGatewayManagementCommand({ type: envelope.operation as GatewayManagementCommand['type'], payload: envelope.payload });
         } else validateGatewayWorkflowCommand({ type: envelope.operation as GatewayWorkflowCommand['type'], payload: envelope.payload });
       }
@@ -528,8 +629,8 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     },
     validateQuery(envelope, descriptor) {
       if (descriptor.domain === 'management') {
-        if (envelope.operation === 'agent.receipts.get_status') {
-          validateGatewayManagementQuery({ type: envelope.operation, payload: envelope.payload });
+        if ((gatewayManagementQueryTypes as readonly string[]).includes(envelope.operation)) {
+          validateGatewayManagementQuery({ type: envelope.operation as import('../../shared/agent/v1/gatewayContracts').GatewayManagementQuery['type'], payload: envelope.payload });
         } else validateGatewayWorkflowQuery({ type: envelope.operation as GatewayWorkflowQuery['type'], payload: envelope.payload });
       }
       else validateBusinessQuery(envelope);
@@ -566,6 +667,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
           return { changed: true, value };
         }
       });
+      if (envelope.operation === 'jobs.create' || envelope.operation === 'agent.approvals.approve' || envelope.operation === 'agent.changesets.apply') jobExecutor.kick();
       return result.value;
     },
     dispatchQuery(envelope, context) {
@@ -731,6 +833,9 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
               ...(found.outcome ? { terminal: 'changed' in found.outcome ? { kind: 'command-result', result: found.outcome } : { kind: 'serialized-agent-error', error: found.outcome } } : {}) });
             break;
           }
+          case 'jobs.get': value = await jobs.get(query.payload.jobId, principal); break;
+          case 'jobs.list': value = await jobs.list(query.payload, principal); break;
+          case 'jobs.result': value = await jobs.result(query.payload.jobId, principal); break;
         }
         return immutableQuery(value ?? null, options.coordinator.currentVersion());
       }
@@ -764,6 +869,47 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     randomUUID: uuid
   });
 
+  const journalEvidence = async (requestId: string): Promise<VerifiedJobJournalEvidence | undefined> => {
+    const matches: VerifiedJobJournalEvidence[] = [];
+    for (const store of options.operationJournalStores ?? []) {
+      const scan = await store.scan();
+      if (scan.issues.length) throw new AgentError('RECOVERY_FENCE');
+      for (const manifest of scan.manifests) {
+        if (manifest.requestId !== requestId) continue;
+        if (!['completed', 'compensated', 'needs_recovery'].includes(manifest.state)) throw new AgentError('RECOVERY_FENCE');
+        matches.push(Object.freeze({ operationId: manifest.operationId, requestId: manifest.requestId, state: manifest.state as VerifiedJobJournalEvidence['state'] }));
+      }
+    }
+    if (matches.length > 1 && new Set(matches.map((match) => match.operationId)).size > 1) throw new AgentError('RECOVERY_FENCE');
+    return matches[0];
+  };
+  const recovery = new JobRecovery({
+    store: jobs,
+    selectedCandidateEvidence: true,
+    auditVerified: true,
+    receipt: (candidate) => idempotency.get(candidate.job.ownerClientId, candidate.job.gatewayRequestId),
+    journal: (candidate) => journalEvidence(candidate.job.gatewayRequestId)
+  });
+  await recovery.recover();
+  await jobs.purgeExpired();
+  options.onRecoveryStage?.('jobs_reconciled');
+  const jobExecutor = new JobExecutor({
+    store: jobs,
+    gateway,
+    resolvePrincipal: async (lease) => {
+      const principal = createDurableJobPrincipal(lease.principalClaims);
+      durableJobPrincipals.add(principal as object);
+      return principal;
+    },
+    resolveEvidence: async (lease) => {
+      const receipt = await idempotency.get(lease.job.ownerClientId, lease.job.gatewayRequestId);
+      const journal = await journalEvidence(lease.job.gatewayRequestId);
+      return Object.freeze({ ...(receipt ? { receiptId: receipt.receipt.receiptId } : {}), ...(journal ? { operationJournalId: journal.operationId } : {}) });
+    },
+    onError: options.jobExecutorOnError
+  });
+  if (await jobs.hasQueued()) jobExecutor.start();
+
   const stdioAuthenticator = new StdioPublicKeyAuthenticator({
     registry,
     authenticatePrincipal: createRegistryPrincipalAuthenticator(registry),
@@ -771,5 +917,5 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     now: () => new Date(now()),
     randomUUID: uuid
   });
-  return Object.freeze({ gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled });
+  return Object.freeze({ gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, jobs, jobExecutor, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled });
 }

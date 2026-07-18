@@ -571,6 +571,7 @@ export class ClientRegistry {
         scopes: Object.freeze(scopes),
         trust: row.trust as TrustProfile,
         credentialBinding: credentialFingerprint,
+        sessionId: String(row.session_id),
         authenticatedAt: timestamp,
         renderer: false
       }) };

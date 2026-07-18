@@ -154,7 +154,7 @@ export interface McpCapabilitySummary {
   readonly schemaVersion: typeof import('./versions').mcpSchemaVersion;
   readonly protocolVersions: readonly McpProtocolVersion[];
   readonly currentProtocolVersion: McpProtocolVersion;
-  readonly tasks: false;
+  readonly tasks: boolean;
   readonly tools: number;
   readonly resources: number;
   readonly resourceTemplates: number;

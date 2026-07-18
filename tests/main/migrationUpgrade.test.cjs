@@ -183,7 +183,7 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
   for (const tableName of [
     'agent_control_settings', 'agent_clients', 'agent_client_scopes', 'agent_sessions',
     'agent_idempotency', 'agent_r4_grants', 'agent_approvals', 'agent_changesets',
-    'agent_changeset_operations', 'agent_audit_segments', 'agent_audit_events'
+    'agent_changeset_operations', 'agent_audit_segments', 'agent_audit_events', 'agent_jobs'
   ]) {
     assert.equal(tableExists(db, tableName), true, `${tableName} should be added to an upgraded database`);
   }
@@ -192,6 +192,7 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
   assert.equal(indexExists(db, 'idx_agent_r4_grants_reserve_lookup'), true);
   assert.equal(indexExists(db, 'idx_agent_r4_grants_unique_authority'), true);
   assert.equal(indexExists(db, 'idx_agent_audit_events_receipt'), true);
+  assert.equal(indexExists(db, 'idx_agent_jobs_fifo'), true);
   for (const column of ['r4_target_hash', 'r4_recovery', 'r4_max_affected_entities', 'r4_reservation_expires_at']) {
     assert.equal(tableColumns(db, 'agent_idempotency').includes(column), true, `agent_idempotency.${column} should be added to an upgraded database`);
   }

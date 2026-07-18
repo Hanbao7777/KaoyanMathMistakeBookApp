@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS agent_client_scopes (
     'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
     'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
     'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.write', 'operations.batch', 'tasks.read',
-    'tasks.write', 'tasks.execute', 'focus.read', 'focus.control', 'files.images.read'
+    'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
+    'focus.read', 'focus.control', 'files.images.read'
   )),
   catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
   created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
@@ -317,6 +318,65 @@ CREATE TABLE IF NOT EXISTS agent_audit_events (
   FOREIGN KEY (segment_id) REFERENCES agent_audit_segments(segment_id) ON DELETE RESTRICT
 );
 
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  job_id TEXT PRIMARY KEY CHECK (length(job_id) = 36),
+  owner_client_id TEXT NOT NULL CHECK (length(trim(owner_client_id)) BETWEEN 1 AND 200),
+  creating_session_id TEXT NOT NULL CHECK (length(creating_session_id) = 36),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('command', 'query')),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  input_json TEXT NOT NULL CHECK (json_valid(input_json) AND json_type(input_json) = 'object'),
+  input_hash TEXT NOT NULL CHECK (substr(input_hash, 1, 10) = 'sha256-v1:' AND length(input_hash) = 74 AND substr(input_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  expected_data_epoch TEXT,
+  expected_data_revision INTEGER CHECK (expected_data_revision IS NULL OR (typeof(expected_data_revision) = 'integer' AND expected_data_revision BETWEEN 0 AND 9007199254740991)),
+  workflow_kind TEXT CHECK (workflow_kind IS NULL OR workflow_kind IN ('approval', 'changeset', 'r4-grant')),
+  workflow_id TEXT CHECK (workflow_id IS NULL OR length(workflow_id) = 36),
+  gateway_request_id TEXT NOT NULL UNIQUE CHECK (length(gateway_request_id) = 36),
+  receipt_id TEXT CHECK (receipt_id IS NULL OR length(receipt_id) = 36),
+  operation_journal_id TEXT CHECK (operation_journal_id IS NULL OR length(trim(operation_journal_id)) BETWEEN 1 AND 200),
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled', 'interrupted')),
+  progress INTEGER NOT NULL DEFAULT 0 CHECK (typeof(progress) = 'integer' AND progress BETWEEN 0 AND 100),
+  result_ref TEXT CHECK (result_ref IS NULL OR (length(result_ref) BETWEEN 1 AND 200 AND instr(result_ref, '/') = 0 AND instr(result_ref, char(92)) = 0)),
+  result_hash TEXT CHECK (result_hash IS NULL OR (substr(result_hash, 1, 10) = 'sha256-v1:' AND length(result_hash) = 74 AND substr(result_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  result_size INTEGER CHECK (result_size IS NULL OR (typeof(result_size) = 'integer' AND result_size BETWEEN 0 AND 1048576)),
+  error_code TEXT CHECK (error_code IS NULL OR length(trim(error_code)) BETWEEN 1 AND 100),
+  error_message TEXT CHECK (error_message IS NULL OR length(error_message) BETWEEN 1 AND 500),
+  cancellation_requested_at TEXT CHECK (cancellation_requested_at IS NULL OR (length(cancellation_requested_at) = 24 AND substr(cancellation_requested_at, 24, 1) = 'Z')),
+  lease_token TEXT UNIQUE CHECK (lease_token IS NULL OR length(lease_token) = 36),
+  lease_expires_at TEXT CHECK (lease_expires_at IS NULL OR (length(lease_expires_at) = 24 AND substr(lease_expires_at, 24, 1) = 'Z')),
+  attempt INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempt) = 'integer' AND attempt BETWEEN 0 AND 100),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z'),
+  started_at TEXT CHECK (started_at IS NULL OR (length(started_at) = 24 AND substr(started_at, 24, 1) = 'Z')),
+  terminal_at TEXT CHECK (terminal_at IS NULL OR (length(terminal_at) = 24 AND substr(terminal_at, 24, 1) = 'Z')),
+  retention_class TEXT NOT NULL CHECK (retention_class IN ('ordinary_7d', 'protected_30d')),
+  retain_until TEXT NOT NULL CHECK (length(retain_until) = 24 AND substr(retain_until, 24, 1) = 'Z' AND retain_until > created_at),
+  CHECK ((expected_data_epoch IS NULL) = (expected_data_revision IS NULL)),
+  CHECK ((workflow_kind IS NULL) = (workflow_id IS NULL)),
+  CHECK ((result_ref IS NULL) = (result_hash IS NULL) AND (result_ref IS NULL) = (result_size IS NULL)),
+  CHECK ((lease_token IS NULL) = (lease_expires_at IS NULL)),
+  CHECK ((status = 'running') = (lease_token IS NOT NULL)),
+  CHECK ((status IN ('completed', 'failed', 'cancelled', 'interrupted')) = (terminal_at IS NOT NULL)),
+  CHECK (status <> 'completed' OR result_ref IS NOT NULL),
+  CHECK (status <> 'waiting_approval' OR workflow_id IS NOT NULL),
+  FOREIGN KEY (creating_session_id) REFERENCES agent_sessions(session_id) ON DELETE RESTRICT
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_jobs_terminal_immutable_update
+BEFORE UPDATE ON agent_jobs
+WHEN OLD.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+BEGIN
+  SELECT RAISE(ABORT, 'terminal agent_jobs rows are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_jobs_nonterminal_delete_forbidden
+BEFORE DELETE ON agent_jobs
+WHEN OLD.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+BEGIN
+  SELECT RAISE(ABORT, 'nonterminal agent_jobs rows cannot be deleted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS agent_changeset_operations_immutable_update
 BEFORE UPDATE ON agent_changeset_operations
 BEGIN
@@ -342,6 +402,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_audit_segments_open ON agent_audit_s
 CREATE INDEX IF NOT EXISTS idx_agent_audit_events_search ON agent_audit_events(occurred_at, client_id, risk, operation);
 CREATE INDEX IF NOT EXISTS idx_agent_audit_events_receipt ON agent_audit_events(receipt_client_id, receipt_request_id);
 CREATE INDEX IF NOT EXISTS idx_agent_audit_events_retention ON agent_audit_events(retain_until, segment_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_fifo ON agent_jobs(status, created_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_owner_session ON agent_jobs(owner_client_id, creating_session_id, created_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_receipt ON agent_jobs(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_journal ON agent_jobs(operation_journal_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_retention ON agent_jobs(retain_until, status);
 `;
 
 export const schemaSql = `

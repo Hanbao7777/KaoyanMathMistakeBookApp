@@ -19,6 +19,11 @@ function issuePrincipal(claims: AgentPrincipalClaims): AgentPrincipal {
   return principal;
 }
 
+export function createDurableJobPrincipal(claims: AgentPrincipalClaims): AgentPrincipal {
+  if (claims.renderer || !claims.sessionId) throw new AgentError('POLICY_DENIED');
+  return issuePrincipal(claims);
+}
+
 export function assertIssuedAgentPrincipal(principal: AgentPrincipal): void {
   if (!principal || typeof principal !== 'object' || !issuedPrincipals.has(principal as object) || !Object.isFrozen(principal)) {
     throw new AgentError('POLICY_DENIED');
@@ -81,6 +86,7 @@ const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write',
   'r4.manage', 'r4.read',
   'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
+  'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
   'sessions.manage', 'sessions.read', 'system.read'
 ]);
 

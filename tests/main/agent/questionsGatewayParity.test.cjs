@@ -41,6 +41,7 @@ async function externalRuntime(application = undefined) {
     appInstanceId,
     credentialVerifier: verifier,
     cursorSecret: crypto.randomBytes(32),
+    jobResultRoot: environment.resultRoot,
     randomUUID: crypto.randomUUID,
     resolveState: (envelope, descriptor) => questions.gateway.resolveState(envelope, descriptor),
     executeBusinessCommand: (command, context, dispatch) => questions.gateway.execute(command, context, dispatch)

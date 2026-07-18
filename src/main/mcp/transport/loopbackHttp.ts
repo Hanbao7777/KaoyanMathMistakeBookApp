@@ -16,6 +16,7 @@ export interface AuthenticatedLoopbackRequest {
   readonly principal: AgentPrincipal;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly request: Readonly<Record<string, unknown>>;
+  readonly tasksNegotiated: boolean;
 }
 
 export interface LoopbackHttpResponse {
@@ -41,7 +42,7 @@ export interface LoopbackHttpOptions {
   readonly allowedOrigins?: readonly string[];
   readonly maxRequestBytes?: number;
   readonly now?: () => Date;
-  readonly initializeResult?: Readonly<Record<string, unknown>>;
+  readonly initializeResult?: Readonly<Record<string, unknown>> | ((protocolVersion: string) => Readonly<Record<string, unknown>>);
 }
 
 export interface LoopbackMcpRequestHandler extends http.RequestListener {
@@ -94,11 +95,16 @@ function isJsonRpcObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function isInitialize(value: unknown): value is { jsonrpc: '2.0'; id: string | number; method: 'initialize'; params: { protocolVersion: string } } {
+function isInitialize(value: unknown): value is { jsonrpc: '2.0'; id: string | number; method: 'initialize'; params: { protocolVersion: string; capabilities?: Record<string, unknown> } } {
   if (!isJsonRpcObject(value)) return false;
   const params = value.params;
   return value.jsonrpc === '2.0' && isRequestId(value.id) && value.method === 'initialize' &&
     isJsonRpcObject(params) && typeof params.protocolVersion === 'string' && params.protocolVersion.length <= 64;
+}
+
+function negotiatesTasks(params: { protocolVersion: string; capabilities?: Record<string, unknown> }): boolean {
+  if (params.protocolVersion !== '2025-11-25' || !isJsonRpcObject(params.capabilities)) return false;
+  return isJsonRpcObject(params.capabilities.tasks);
 }
 
 function isJsonRpcMessage(value: unknown): value is Record<string, unknown> {
@@ -137,7 +143,7 @@ function isInitializeWithoutSession(request: IncomingMessage): boolean {
 export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): LoopbackMcpRequestHandler {
   const maximum = options.maxRequestBytes ?? MAX_BODY_BYTES;
   if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > MAX_BODY_BYTES) throw new Error('Loopback request limit is invalid');
-  const sessions = new Map<string, { readonly admission: McpSessionAdmission; initialized: boolean }>();
+  const sessions = new Map<string, { readonly admission: McpSessionAdmission; initialized: boolean; readonly tasksNegotiated: boolean }>();
   const now = options.now ?? (() => new Date());
 
   const invalidateSessions = () => { sessions.clear(); };
@@ -216,10 +222,10 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
         admission = null;
       }
       if (!admission || admission.protocolVersion !== requested || !isUuid(admission.sessionId) || !canonicalExpiry(admission.expiresAt, now())) { respond(response, 401); return; }
-      sessions.set(admission.sessionId, { admission: Object.freeze({ ...admission }), initialized: false });
+      sessions.set(admission.sessionId, { admission: Object.freeze({ ...admission }), initialized: false, tasksNegotiated: negotiatesTasks(payload.params) });
       response.setHeader('mcp-session-id', admission.sessionId);
       response.setHeader('mcp-protocol-version', requested);
-      const initializeResult = options.initializeResult ?? { capabilities: {}, serverInfo: { name: 'kaoyan-mcp-loopback', version: '1' }, instructions: 'Use the authenticated App-owned MCP session for every request.' };
+      const initializeResult = typeof options.initializeResult === 'function' ? options.initializeResult(requested) : options.initializeResult ?? { capabilities: {}, serverInfo: { name: 'kaoyan-mcp-loopback', version: '1' }, instructions: 'Use the authenticated App-owned MCP session for every request.' };
       respond(response, 200, { jsonrpc: '2.0', id: payload.id, result: { protocolVersion: requested, ...initializeResult } });
       return;
     }
@@ -248,7 +254,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       return;
     }
     try {
-      const result = await options.onAuthenticatedRequest(Object.freeze({ session: session.admission, principal: session.principal, headers: requestHeaders(request), request: Object.freeze({ ...payload }) }));
+      const result = await options.onAuthenticatedRequest(Object.freeze({ session: session.admission, principal: session.principal, tasksNegotiated: localSession.tasksNegotiated, headers: requestHeaders(request), request: Object.freeze({ ...payload }) }));
       if (!result) { respond(response, 501, errorBody(payload.id, -32601, 'MCP capability is not available')); return; }
       respond(response, result.status ?? 200, result.body, result.headers);
     } catch {

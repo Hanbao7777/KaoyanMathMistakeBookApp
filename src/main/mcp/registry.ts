@@ -8,6 +8,7 @@ import type { McpCapabilitySummary, McpRegistryDescriptor, McpRuntimeValidator }
 import { mcpServerInstructionsValue, mcpV1Prompts } from '../../shared/mcp/v1/prompts';
 import { validateMcpRegistryDescriptor, validateMcpServerInstructions, validateMcpStructuredOutcome, validateMcpToolArgumentEnvelope } from '../../shared/mcp/v1/schemas';
 import { resolveMcpResultMapper } from './resultMapping';
+import { validateJobCancelInput, validateJobCreateInput, validateJobGetInput, validateJobListInput, validateJobResultInput } from '../../shared/agent/v1/jobs';
 
 const descriptions: Readonly<Record<string, string>> = Object.freeze({
   'questions.create': 'Create one bounded mathematics question.', 'questions.update': 'Update one mathematics question with revision checks.',
@@ -21,7 +22,11 @@ const descriptions: Readonly<Record<string, string>> = Object.freeze({
   'focus.sessions.create': 'Create one bounded focus session.', 'focus.sessions.list': 'List authorized focus sessions with bounded pagination.',
   'capabilities.summary': 'Read the safe capability summary without stored content.', 'questions.view': 'Read one addressable question resource.',
   'tasks.view': 'Read one addressable task resource.', 'review.daily.zh_en': 'Use the bilingual daily review workflow.',
-  'review.weekly.zh_en': 'Use the bilingual weekly review workflow.'
+  'review.weekly.zh_en': 'Use the bilingual weekly review workflow.',
+  'jobs.create': 'Create one durable bounded Gateway job.', 'jobs.get': 'Read one owner-bound durable job.',
+  'jobs.list': 'List owner-bound durable jobs with bounded pagination.', 'jobs.cancel': 'Request cancellation at a declared safe checkpoint.',
+  'jobs.result': 'Read one hash-verified durable job result.', 'jobs.view': 'Read one owner-bound durable job resource.',
+  'jobs.result.view': 'Read one verified durable job result resource.'
 });
 
 function schema(id: string, direction: 'input' | 'output') {
@@ -30,6 +35,11 @@ function schema(id: string, direction: 'input' | 'output') {
 
 function payloadValidator(operation: OperationName): McpRuntimeValidator {
   return (payload: unknown): void => {
+    if (operation === 'jobs.create') { validateJobCreateInput(payload); return; }
+    if (operation === 'jobs.cancel') { validateJobCancelInput(payload); return; }
+    if (operation === 'jobs.get') { validateJobGetInput(payload); return; }
+    if (operation === 'jobs.list') { validateJobListInput(payload); return; }
+    if (operation === 'jobs.result') { validateJobResultInput(payload); return; }
     const request = { type: operation, payload };
     if (operation.startsWith('questions.')) {
       if (resolveOperationDescriptor(operation).kind === 'command') validateQuestionCommand(request);
@@ -71,6 +81,10 @@ function gatewayEntry(name: string, operation: OperationName, primitive: McpRegi
 
 export const mcpV1BusinessRegistry: readonly McpRegistryDescriptor[] = Object.freeze(mcpExternalBusinessOperations.map((operation) => gatewayEntry(operation, operation, 'tool')));
 
+export const mcpV1JobRegistry: readonly McpRegistryDescriptor[] = Object.freeze(([
+  'jobs.create', 'jobs.get', 'jobs.list', 'jobs.cancel', 'jobs.result'
+] as const).map((operation) => Object.freeze({ ...gatewayEntry(operation, operation, 'tool'), exposure: 'support' as const })));
+
 export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.freeze([
   Object.freeze({
     name: 'capabilities.summary', operation: 'mcp.capabilities.summary' as const, catalog: operationCatalogIdentity, exposure: 'support' as const, primitive: 'resource' as const,
@@ -84,19 +98,21 @@ export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.fre
   Object.freeze({ ...gatewayEntry('reviews.today', 'questions.review_buckets', 'resource'), exposure: 'support' as const, name: 'reviews.today', uri: 'kaoyan://reviews/today' }),
   Object.freeze({ ...gatewayEntry('tasks.today', 'tasks.list', 'resource'), exposure: 'support' as const, name: 'tasks.today', uri: 'kaoyan://tasks/today' }),
   Object.freeze({ ...gatewayEntry('review.daily.zh_en', 'questions.review_buckets', 'prompt'), exposure: 'support' as const, name: 'review.daily.zh_en', promptArguments: Object.freeze(['focus']) }),
-  Object.freeze({ ...gatewayEntry('review.weekly.zh_en', 'tasks.list', 'prompt'), exposure: 'support' as const, name: 'review.weekly.zh_en', promptArguments: Object.freeze(['week']) })
+  Object.freeze({ ...gatewayEntry('review.weekly.zh_en', 'tasks.list', 'prompt'), exposure: 'support' as const, name: 'review.weekly.zh_en', promptArguments: Object.freeze(['week']) }),
+  Object.freeze({ ...gatewayEntry('jobs.view', 'jobs.get', 'resource-template'), exposure: 'support' as const, name: 'jobs.view', uriTemplate: 'kaoyan://jobs/{jobId}' }),
+  Object.freeze({ ...gatewayEntry('jobs.result.view', 'jobs.result', 'resource-template'), exposure: 'support' as const, name: 'jobs.result.view', uriTemplate: 'kaoyan://jobs/{jobId}/result' })
 ]);
 
-export const mcpV1Registry: readonly McpRegistryDescriptor[] = Object.freeze([...mcpV1BusinessRegistry, ...mcpV1SupportRegistry]);
+export const mcpV1Registry: readonly McpRegistryDescriptor[] = Object.freeze([...mcpV1BusinessRegistry, ...mcpV1JobRegistry, ...mcpV1SupportRegistry]);
 export const mcpV1RegistryByName: Readonly<Record<string, McpRegistryDescriptor>> = Object.freeze(Object.fromEntries(mcpV1Registry.map((descriptor) => [descriptor.name, descriptor])));
 
 export function createMcpCapabilitySummary(principal: AgentPrincipal): McpCapabilitySummary {
   const visible = mcpV1Registry.filter((descriptor) => descriptor.visibility === 'public' || descriptor.requiredScopes.every((scope) => principal.scopes.includes(scope)));
-  return Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, tools: visible.filter(({ primitive }) => primitive === 'tool').length, resources: visible.filter(({ primitive }) => primitive === 'resource').length, resourceTemplates: visible.filter(({ primitive }) => primitive === 'resource-template').length, prompts: visible.filter(({ primitive }) => primitive === 'prompt').length });
+  return Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: visible.filter(({ primitive }) => primitive === 'tool').length, resources: visible.filter(({ primitive }) => primitive === 'resource').length, resourceTemplates: visible.filter(({ primitive }) => primitive === 'resource-template').length, prompts: visible.filter(({ primitive }) => primitive === 'prompt').length });
 }
 
-export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, tools: mcpV1BusinessRegistry.length, resources: 3, resourceTemplates: 2, prompts: 2 });
-export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersion, capabilityVersion: mcpCapabilityVersion, schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, instructions: mcpServerInstructionsValue, exposureManifestVersion: mcpExternalExposureManifest.version });
+export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: mcpV1BusinessRegistry.length + mcpV1JobRegistry.length, resources: 3, resourceTemplates: 4, prompts: 2 });
+export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersion, capabilityVersion: mcpCapabilityVersion, schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, instructions: mcpServerInstructionsValue, exposureManifestVersion: mcpExternalExposureManifest.version });
 
 function assertRegistry(): void {
   assertMcpExternalExposureManifest(mcpExternalExposureManifest); validateMcpServerInstructions(mcpServerInstructionsValue);

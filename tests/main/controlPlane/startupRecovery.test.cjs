@@ -12,6 +12,10 @@ const bootstrap = environment.requireMain('persistence/databaseBootstrap.js');
 const candidates = environment.requireMain('persistence/databaseCandidate.js');
 const epochTransitions = environment.requireMain('persistence/epochTransitionStore.js');
 const operationJournal = environment.requireMain('persistence/operationJournal/index.js');
+const agent = require(path.join(environment.projectRoot, 'dist/main/shared/agent/index.js'));
+const gatewaySchemas = require(path.join(environment.projectRoot, 'dist/main/shared/agent/v1/gatewaySchemas.js'));
+
+const c7Catalog = Object.freeze({ version: 'agent-catalog-v1@1', hash: 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2' });
 
 let SQL;
 let nonce = 0;
@@ -60,6 +64,21 @@ function createDatabaseBytes(epoch, revision = 0, legacy = false) {
   return bytes;
 }
 
+function createCatalogDatabaseBytes(catalog) {
+  const database = new SQL.Database(createDatabaseBytes('catalog-migration-epoch'));
+  const policy = [{ apiVersion: 1, operation: 'questions.review_buckets', catalog, enabled: true }];
+  const policyJson = gatewaySchemas.canonicalizeJson(policy);
+  database.run(`INSERT INTO agent_control_settings (
+    id, external_control_enabled, catalog_version, catalog_hash, policy_version, policy_json, policy_hash,
+    privacy_revision, created_at, updated_at
+  ) VALUES (1, 0, ?, ?, 'agent-policy-v1@1', ?, ?, 1, '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`, [
+    catalog.version, catalog.hash, policyJson, gatewaySchemas.hashCanonicalJson(policy)
+  ]);
+  const bytes = database.export();
+  database.close();
+  return bytes;
+}
+
 function readDiskVersion() {
   const database = new SQL.Database(fs.readFileSync(currentPaths().database));
   try {
@@ -103,6 +122,7 @@ test('starts an existing versioned database in recovery-first order', async () =
     'operation_journal_recovered',
     'audit_ledger_verified',
     'agent_receipts_reconciled',
+    'agent_jobs_reconciled',
     'agent_gateway_ready',
     'ready'
   ]);
@@ -121,10 +141,30 @@ test('fresh database composes the recovered Gateway before publishing ready', as
     'operation_journal_recovered',
     'audit_ledger_verified',
     'agent_receipts_reconciled',
+    'agent_jobs_reconciled',
     'agent_gateway_ready',
     'ready'
   ]);
   assert.ok(await databaseService.getAgentControlPlane());
+});
+
+test('C8 migrates only the exact v1@1 catalog predecessor and revalidates policy', async () => {
+  fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(c7Catalog));
+  await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
+  const database = await databaseService.getDatabase();
+  const row = database.exec('SELECT catalog_version, catalog_hash, policy_json, policy_hash FROM agent_control_settings WHERE id = 1')[0].values[0];
+  assert.equal(row[0], agent.operationCatalogIdentity.version);
+  assert.equal(row[1], agent.operationCatalogIdentity.hash);
+  const policy = JSON.parse(row[2]);
+  assert.deepEqual(policy[0].catalog, agent.operationCatalogIdentity);
+  assert.equal(row[3], gatewaySchemas.hashCanonicalJson(policy));
+});
+
+test('C8 fences unknown, corrupt, and future catalog mismatches', async () => {
+  const unknown = { version: 'agent-catalog-v1@99', hash: `sha256-v1:${'f'.repeat(64)}` };
+  fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(unknown));
+  await assert.rejects(initializeWithTrace(), (error) => error?.code === 'RECOVERY_FENCE');
+  assert.equal((await databaseService.getDatabaseCoordinator()).state, 'needs_recovery');
 });
 
 test('Gateway composition failure fences the coordinator and never publishes ready', async () => {

@@ -77,6 +77,7 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
     'approvals.manage', 'approvals.read', 'audit.export', 'audit.read', 'changesets.manage', 'changesets.read',
     'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write', 'r4.manage', 'r4.read',
     'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
+    'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'sessions.manage', 'sessions.read', 'system.read'
   ]);
   assert.equal(first.scopes.includes('tasks.write'), true);

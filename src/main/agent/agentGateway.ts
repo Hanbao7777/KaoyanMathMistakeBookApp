@@ -57,6 +57,7 @@ export interface GatewayCommandPlan {
   readonly changeSetApply?: ChangeSetApplyBinding;
   readonly changeSetAlreadyApplied?: boolean;
   readonly localApprovedChangeSet?: true;
+  readonly workflowResume?: true;
 }
 
 export interface GatewayApprovalAuthority {
@@ -112,6 +113,7 @@ export interface AgentGatewayDependencies {
     readonly pageSize?: number;
     readonly r4Grant?: R4Grant;
     readonly localApprovedChangeSet?: true;
+    readonly workflowResume?: true;
   }): PolicyDecision;
   validateCommand(envelope: AgentCommandEnvelope, descriptor: OperationDescriptor): void;
   validateQuery(envelope: AgentQueryEnvelope, descriptor: OperationDescriptor): void;
@@ -287,6 +289,7 @@ async function executeGateway(
       state: plan.state,
       settings: authorization.settings,
       ...(plan.localApprovedChangeSet ? { localApprovedChangeSet: true as const } : {}),
+      ...(plan.workflowResume ? { workflowResume: true as const } : {}),
       ...(r4Grant ? { r4Grant } : {})
     });
   } catch (error) {

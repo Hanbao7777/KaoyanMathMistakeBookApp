@@ -271,6 +271,7 @@ export function validateMcpCapabilitySummary(value: unknown, path = 'summary'): 
   if (result.schemaVersion !== mcpSchemaVersion) fail(`${path}.schemaVersion`);
   if (!Array.isArray(result.protocolVersions) || result.protocolVersions.length !== mcpProtocolVersions.length || new Set(result.protocolVersions).size !== mcpProtocolVersions.length || result.protocolVersions.some((entry) => !mcpProtocolVersions.includes(entry as never)) || result.protocolVersions.some((entry, index) => entry !== mcpProtocolVersions[index])) fail(`${path}.protocolVersions`);
   oneOf(result.currentProtocolVersion, mcpProtocolVersions, `${path}.currentProtocolVersion`);
-  if (result.currentProtocolVersion !== mcpCurrentProtocolVersion || result.tasks !== false) fail(path);
+  if (result.currentProtocolVersion !== mcpCurrentProtocolVersion) fail(path);
+  boolean(result.tasks, `${path}.tasks`);
   for (const key of ['tools', 'resources', 'resourceTemplates', 'prompts']) if (!Number.isSafeInteger(result[key]) || (result[key] as number) < 0) fail(`${path}.${key}`);
 }

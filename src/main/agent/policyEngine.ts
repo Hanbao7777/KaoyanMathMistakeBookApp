@@ -63,6 +63,7 @@ export interface PolicyEvaluation {
   readonly pageSize?: number;
   readonly r4Grant?: R4Grant;
   readonly localApprovedChangeSet?: true;
+  readonly workflowResume?: true;
 }
 
 function deny(risk: RiskLevel, descriptor: OperationDescriptor, policyVersion: string, reasonCode: string): PolicyDecision {
@@ -127,6 +128,8 @@ export class PolicyEngine {
     const migratedRendererBusiness = principal.renderer && isMigratedRendererBusinessOperation(descriptor.name);
     const localManagementAction = principal.renderer && descriptor.rendererManagement;
     const localApprovedChangeSet = principal.renderer && evaluation.localApprovedChangeSet === true;
+    const workflowResume = evaluation.workflowResume === true;
+    if (workflowResume && descriptor.name !== 'agent.changesets.apply') throw new AgentError('POLICY_INVARIANT_VIOLATION');
     if (!principal.renderer && descriptor.domain !== 'management' && !isMcpExternalBusinessOperation(descriptor.name)) {
       return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
     }
@@ -191,7 +194,7 @@ export class PolicyEngine {
         ) throw new AgentError('R4_GRANT_INVALID');
         disposition = 'execute'; reasonCode = 'R4_GRANT_BOUND';
       }
-    } else if (!localManagementAction && !localApprovedChangeSet && (descriptor.policyBounds.requiresChangeSet || override?.requireChangeSet)) {
+    } else if (!localManagementAction && !localApprovedChangeSet && !workflowResume && (descriptor.policyBounds.requiresChangeSet || override?.requireChangeSet)) {
       disposition = 'requires_changeset'; reasonCode = 'CHANGESET_REQUIRED';
     } else if (!localManagementAction && !localApprovedChangeSet && (descriptor.policyBounds.approval === 'always' || override?.requireApproval)) {
       disposition = 'requires_approval'; reasonCode = 'APPROVAL_REQUIRED';

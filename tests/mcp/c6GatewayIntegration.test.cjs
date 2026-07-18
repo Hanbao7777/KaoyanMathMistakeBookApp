@@ -54,6 +54,7 @@ async function compose(options = {}) {
     appInstanceId,
     credentialVerifier: verifier,
     cursorSecret: 'c6'.repeat(16),
+    jobResultRoot: environment.resultRoot,
     now: () => now,
     randomUUID: uuid,
     resolveState: (envelope, descriptor) => descriptor.domain === 'questions'

@@ -5,7 +5,7 @@ export const mcpCurrentProtocolVersion: McpProtocolVersion = '2025-11-25';
 export const mcpServerVersion = 'kaoyan-mcp-server-v1@1' as const;
 export const mcpCapabilityVersion = 'kaoyan-mcp-capabilities-v1@1' as const;
 export const mcpSchemaVersion = 'kaoyan-mcp-schema-v1@1' as const;
-export const mcpTasksEnabled = false as const;
+export const mcpTasksEnabled = true as const;
 
 export const mcpMeasuredClientCompatibility = Object.freeze([
   Object.freeze({ client: 'codex-cli', version: '0.144.3', protocol: '2025-06-18' as const, tasks: false as const }),

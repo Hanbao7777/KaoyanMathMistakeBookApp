@@ -33,6 +33,10 @@ export const agentScopes = [
   'tasks.read',
   'tasks.write',
   'tasks.execute',
+  'jobs.read',
+  'jobs.execute',
+  'jobs.cancel',
+  'jobs.admin',
   'focus.read',
   'focus.control',
   'files.images.read'
@@ -58,6 +62,7 @@ export interface AgentPrincipalClaims {
   readonly scopes: readonly AgentScope[];
   readonly trust: TrustProfile;
   readonly credentialBinding: string;
+  readonly sessionId?: string;
   readonly authenticatedAt: string;
   readonly renderer: boolean;
 }
@@ -453,11 +458,16 @@ export const gatewayWorkflowQueryTypes = [
 
 export const gatewayManagementCommandTypes = [
   'agent.clients.register_key',
-  'agent.clients.rotate_key'
+  'agent.clients.rotate_key',
+  'jobs.create',
+  'jobs.cancel'
 ] as const;
 
 export const gatewayManagementQueryTypes = [
-  'agent.receipts.get_status'
+  'agent.receipts.get_status',
+  'jobs.get',
+  'jobs.list',
+  'jobs.result'
 ] as const;
 
 export const gatewayBusinessCommandTypes = [
@@ -552,14 +562,23 @@ export interface GatewayRotateKeyCommand {
   readonly payload: PublicKeyBindingInput;
 }
 
-export type GatewayManagementCommand = GatewayRegisterKeyCommand | GatewayRotateKeyCommand;
+export type GatewayJobCommand =
+  | { readonly type: 'jobs.create'; readonly payload: import('./jobs').JobCreateInput }
+  | { readonly type: 'jobs.cancel'; readonly payload: import('./jobs').JobCancelInput };
+
+export type GatewayManagementCommand = GatewayRegisterKeyCommand | GatewayRotateKeyCommand | GatewayJobCommand;
 
 export interface GatewayReceiptStatusQuery {
   readonly type: 'agent.receipts.get_status';
   readonly payload: { readonly clientId: string; readonly requestId: string };
 }
 
-export type GatewayManagementQuery = GatewayReceiptStatusQuery;
+export type GatewayJobQuery =
+  | { readonly type: 'jobs.get'; readonly payload: import('./jobs').JobGetInput }
+  | { readonly type: 'jobs.list'; readonly payload: import('./jobs').JobListInput }
+  | { readonly type: 'jobs.result'; readonly payload: import('./jobs').JobResultInput };
+
+export type GatewayManagementQuery = GatewayReceiptStatusQuery | GatewayJobQuery;
 
 export interface SafeClientKeyBindingResult {
   readonly apiVersion: AgentApiVersion;

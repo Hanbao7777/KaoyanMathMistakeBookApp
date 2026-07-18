@@ -43,7 +43,7 @@ function grant(overrides = {}) {
 
 test('exports an immutable, exhaustive, versioned catalog', () => {
   assert.doesNotThrow(() => agent.validateOperationCatalog(agent.operationCatalog));
-  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@1');
+  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@2');
   assert.deepEqual(
     agent.operationCatalog.operations.map((descriptor) => descriptor.name),
     [...agent.operationNames].sort()
@@ -122,7 +122,7 @@ test('command and query boundaries reject unknown fields and caller authority ma
 test('principal, grants, receipts, and policy overrides keep authority bounded', () => {
   const principal = {
     apiVersion: 1, kind: 'agent-principal', clientId: 'trusted-client', subjectId: 'subject-1', displayName: 'Trusted client',
-    scopes: ['questions.read'], trust: 'full_control', credentialBinding: 'binding-1', authenticatedAt: timestamp, renderer: false
+    scopes: ['questions.read'], trust: 'full_control', credentialBinding: 'binding-1', sessionId: requestId, authenticatedAt: timestamp, renderer: false
   };
   assert.doesNotThrow(() => agent.validateAgentPrincipalClaims(principal));
   assert.equal(Object.getOwnPropertySymbols(principal).length, 0);
