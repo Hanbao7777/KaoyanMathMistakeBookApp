@@ -153,7 +153,10 @@ async function createChangeSet(current, clientId) {
   return { workflows, changeSet };
 }
 
-test.beforeEach(() => environment.resetControlPlaneEnvironment());
+test.beforeEach(() => {
+  adapterModule.configureExternalControlLifecycle(undefined);
+  return environment.resetControlPlaneEnvironment();
+});
 test.after(() => environment.cleanupControlPlaneRoot());
 
 test('built adapter drives the Gateway with fixed DTOs and immediate client/session enforcement', async () => {
@@ -179,6 +182,16 @@ test('built adapter drives the Gateway with fixed DTOs and immediate client/sess
 
   await current.api.revokeClient('b8-client');
   assert.equal((await externalQuery(current.plane, principal)).error.code, 'CLIENT_REVOKED');
+});
+
+test('external-control mutations drive the composed MCP host lifecycle after durability', async () => {
+  const current = await runtime();
+  const transitions = [];
+  adapterModule.configureExternalControlLifecycle(async (enabled) => { transitions.push(enabled); });
+  assert.equal((await current.api.setExternalControlEnabled(true)).enabled, true);
+  assert.equal((await current.api.setExternalControlEnabled(false)).enabled, false);
+  assert.deepEqual(transitions, [true, false]);
+  assert.equal((await current.api.getStatus()).settings.externalControlEnabled, false);
 });
 
 test('built adapter creates server-owned R4 grants and maps only safe audit DTOs', async () => {

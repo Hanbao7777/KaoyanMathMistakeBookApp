@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentGateway, AgentPrincipal, JsonObject } from '../../shared/agent/v1/gatewayContracts';
+import type { AgentGateway, AgentPrincipal, JsonObject, SafeReceiptStatusResult } from '../../shared/agent/v1/gatewayContracts';
 import { operationCatalogIdentity } from '../../shared/agent/v1/operationCatalog';
+import { validateSafeReceiptStatusResult } from '../../shared/agent/v1/gatewaySchemas';
 import { AgentError, serializeAgentError } from '../../shared/agent/errors';
 import { McpValidationError, validateMcpCapabilitySummary, validateMcpStructuredOutcome } from '../../shared/mcp/v1/schemas';
 import { mcpSchemaVersion, mcpServerVersion } from '../../shared/mcp/v1/versions';
 import type { McpJsonValue, McpRegistryDescriptor, McpStructuredOutcome } from '../../shared/mcp/v1/contracts';
 import { mcpServerInstructionsValue } from '../../shared/mcp/v1/prompts';
+import { mapGatewayTerminalToMcpOutcome } from '../../shared/mcp/v1/launcherContracts';
 import { mcpV1BusinessRegistry, mcpV1RegistryByName, createMcpCapabilitySummary } from './registry';
 import { visibleResources, visibleResourceTemplates } from './resources';
 import { getPromptMessages, visiblePrompts } from './prompts';
@@ -154,22 +156,43 @@ async function readResource(options: McpProtocolOptions, request: JsonRpcRequest
   }
 }
 
-async function receiptStatus(options: McpProtocolOptions, request: JsonRpcRequest, principal: AgentPrincipal): Promise<object> {
+async function receiptStatus(
+  options: McpProtocolOptions,
+  request: JsonRpcRequest,
+  principal: AgentPrincipal,
+  projectPublicOutcome: boolean
+): Promise<object> {
   try {
     const requestParams = params(request.params);
     const clientId = name(requestParams.clientId, 'params.clientId');
     const receiptRequestId = name(requestParams.requestId, 'params.requestId');
     const outcome = await options.gateway.query(Object.freeze({ apiVersion: 1 as const, kind: 'agent-query' as const,
       operation: 'agent.receipts.get_status' as const, payload: { clientId, requestId: receiptRequestId }, requestId: receiptRequestId, catalog: operationCatalogIdentity }), principal);
-    if (outcome.kind === 'completed') return rpcResult(request.id, outcome.result.value);
+    if (outcome.kind === 'completed') {
+      validateSafeReceiptStatusResult(outcome.result.value);
+      const receipt = outcome.result.value as SafeReceiptStatusResult;
+      if (!projectPublicOutcome) return rpcResult(request.id, receipt);
+      const publicOutcome = receipt.terminal
+        ? applyPrincipalDataPolicy(mapGatewayTerminalToMcpOutcome(receipt.receipt.operation, receiptRequestId, receipt.terminal), principal)
+        : undefined;
+      return rpcResult(request.id, Object.freeze({
+        kind: 'mcp-receipt-projection' as const,
+        receipt,
+        ...(publicOutcome ? { publicOutcome } : {})
+      }));
+    }
     return rpcError(request.id, -32004, 'Receipt outcome is unavailable', mapMcpGatewayResult({ operation: 'agent.receipts.get_status', requestId: receiptRequestId, outcome }));
   } catch (error) {
     return rpcError(request.id, -32004, 'Receipt outcome is unavailable', serializeAgentError(error));
   }
 }
 
-export function createMcpProtocolHandler(options: McpProtocolOptions): (input: { readonly principal: AgentPrincipal; readonly request: Readonly<Record<string, unknown>> }) => Promise<{ readonly status: number; readonly body: unknown }> {
-  return async ({ principal, request: rawRequest }) => {
+export function createMcpProtocolHandler(options: McpProtocolOptions): (input: {
+  readonly principal: AgentPrincipal;
+  readonly headers?: Readonly<Record<string, string | undefined>>;
+  readonly request: Readonly<Record<string, unknown>>;
+}) => Promise<{ readonly status: number; readonly body: unknown }> {
+  return async ({ principal, headers, request: rawRequest }) => {
     const request = rawRequest as unknown as JsonRpcRequest;
     try {
       if (request.method === 'tools/list') {
@@ -204,7 +227,10 @@ export function createMcpProtocolHandler(options: McpProtocolOptions): (input: {
         }
         return { status: 200, body: rpcResult(request.id, getPromptMessages(promptName, values)) };
       }
-      if (request.method === 'agent.receipts.get_status') return { status: 200, body: await receiptStatus(options, request, principal) };
+      if (request.method === 'agent.receipts.get_status') return {
+        status: 200,
+        body: await receiptStatus(options, request, principal, headers?.['x-kaoyan-receipt-projection'] === 'mcp-v1')
+      };
       return { status: 200, body: rpcError(request.id, -32601, 'MCP method is not available') };
     } catch (error) {
       return { status: 200, body: rpcError(request.id, -32602, 'MCP request parameters are invalid', serializeAgentError(error)) };

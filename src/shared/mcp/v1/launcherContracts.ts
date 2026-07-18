@@ -91,9 +91,36 @@ export function mapGatewayValueToMcpOutcome(
   return result;
 }
 
+function terminalAffectedEntities(result: { readonly value: unknown; readonly events?: readonly unknown[] }): readonly { readonly entityType: string; readonly entityId: string }[] | undefined {
+  const references: { entityType: string; entityId: string }[] = [];
+  const fields: readonly [string, string][] = [
+    ['questionId', 'question'], ['imageId', 'question_image'], ['reviewLogId', 'review_log'],
+    ['taskId', 'task'], ['sessionId', 'focus_session'], ['id', 'entity']
+  ];
+  const add = (entityType: string, value: unknown) => {
+    if ((typeof value === 'string' && value.length > 0) || (typeof value === 'number' && Number.isSafeInteger(value))) {
+      references.push({ entityType, entityId: String(value) });
+    }
+  };
+  for (const event of result.events ?? []) {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) continue;
+    const payload = (event as { readonly payload?: unknown }).payload;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) continue;
+    for (const [field, entityType] of fields) add(entityType, (payload as Record<string, unknown>)[field]);
+  }
+  if (references.length === 0 && result.value && typeof result.value === 'object' && !Array.isArray(result.value)) {
+    for (const [field, entityType] of fields) add(entityType, (result.value as Record<string, unknown>)[field]);
+  }
+  const unique = new Map(references.map((entry) => [`${entry.entityType}\0${entry.entityId}`, entry]));
+  return unique.size > 0 ? [...unique.values()] : undefined;
+}
+
 export function mapGatewayTerminalToMcpOutcome(operation: OperationName, requestId: string, terminal: SafeReceiptTerminal): McpStructuredOutcome {
   const result = terminal.kind === 'command-result'
-    ? mapGatewayValueToMcpOutcome(operation, requestId, terminal.result.value, terminal.result.dataVersion)
+    ? mapGatewayValueToMcpOutcome(operation, requestId, terminal.result.value, terminal.result.dataVersion, {
+      ...(terminalAffectedEntities(terminal.result) ? { affectedEntities: terminalAffectedEntities(terminal.result) } : {}),
+      recovery: 'none'
+    })
     : mapSerializedAgentErrorToMcpOutcome(terminal.error);
   validateMcpStructuredOutcome(result);
   return result;

@@ -17,6 +17,7 @@ import { createInternalExecutionContext } from './application/executionContext';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
+import { configureExternalControlLifecycle } from './ipc/adapters/agentControlCenterIpc';
 import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
@@ -411,6 +412,10 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
       onAuthenticatedRequest: createMcpProtocolHandler({ gateway: controlPlane.gateway })
     });
     mcpLoopbackHost = host;
+    configureExternalControlLifecycle(async (enabled) => {
+      if (enabled) await host.start();
+      else await host.disable();
+    });
     await host.start();
   },
   createWindow
@@ -439,8 +444,7 @@ export async function runMainStartup(
     dependencies.assertDatabaseReadyForRuntimeIpc();
   }
   try {
-    const autoBackup = dependencies.ensureDailyAutoBackup();
-    if (harnessPaths) await autoBackup;
+    await dependencies.ensureDailyAutoBackup();
   } catch (error) {
     console.warn('[AutoBackup]', error);
   }

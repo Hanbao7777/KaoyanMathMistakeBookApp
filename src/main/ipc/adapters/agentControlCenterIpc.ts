@@ -48,6 +48,12 @@ type PageValue<T> = { readonly items: readonly T[]; readonly page: AgentControlP
 type AuditVerificationValue = { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string };
 type ControlSettings = { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number };
 
+let externalControlLifecycle: ((enabled: boolean) => Promise<void> | void) | undefined;
+
+export function configureExternalControlLifecycle(handler?: (enabled: boolean) => Promise<void> | void): void {
+  externalControlLifecycle = handler;
+}
+
 function pageSize(value: number | undefined): number {
   if (value === undefined) return 50;
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new AgentError('VALIDATION_ERROR', { field: 'pageSize' });
@@ -193,7 +199,11 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
 
   return Object.freeze({
     async getStatus() { return mapStatus(await query({ type: 'agent.status.get', payload: {} }) as { readonly settings: ControlSettings; readonly runtimeState: string }); },
-    async setExternalControlEnabled(enabled: boolean) { return Object.freeze({ enabled: (await execute({ type: 'agent.control.set_enabled', payload: { enabled } }) as { readonly enabled: boolean }).enabled }); },
+    async setExternalControlEnabled(enabled: boolean) {
+      const result = (await execute({ type: 'agent.control.set_enabled', payload: { enabled } }) as { readonly enabled: boolean }).enabled;
+      await externalControlLifecycle?.(result);
+      return Object.freeze({ enabled: result });
+    },
     async listClients(request = {}) { return mapPage(await query({ type: 'agent.clients.list', payload: { ...(request.cursor ? { cursor: request.cursor } : {}), pageSize: pageSize(request.pageSize) } }) as PageValue<AgentControlClientSummary>, mapClient); },
     async updateClientAccess(clientId: string, scopes: readonly AgentScope[], trust: TrustProfile) { return mapAcknowledgement(await execute({ type: 'agent.clients.update_access', payload: { clientId, scopes, trust } }) as AgentControlMutationAcknowledgement); },
     async revokeClient(clientId: string) { return mapAcknowledgement(await execute({ type: 'agent.clients.revoke', payload: { clientId } }) as AgentControlMutationAcknowledgement); },

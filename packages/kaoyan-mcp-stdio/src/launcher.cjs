@@ -476,12 +476,25 @@ function requestIdFrom(message) { return toolEnvelope(message)?.args.requestId ?
 function isWrite(message) { return toolEnvelope(message)?.command === true; }
 function jsonRpcError(id, code, message) { return { jsonrpc: '2.0', id: id ?? null, error: { code, message } }; }
 
+function structuredOutcome(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value) && value.structuredContent !== undefined) return value.structuredContent;
+  return value;
+}
+
+function mcpToolResult(outcome) {
+  return {
+    content: [{ type: 'text', text: JSON.stringify(outcome) }],
+    structuredContent: outcome,
+    isError: outcome.ok !== true
+  };
+}
+
 function validateResponse(body, expectMcpOutcome = false, expectedId = undefined) {
   if (!body || typeof body !== 'object' || Array.isArray(body) || body.jsonrpc !== '2.0' || !Object.hasOwn(body, 'id') ||
       (!Object.hasOwn(body, 'result') && !Object.hasOwn(body, 'error')) || (Object.hasOwn(body, 'result') && Object.hasOwn(body, 'error'))) throw new Error('App response is malformed');
   if (expectedId !== undefined && (typeof body.id !== typeof expectedId || body.id !== expectedId)) throw new Error('App response correlation is invalid');
   if (Object.hasOwn(body, 'result')) {
-    if (expectMcpOutcome) validateLauncherMcpOutcome(body.result);
+    if (expectMcpOutcome) validateLauncherMcpOutcome(structuredOutcome(body.result));
   } else if (!body.error || typeof body.error !== 'object' || Array.isArray(body.error) || !Number.isInteger(body.error.code) || typeof body.error.message !== 'string' || body.error.message.length > 500) throw new Error('App response error is malformed');
 }
 
@@ -592,11 +605,12 @@ class HttpBridgeClient {
   async lookup(record, binding, signal) {
     await this.ensureSession(record, signal);
     const message = { jsonrpc: '2.0', id: `receipt-${binding.requestId}`, method: 'agent.receipts.get_status', params: { clientId: binding.clientId, requestId: binding.requestId } };
-    let response = await this.post(record, message, this.sessionHeaders(), signal);
+    const headers = { ...this.sessionHeaders(), 'x-kaoyan-receipt-projection': 'mcp-v1' };
+    let response = await this.post(record, message, headers, signal);
     if (response.status === 401 && this.initializeMessage) {
       this.session = null;
       await this.ensureSession(record, signal);
-      response = await this.post(record, message, this.sessionHeaders(), signal);
+      response = await this.post(record, message, { ...this.sessionHeaders(), 'x-kaoyan-receipt-projection': 'mcp-v1' }, signal);
     }
     return response;
   }
@@ -618,6 +632,7 @@ class Launcher {
     this.closing = false;
     this.terminalResults = new Map();
     this.inFlightControllers = new Map();
+    this.toolResultFormat = false;
     this.outputChain = Promise.resolve();
     this.stderr = options.stderr || process.stderr;
     this.stdout = options.stdout || process.stdout;
@@ -702,11 +717,17 @@ class Launcher {
         if (response.status < 200 || response.status >= 300 || !response.body) throw new Error('App command response is uncertain');
         validateResponse(response.body, true, message.id);
         if (response.body.error) throw new Error('App command response is not a terminal tool outcome');
-        const outcome = response.body.result;
+        const publicResult = response.body.result;
+        if (publicResult && typeof publicResult === 'object' && !Array.isArray(publicResult) && publicResult.structuredContent !== undefined) this.toolResultFormat = true;
+        const outcome = structuredOutcome(publicResult);
         if (outcome.ok === true && (outcome.operation !== binding.operation || outcome.requestId !== binding.requestId)) throw new Error('App command outcome binding is invalid');
-        const publicOutcomeHash = hash(outcome);
+        if (outcome.ok !== true) {
+          journal = this.journal.transition(journal, 'terminal', { publicOutcomeHash: hash(publicResult) });
+          return { ...response.body, id: message.id ?? null };
+        }
+        const publicOutcomeHash = hash(publicResult);
         journal = this.journal.transition(journal, 'needs_lookup');
-        return await this.resolveReceipt(await this.ensureApp(signal), journal, binding, message.id, signal, outcome, publicOutcomeHash);
+        return await this.resolveReceipt(await this.ensureApp(signal), journal, binding, message.id, signal, outcome, publicOutcomeHash, publicResult !== outcome);
       } catch (error) {
         let recovery = null;
         try {
@@ -722,11 +743,16 @@ class Launcher {
     });
   }
 
-  async resolveReceipt(record, journal, binding, callerId, signal, expectedOutcome = undefined, expectedPublicOutcomeHash = undefined) {
+  async resolveReceipt(record, journal, binding, callerId, signal, expectedOutcome = undefined, expectedPublicOutcomeHash = undefined, wrapToolResult = undefined) {
     const lookup = await this.bridge.lookup(record, binding, signal);
     if (!lookup || lookup.status < 200 || lookup.status >= 300 || !lookup.body) throw new Error('Receipt outcome is unavailable');
     validateResponse(lookup.body, false, `receipt-${binding.requestId}`);
-    const receiptResponse = lookup.body.result?.kind === 'receipt-status' ? lookup.body.result : lookup.body.result?.data;
+    const projection = lookup.body.result?.kind === 'mcp-receipt-projection' ? lookup.body.result : null;
+    if (projection && (Object.keys(projection).some((key) => !['kind', 'receipt', 'publicOutcome'].includes(key)) ||
+        !projection.receipt || (projection.publicOutcome !== undefined && (!projection.publicOutcome || typeof projection.publicOutcome !== 'object' || Array.isArray(projection.publicOutcome))))) {
+      throw new Error('Receipt projection is invalid');
+    }
+    const receiptResponse = projection?.receipt ?? (lookup.body.result?.kind === 'receipt-status' ? lookup.body.result : lookup.body.result?.data);
     try { validateLauncherReceiptStatus(receiptResponse); } catch { throw new Error('Receipt outcome is invalid'); }
     if (receiptResponse.clientId !== binding.clientId || receiptResponse.requestId !== binding.requestId || receiptResponse.receipt.operation !== binding.operation ||
         receiptResponse.receipt.payloadHash !== binding.payloadHash || receiptResponse.receipt.catalog.version !== binding.catalogVersion ||
@@ -735,8 +761,23 @@ class Launcher {
     if (!evidence) return jsonRpcError(callerId, -32001, `Receipt is ${receiptResponse.status}; redispatch is disabled`);
     const receiptOutcomeHash = hash(evidence.hashSubject);
     if (receiptResponse.receipt.outcomeHash !== receiptOutcomeHash) throw new Error('Receipt outcome hash mismatch');
-    const outcome = mapGatewayTerminalToMcpOutcome(binding.operation, binding.requestId, evidence.terminal);
-    const publicOutcomeHash = hash(outcome);
+    const outcome = projection?.publicOutcome ?? mapGatewayTerminalToMcpOutcome(binding.operation, binding.requestId, evidence.terminal);
+    validateLauncherMcpOutcome(outcome);
+    if (outcome.ok === true && (outcome.operation !== binding.operation || outcome.requestId !== binding.requestId)) throw new Error('Receipt projection binding conflict');
+    const directResult = outcome;
+    const structuredResult = mcpToolResult(outcome);
+    const directHash = hash(directResult);
+    const structuredHash = hash(structuredResult);
+    const publicResult = wrapToolResult === true
+      ? structuredResult
+      : wrapToolResult === false
+        ? directResult
+        : journal.publicOutcomeHash === structuredHash || expectedPublicOutcomeHash === structuredHash
+          ? structuredResult
+          : journal.publicOutcomeHash === directHash || expectedPublicOutcomeHash === directHash
+            ? directResult
+            : this.toolResultFormat ? structuredResult : directResult;
+    const publicOutcomeHash = hash(publicResult);
     if (expectedOutcome !== undefined && canonicalize(expectedOutcome) !== canonicalize(outcome)) throw new Error('Receipt public outcome mismatch');
     if (expectedPublicOutcomeHash !== undefined && expectedPublicOutcomeHash !== publicOutcomeHash) throw new Error('Receipt public outcome hash mismatch');
     if (journal.publicOutcomeHash !== null && journal.publicOutcomeHash !== publicOutcomeHash) throw new Error('Journal public outcome hash mismatch');
@@ -744,7 +785,7 @@ class Launcher {
     if (journal.state !== 'terminal') {
       journal = this.journal.transition(journal, 'terminal', { publicOutcomeHash, receiptOutcomeHash, receiptRef: receiptResponse.receipt.receiptId });
     }
-    const replay = { jsonrpc: '2.0', id: callerId ?? null, result: outcome };
+    const replay = { jsonrpc: '2.0', id: callerId ?? null, result: publicResult };
     this.terminalResults.set(binding.requestId, { body: replay, publicOutcomeHash });
     return replay;
   }
