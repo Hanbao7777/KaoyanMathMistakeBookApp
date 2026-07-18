@@ -230,6 +230,31 @@ export function validateQuestionQuery(value: unknown, path = 'query'): asserts v
   }
 }
 
+function knowledgeNodeId(value: unknown, path: string): void { string(value, path, 200); }
+
+export function validateKnowledgeCommand(value: unknown): void {
+  const command = exact(value, ['type', 'payload'], 'command'); required(command, ['type', 'payload'], 'command');
+  switch (command.type) {
+    case 'knowledge.link_question': { const p = payload(command.payload, ['questionId', 'nodeId', 'matchType'], ['questionId', 'nodeId', 'matchType'], 'command.payload'); id(p.questionId, 'command.payload.questionId'); knowledgeNodeId(p.nodeId, 'command.payload.nodeId'); oneOf(p.matchType, ['gpt', 'auto', 'manual'], 'command.payload.matchType'); return; }
+    case 'knowledge.unlink_question': { const p = payload(command.payload, ['questionId', 'nodeId'], ['questionId', 'nodeId'], 'command.payload'); id(p.questionId, 'command.payload.questionId'); knowledgeNodeId(p.nodeId, 'command.payload.nodeId'); return; }
+    case 'knowledge.bind_textbook': { const p = payload(command.payload, ['nodeId', 'textbookId'], ['nodeId', 'textbookId'], 'command.payload'); knowledgeNodeId(p.nodeId, 'command.payload.nodeId'); id(p.textbookId, 'command.payload.textbookId'); return; }
+    default: fail('command.type');
+  }
+}
+
+export function validateKnowledgeQuery(value: unknown): void {
+  const query = exact(value, ['type', 'payload'], 'query'); required(query, ['type', 'payload'], 'query');
+  switch (query.type) {
+    case 'knowledge.list_nodes': { const p = payload(query.payload, ['parentNodeId', 'subject', 'limit'], ['limit'], 'query.payload'); optionalString(p.parentNodeId, 'query.payload.parentNodeId', 200); optionalString(p.subject, 'query.payload.subject', 100); boundedPositive(p.limit, 'query.payload.limit', MAX_QUERY_LIMIT); return; }
+    case 'knowledge.get_node': { const p = payload(query.payload, ['nodeId'], ['nodeId'], 'query.payload'); knowledgeNodeId(p.nodeId, 'query.payload.nodeId'); return; }
+    case 'knowledge.list_links': { const p = payload(query.payload, ['nodeId', 'questionId', 'limit'], ['limit'], 'query.payload'); if (p.nodeId !== undefined) knowledgeNodeId(p.nodeId, 'query.payload.nodeId'); if (p.questionId !== undefined) id(p.questionId, 'query.payload.questionId'); if (p.nodeId === undefined && p.questionId === undefined) fail('query.payload'); boundedPositive(p.limit, 'query.payload.limit', MAX_QUERY_LIMIT); return; }
+    case 'textbooks.list': { const p = payload(query.payload, ['subject', 'limit'], ['limit'], 'query.payload'); optionalString(p.subject, 'query.payload.subject', 100); boundedPositive(p.limit, 'query.payload.limit', MAX_QUERY_LIMIT); return; }
+    case 'textbooks.get': { const p = payload(query.payload, ['textbookId'], ['textbookId'], 'query.payload'); id(p.textbookId, 'query.payload.textbookId'); return; }
+    case 'analytics.get_weak_areas': { const p = payload(query.payload, ['subject', 'limit'], ['limit'], 'query.payload'); optionalString(p.subject, 'query.payload.subject', 100); boundedPositive(p.limit, 'query.payload.limit', MAX_QUERY_LIMIT); return; }
+    default: fail('query.type');
+  }
+}
+
 export function validateCommandEnvelope(value: unknown): asserts value is CommandEnvelope {
   const envelope = exact(value, ['apiVersion', 'kind', 'context', 'command'], 'envelope');
   required(envelope, ['apiVersion', 'kind', 'context', 'command'], 'envelope');
@@ -238,7 +263,8 @@ export function validateCommandEnvelope(value: unknown): asserts value is Comman
   const context = envelope.context;
   validateExecutionContext(context);
   validateCommandConcurrency(context);
-  validateQuestionCommand(envelope.command);
+  if (String((envelope.command as { type: string }).type).startsWith('knowledge.')) validateKnowledgeCommand(envelope.command);
+  else validateQuestionCommand(envelope.command);
 }
 
 export function validateQueryEnvelope(value: unknown): asserts value is QueryEnvelope {
@@ -247,7 +273,8 @@ export function validateQueryEnvelope(value: unknown): asserts value is QueryEnv
   if (envelope.apiVersion !== agentApiVersion) throw new AgentError('UNSUPPORTED_API_VERSION');
   if (envelope.kind !== 'query') fail('envelope.kind');
   validateExecutionContext(envelope.context);
-  validateQuestionQuery(envelope.query);
+  if (['knowledge.', 'textbooks.', 'analytics.'].some((prefix) => String((envelope.query as { type: string }).type).startsWith(prefix))) validateKnowledgeQuery(envelope.query);
+  else validateQuestionQuery(envelope.query);
 }
 
 export function validateDomainEvent(value: unknown): asserts value is DomainEvent {

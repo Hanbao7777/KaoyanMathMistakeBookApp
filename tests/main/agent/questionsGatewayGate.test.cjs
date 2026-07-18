@@ -20,7 +20,9 @@ const rendererOperations = [
   'questions.mark_mastery', 'questions.submit_review', 'questions.list', 'questions.get',
   'questions.review_logs', 'questions.review_buckets',
   'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete',
-  'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list'
+  'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list',
+  'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
+  'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'
 ];
 
 test('migrated Renderer question writes have one authenticated Gateway path and no fallback', () => {
@@ -45,7 +47,7 @@ test('fixed Renderer adapter exposes no generic operation or caller identity for
   assert.doesNotMatch(register, /questions:[^']+'[^\n]*getQuestionsApplication/);
 });
 
-test('versioned external MCP business manifest has static parity with the accepted B6-B7 Renderer migration gate', () => {
+test('versioned external MCP manifest preserves C6 parity and adds only the reviewed C9 slice', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block, 'Missing migrated Renderer operation allowlist');
   const rendererAllowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);

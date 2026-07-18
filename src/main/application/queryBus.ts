@@ -4,14 +4,14 @@ import type {
   AppQuery,
   QueryEnvelope,
   QueryResult,
-  QuestionQueryValues,
+  AppQueryValues,
   TrustedExecutionContext
 } from '../../shared/agent/v1/contracts';
 import { validateQueryEnvelope } from '../../shared/agent/v1/schemas';
 import type { DatabaseRuntimeState } from '../persistence/recoveryState';
 
 type QueryOfType<T extends AppQuery['type']> = Extract<AppQuery, { type: T }>;
-type QueryValue<Q extends AppQuery> = QuestionQueryValues[Q['type']];
+type QueryValue<Q extends AppQuery> = AppQueryValues[Q['type']];
 
 export interface ReadOnlyDatabaseFacade {
   readonly kind: 'application-read-only-database';

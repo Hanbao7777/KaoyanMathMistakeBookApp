@@ -154,6 +154,17 @@ export interface AgentControlApi {
 
 export interface AppApi {
   agentControl: AgentControlApi;
+  knowledge: {
+    listNodes: (parentNodeId?: string, subject?: string) => Promise<import('./types').KnowledgePoint[]>;
+    getNode: (nodeId: string) => Promise<import('./types').SafeKnowledgeNode | null>;
+    listLinks: (input: { nodeId?: string; questionId?: number }) => Promise<import('./agent/v1/contracts').KnowledgeLinkView[]>;
+    listTextbooks: (subject?: string) => Promise<import('./types').SafeTextbook[]>;
+    getTextbook: (textbookId: number) => Promise<import('./types').SafeTextbook | null>;
+    getWeakAreas: (subject?: string) => Promise<import('./types').KnowledgePointReviewStats[]>;
+    linkQuestion: (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => Promise<{ linked: boolean; questionId: number; nodeId: string }>;
+    unlinkQuestion: (questionId: number, nodeId: string) => Promise<{ unlinked: boolean; questionId: number; nodeId: string }>;
+    bindTextbook: (nodeId: string, textbookId: number) => Promise<{ bound: boolean; nodeId: string; textbookId: number }>;
+  };
   dashboard: () => Promise<DashboardData>;
   listQuestions: (filters: QuestionFilters) => Promise<Question[]>;
   getQuestion: (id: number) => Promise<Question | null>;

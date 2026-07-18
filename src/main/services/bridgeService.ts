@@ -42,7 +42,7 @@ function reviewResult(result: ReviewLog['result']): ReviewResultV2 {
   return 'no_idea';
 }
 
-async function executeQuestionCommand<C extends AppCommand>(command: C): Promise<QuestionCommandValues[C['type']]> {
+async function executeQuestionCommand<C extends Extract<AppCommand, { type: keyof QuestionCommandValues }>>(command: C): Promise<QuestionCommandValues[C['type']]> {
   const coordinator = await getDatabaseCoordinator();
   const application = await getQuestionsApplication();
   const result = await application.execute(command, createInternalExecutionContext({

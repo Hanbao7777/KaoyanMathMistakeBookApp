@@ -55,6 +55,15 @@ import {
   type TickTickQuery
 } from '../application/ticktick';
 import {
+  isKnowledgeCommandOperation,
+  isKnowledgeQueryOperation,
+  validateKnowledgeCommand,
+  validateKnowledgeQuery,
+  type KnowledgeApplication,
+  type KnowledgeCommand,
+  type KnowledgeQuery
+} from '../application/knowledge';
+import {
   createDatabaseCoordinatorControlCapability,
   type DatabaseMutationResult,
   type DatabaseMutationScope,
@@ -120,6 +129,7 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
     dispatch: () => Promise<CommandResult>
   ) => Promise<CommandResult>;
   readonly tickTickApplication?: TickTickApplication;
+  readonly knowledgeApplication?: KnowledgeApplication;
 }
 
 export interface AgentGatewayComposition {
@@ -242,7 +252,11 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       if (!settings?.values[0]) return { changed: false, value: undefined };
       const [catalogVersion, catalogHash, policyText, policyHash] = settings.values[0];
       if (catalogVersion === operationCatalogIdentity.version && catalogHash === operationCatalogIdentity.hash) return { changed: false, value: undefined };
-      if (catalogVersion !== 'agent-catalog-v1@1' || catalogHash !== 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2') throw new AgentError('RECOVERY_FENCE');
+      const acceptedPredecessorHashes: Readonly<Record<string, string>> = Object.freeze({
+        'agent-catalog-v1@1': 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2',
+        'agent-catalog-v1@2': 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049'
+      });
+      if (acceptedPredecessorHashes[String(catalogVersion)] !== catalogHash) throw new AgentError('RECOVERY_FENCE');
       let policy: unknown;
       try { policy = JSON.parse(String(policyText)); } catch { throw new AgentError('POLICY_INVARIANT_VIOLATION'); }
       if (!Array.isArray(policy) || canonicalizeJson(policy) !== policyText || hashCanonicalJson(policy) !== policyHash) throw new AgentError('POLICY_INVARIANT_VIOLATION');
@@ -382,6 +396,11 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       validateTickTickCommand({ type: envelope.operation, payload: envelope.payload });
       return;
     }
+    if (isKnowledgeCommandOperation(envelope.operation)) {
+      if (!options.knowledgeApplication) throw new AgentError('HANDLER_NOT_FOUND');
+      validateKnowledgeCommand({ type: envelope.operation, payload: envelope.payload });
+      return;
+    }
     validateCommandEnvelope({
       apiVersion: agentApiVersion,
       kind: 'command',
@@ -398,6 +417,11 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     if (isTickTickQueryOperation(envelope.operation)) {
       if (!options.tickTickApplication) throw new AgentError('HANDLER_NOT_FOUND');
       validateTickTickQuery({ type: envelope.operation, payload: envelope.payload });
+      return;
+    }
+    if (isKnowledgeQueryOperation(envelope.operation)) {
+      if (!options.knowledgeApplication) throw new AgentError('HANDLER_NOT_FOUND');
+      validateKnowledgeQuery({ type: envelope.operation, payload: envelope.payload });
       return;
     }
     validateQueryEnvelope({
@@ -649,6 +673,14 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
           terminalHook
         );
       }
+      if (isKnowledgeCommandOperation(plan.operation)) {
+        if (!options.knowledgeApplication) throw new AgentError('HANDLER_NOT_FOUND');
+        return options.knowledgeApplication.execute(
+          { type: plan.operation, payload: plan.payload } as KnowledgeCommand,
+          context,
+          terminalHook
+        );
+      }
       const command = { type: plan.operation, payload: plan.payload } as AppCommand;
       const dispatch = () => options.commandBus.executeWithExecutionReceipt(
         receiptCapability,
@@ -675,6 +707,13 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         if (!options.tickTickApplication) throw new AgentError('HANDLER_NOT_FOUND');
         return Promise.resolve(options.tickTickApplication.query(
           { type: envelope.operation, payload: envelope.payload } as TickTickQuery,
+          context
+        ));
+      }
+      if (isKnowledgeQueryOperation(envelope.operation)) {
+        if (!options.knowledgeApplication) throw new AgentError('HANDLER_NOT_FOUND');
+        return Promise.resolve(options.knowledgeApplication.query(
+          { type: envelope.operation, payload: envelope.payload } as KnowledgeQuery,
           context
         ));
       }

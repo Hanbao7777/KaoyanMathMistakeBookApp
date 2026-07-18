@@ -77,6 +77,7 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
     'approvals.manage', 'approvals.read', 'audit.export', 'audit.read', 'changesets.manage', 'changesets.read',
     'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write', 'r4.manage', 'r4.read',
     'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
+    'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read',
     'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'sessions.manage', 'sessions.read', 'system.read'
   ]);
@@ -100,7 +101,10 @@ test('renderer business allowlist is exact, frozen, and module-owned', () => {
     'questions.mark_mastery', 'questions.submit_review',
     'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets',
     'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete',
-    'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list'
+    'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list',
+    'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links',
+    'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
+    'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'
   ]);
   assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);

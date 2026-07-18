@@ -9,6 +9,8 @@ import { CommandBus, DomainEventBus } from '../application';
 import { createInternalExecutionContext } from '../application/executionContext';
 import { registerQuestions, type QuestionsApplication } from '../application/questions';
 import { registerTickTick, type TickTickApplication } from '../application/ticktick';
+import { registerKnowledge, type KnowledgeApplication } from '../application/knowledge';
+import type { QuestionCommand } from '../../shared/agent/v1/contracts';
 import { bootstrapAgentGateway, type AgentGatewayBootstrapOptions, type AgentGatewayComposition } from '../agent/bootstrap';
 import {
   atomicPersist, bootstrapControlMetadata,
@@ -62,6 +64,7 @@ let databaseCoordinator: DatabaseCoordinator | null = null;
 let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
 let questionsApplication: QuestionsApplication | null = null;
 let tickTickApplication: TickTickApplication | null = null;
+let knowledgeApplication: KnowledgeApplication | null = null;
 let agentControlPlane: AgentGatewayComposition | null = null;
 const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
@@ -274,12 +277,18 @@ export async function getTickTickApplication(): Promise<TickTickApplication> {
   return tickTickApplication;
 }
 
+export async function getKnowledgeApplication(): Promise<KnowledgeApplication> {
+  if (!knowledgeApplication) await initializeDatabase();
+  if (!knowledgeApplication) throw new Error('Knowledge application is unavailable');
+  return knowledgeApplication;
+}
+
 export async function getAgentControlPlane(): Promise<AgentGatewayComposition> {
   if (!agentControlPlane) throw new Error('Agent Gateway is unavailable pending database recovery');
   return agentControlPlane;
 }
 
-async function executeLegacyQuestionCommand<C extends import('../../shared/agent').AppCommand>(command: C) {
+async function executeLegacyQuestionCommand<C extends QuestionCommand>(command: C) {
   const application = await getQuestionsApplication();
   return application.execute(command, createInternalExecutionContext({ concurrency: 'none' }));
 }
@@ -637,6 +646,7 @@ async function createAgentControlPlane(
   readDatabase: ReadOnlyDatabaseFacade,
   application: QuestionsApplication,
   tickTick: TickTickApplication,
+  knowledge: KnowledgeApplication,
   operationJournalStores: readonly OperationManifestStore[],
   dependencies: DatabaseInitializationDependencies = {},
   onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
@@ -667,9 +677,12 @@ async function createAgentControlPlane(
     randomUUID: randomId,
     resolveState: (envelope, descriptor) => descriptor.domain === 'questions'
       ? application.gateway.resolveState(envelope, descriptor)
-      : tickTick.resolveState(envelope, descriptor),
-    executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command, context, dispatch),
+      : ['knowledge', 'textbooks', 'analytics'].includes(descriptor.domain)
+        ? knowledge.resolveState(envelope, descriptor)
+        : tickTick.resolveState(envelope, descriptor),
+    executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command as QuestionCommand, context, dispatch),
     tickTickApplication: tickTick,
+    knowledgeApplication: knowledge,
     onRecoveryStage(stage) {
       onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : stage === 'receipts_reconciled' ? 'agent_receipts_reconciled' : 'agent_jobs_reconciled');
     }
@@ -769,6 +782,7 @@ async function initializeDatabaseOnce(
   });
   questionsApplication = registerQuestions({ coordinator, readOnlyDatabase });
   tickTickApplication = registerTickTick({ coordinator, readOnlyDatabase });
+  knowledgeApplication = registerKnowledge({ coordinator, readOnlyDatabase });
   onStage('coordinator_created');
 
   const dataJournalRoot = path.normalize(dependencies.dataJournalRoot ?? path.join(paths.data, 'operation-journal'));
@@ -788,7 +802,7 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
-      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, operationJournalStores, dependencies, onStage);
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, knowledgeApplication, operationJournalStores, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
         const gatewayFailureLease = await coordinator.beginMaintenance();
@@ -811,6 +825,24 @@ async function initializeDatabaseOnce(
 }
 
 function migrateDatabase(database: Database) {
+  const scopeSql = String(all<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0]?.sql ?? '');
+  if (scopeSql && !scopeSql.includes("'knowledge.read'")) {
+    database.run('ALTER TABLE agent_client_scopes RENAME TO agent_client_scopes_legacy');
+    database.run(`CREATE TABLE agent_client_scopes (
+      client_id TEXT NOT NULL,
+      scope TEXT NOT NULL CHECK (scope IN (
+        'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
+        'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
+        'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
+        'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'operations.batch', 'tasks.read',
+        'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin', 'focus.read', 'focus.control', 'files.images.read'
+      )), catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0), created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+      PRIMARY KEY (client_id, scope), FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+    )`);
+    database.run('INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) SELECT client_id, scope, catalog_version, created_at FROM agent_client_scopes_legacy');
+    database.run('DROP TABLE agent_client_scopes_legacy');
+    database.run('CREATE INDEX IF NOT EXISTS idx_agent_client_scopes_scope ON agent_client_scopes(scope, client_id)');
+  }
   const columns = all<{ name: string }>(database, 'PRAGMA table_info(questions)').map((column) => column.name);
   const addQuestionColumn = (name: string, sql: string) => {
     if (!columns.includes(name)) database.run(`ALTER TABLE questions ADD COLUMN ${name} ${sql}`);
@@ -2092,6 +2124,7 @@ export function resetDatabaseConnection() {
   readOnlyDatabase = null;
   questionsApplication = null;
   tickTickApplication = null;
+  knowledgeApplication = null;
   agentControlPlane = null;
   initializationPromise = null;
   initializationResult = null;

@@ -135,6 +135,17 @@ const api: AppApi = {
     rotateClientKey: (request) => invoke('agentControl:rotateClientKey', request),
     disconnectClientConnection: (request) => invoke('agentControl:disconnectClientConnection', request)
   } satisfies AgentControlApi,
+  knowledge: {
+    listNodes: (parentNodeId?: string, subject?: string) => invoke('knowledge:listNodes', parentNodeId, subject),
+    getNode: (nodeId: string) => invoke('knowledge:getNode', nodeId),
+    listLinks: (input: { nodeId?: string; questionId?: number }) => invoke('knowledge:listLinks', input),
+    listTextbooks: (subject?: string) => invoke('textbooks:list', subject),
+    getTextbook: (textbookId: number) => invoke('textbooks:get', textbookId),
+    getWeakAreas: (subject?: string) => invoke('analytics:getWeakAreas', subject),
+    linkQuestion: (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => invoke('knowledge:linkQuestion', questionId, nodeId, matchType),
+    unlinkQuestion: (questionId: number, nodeId: string) => invoke('knowledge:unlinkQuestion', questionId, nodeId),
+    bindTextbook: (nodeId: string, textbookId: number) => invoke('knowledge:bindTextbook', nodeId, textbookId)
+  },
   dashboard: () => invoke<DashboardData>('dashboard:get'),
   listQuestions: (filters: QuestionFilters) => invoke<Question[]>('questions:list', filters),
   getQuestion: (id: number) => invoke<Question | null>('questions:get', id),

@@ -96,6 +96,10 @@ function classifySql(file, source, index, statement) {
     assert.match(source, /assertDatabaseMutationScope\(this\.scope, this\.database\)/);
     return 'coordinator-scoped question repository';
   }
+  if (name === 'src/main/application/knowledge/commands.ts') {
+    assert.match(source, /assertDatabaseMutationScope\(scope, database\)/);
+    return 'coordinator-scoped C9 knowledge application';
+  }
   if (name === 'src/main/services/databaseService.ts') {
     const migration = enclosingRange(source, 'function migrateDatabase(', 'export function runSql(');
     const importReplacement = enclosingRange(source, 'export async function importData(', 'export async function clearAllData(');
@@ -174,6 +178,7 @@ test('all question-owned SQL mutations have an exact allowed scope', () => {
     'coordinator-fenced JSON identity replacement': 3,
     'coordinator-fenced global clear replacement': 1,
     'coordinator-scoped question repository': 18,
+    'coordinator-scoped C9 knowledge application': 2,
     'legacy schema migration bootstrap': 9,
     'schema bootstrap DDL': 6
   });

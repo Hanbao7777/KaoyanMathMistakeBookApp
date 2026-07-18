@@ -16,6 +16,7 @@ const agent = require(path.join(environment.projectRoot, 'dist/main/shared/agent
 const gatewaySchemas = require(path.join(environment.projectRoot, 'dist/main/shared/agent/v1/gatewaySchemas.js'));
 
 const c7Catalog = Object.freeze({ version: 'agent-catalog-v1@1', hash: 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2' });
+const c8Catalog = Object.freeze({ version: 'agent-catalog-v1@2', hash: 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049' });
 
 let SQL;
 let nonce = 0;
@@ -74,6 +75,30 @@ function createCatalogDatabaseBytes(catalog) {
   ) VALUES (1, 0, ?, ?, 'agent-policy-v1@1', ?, ?, 1, '2026-07-15T00:00:00.000Z', '2026-07-15T00:00:00.000Z')`, [
     catalog.version, catalog.hash, policyJson, gatewaySchemas.hashCanonicalJson(policy)
   ]);
+  const bytes = database.export();
+  database.close();
+  return bytes;
+}
+
+function createLegacyScopeDatabaseBytes() {
+  const database = new SQL.Database(createDatabaseBytes('legacy-scope-epoch'));
+  database.run('ALTER TABLE agent_client_scopes RENAME TO agent_client_scopes_legacy');
+  database.run(`CREATE TABLE agent_client_scopes (
+    client_id TEXT NOT NULL,
+    scope TEXT NOT NULL CHECK (scope IN (
+      'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
+      'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
+      'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
+      'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.write', 'operations.batch', 'tasks.read',
+      'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
+      'focus.read', 'focus.control', 'files.images.read'
+    )),
+    catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
+    created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+    PRIMARY KEY (client_id, scope),
+    FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+  )`);
+  database.run('DROP TABLE agent_client_scopes_legacy');
   const bytes = database.export();
   database.close();
   return bytes;
@@ -148,23 +173,45 @@ test('fresh database composes the recovered Gateway before publishing ready', as
   assert.ok(await databaseService.getAgentControlPlane());
 });
 
-test('C8 migrates only the exact v1@1 catalog predecessor and revalidates policy', async () => {
-  fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(c7Catalog));
-  await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
-  const database = await databaseService.getDatabase();
-  const row = database.exec('SELECT catalog_version, catalog_hash, policy_json, policy_hash FROM agent_control_settings WHERE id = 1')[0].values[0];
-  assert.equal(row[0], agent.operationCatalogIdentity.version);
-  assert.equal(row[1], agent.operationCatalogIdentity.hash);
-  const policy = JSON.parse(row[2]);
-  assert.deepEqual(policy[0].catalog, agent.operationCatalogIdentity);
-  assert.equal(row[3], gatewaySchemas.hashCanonicalJson(policy));
+test('C9 migrates only exact catalog predecessors and revalidates policy', async () => {
+  for (const predecessor of [c7Catalog, c8Catalog]) {
+    await resetRoots();
+    fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(predecessor));
+    await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
+    const database = await databaseService.getDatabase();
+    const row = database.exec('SELECT catalog_version, catalog_hash, policy_json, policy_hash FROM agent_control_settings WHERE id = 1')[0].values[0];
+    assert.equal(row[0], agent.operationCatalogIdentity.version);
+    assert.equal(row[1], agent.operationCatalogIdentity.hash);
+    const policy = JSON.parse(row[2]);
+    assert.deepEqual(policy[0].catalog, agent.operationCatalogIdentity);
+    assert.equal(row[3], gatewaySchemas.hashCanonicalJson(policy));
+  }
 });
 
-test('C8 fences unknown, corrupt, and future catalog mismatches', async () => {
-  const unknown = { version: 'agent-catalog-v1@99', hash: `sha256-v1:${'f'.repeat(64)}` };
-  fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(unknown));
-  await assert.rejects(initializeWithTrace(), (error) => error?.code === 'RECOVERY_FENCE');
-  assert.equal((await databaseService.getDatabaseCoordinator()).state, 'needs_recovery');
+test('C9 fences unknown, corrupt known, and future catalog mismatches', async () => {
+  for (const invalid of [
+    { version: 'agent-catalog-v1@99', hash: `sha256-v1:${'f'.repeat(64)}` },
+    { version: c8Catalog.version, hash: `sha256-v1:${'e'.repeat(64)}` }
+  ]) {
+    await resetRoots();
+    fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(invalid));
+    await assert.rejects(initializeWithTrace(), (error) => error?.code === 'RECOVERY_FENCE');
+    assert.equal((await databaseService.getDatabaseCoordinator()).state, 'needs_recovery');
+  }
+});
+
+test('C9 upgrades the client-scope constraint without losing the accepted schema', async () => {
+  fs.writeFileSync(currentPaths().database, createLegacyScopeDatabaseBytes());
+  await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
+  const database = await databaseService.getDatabase();
+  const scopeSql = String(database.exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0].values[0][0]);
+  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read']) assert.match(scopeSql, new RegExp(`'${scope.replace('.', '\\.')}'`));
+  const timestamp = '2026-07-18T00:00:00.000Z';
+  database.run(`INSERT INTO agent_clients (client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at)
+    VALUES ('scope-upgrade-client', 'scope-upgrade-subject', 'Scope Upgrade', ?, 'observer', ?, ?)`, [`sha256-v1:${'1'.repeat(64)}`, timestamp, timestamp]);
+  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read']) {
+    assert.doesNotThrow(() => database.run('INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)', ['scope-upgrade-client', scope, agent.operationCatalogIdentity.version, timestamp]));
+  }
 });
 
 test('Gateway composition failure fences the coordinator and never publishes ready', async () => {

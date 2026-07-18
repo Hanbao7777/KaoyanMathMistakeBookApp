@@ -6,7 +6,11 @@ import type {
   ReviewBuckets,
   ReviewLog,
   ReviewSubmitInput,
-  ReviewSubmitResult
+  ReviewSubmitResult,
+  KnowledgePoint,
+  KnowledgePointReviewStats,
+  SafeKnowledgeNode,
+  SafeTextbook
 } from '../../types';
 import type { AgentApiVersion } from '../versions';
 
@@ -191,8 +195,33 @@ export const questionQueryTypes = [
   'questions.review_logs',
   'questions.review_buckets'
 ] as const satisfies ReadonlyArray<QuestionQuery['type']>;
-export type AppCommand = QuestionCommand;
-export type AppQuery = QuestionQuery;
+export interface KnowledgeLinkQuestionCommand {
+  type: 'knowledge.link_question';
+  payload: { questionId: number; nodeId: string; matchType: 'gpt' | 'auto' | 'manual' };
+}
+
+export interface KnowledgeUnlinkQuestionCommand {
+  type: 'knowledge.unlink_question';
+  payload: { questionId: number; nodeId: string };
+}
+
+export interface KnowledgeBindTextbookCommand {
+  type: 'knowledge.bind_textbook';
+  payload: { nodeId: string; textbookId: number };
+}
+
+export type KnowledgeCommand = KnowledgeLinkQuestionCommand | KnowledgeUnlinkQuestionCommand | KnowledgeBindTextbookCommand;
+
+export interface KnowledgeListNodesQuery { type: 'knowledge.list_nodes'; payload: { parentNodeId?: string; subject?: string; limit: number }; }
+export interface KnowledgeGetNodeQuery { type: 'knowledge.get_node'; payload: { nodeId: string }; }
+export interface KnowledgeListLinksQuery { type: 'knowledge.list_links'; payload: { nodeId?: string; questionId?: number; limit: number }; }
+export interface TextbooksListQuery { type: 'textbooks.list'; payload: { subject?: string; limit: number }; }
+export interface TextbooksGetQuery { type: 'textbooks.get'; payload: { textbookId: number }; }
+export interface AnalyticsWeakAreasQuery { type: 'analytics.get_weak_areas'; payload: { subject?: string; limit: number }; }
+export type KnowledgeQuery = KnowledgeListNodesQuery | KnowledgeGetNodeQuery | KnowledgeListLinksQuery | TextbooksListQuery | TextbooksGetQuery | AnalyticsWeakAreasQuery;
+
+export type AppCommand = QuestionCommand | KnowledgeCommand;
+export type AppQuery = QuestionQuery | KnowledgeQuery;
 
 export interface CommandEnvelope<C extends AppCommand = AppCommand> {
   apiVersion: AgentApiVersion;
@@ -256,3 +285,22 @@ export interface QuestionQueryValues {
   'questions.review_logs': ReviewLog[];
   'questions.review_buckets': ReviewBuckets;
 }
+
+export interface KnowledgeCommandValues {
+  'knowledge.link_question': { linked: boolean; questionId: number; nodeId: string };
+  'knowledge.unlink_question': { unlinked: boolean; questionId: number; nodeId: string };
+  'knowledge.bind_textbook': { bound: boolean; nodeId: string; textbookId: number };
+}
+
+export interface KnowledgeLinkView { readonly question_id: number; readonly knowledge_node_id: string; readonly match_type: string; readonly created_at: string; }
+export interface KnowledgeQueryValues {
+  'knowledge.list_nodes': KnowledgePoint[];
+  'knowledge.get_node': SafeKnowledgeNode | null;
+  'knowledge.list_links': KnowledgeLinkView[];
+  'textbooks.list': SafeTextbook[];
+  'textbooks.get': SafeTextbook | null;
+  'analytics.get_weak_areas': KnowledgePointReviewStats[];
+}
+
+export type AppCommandValues = QuestionCommandValues & KnowledgeCommandValues;
+export type AppQueryValues = QuestionQueryValues & KnowledgeQueryValues;

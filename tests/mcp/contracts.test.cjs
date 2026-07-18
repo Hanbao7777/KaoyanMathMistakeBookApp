@@ -38,13 +38,13 @@ test('instructions and shared contracts are bounded and dependency-free', () => 
   assert.doesNotMatch(schemas, /from ['"](?:node:|@modelcontextprotocol)/);
 });
 
-test('external manifest and registry expose exactly the accepted 19 operations', () => {
-  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@1');
+test('external manifest and registry expose exactly the accepted C6 and C9 operations', () => {
+  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@2');
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest), true);
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest.businessOperations), true);
-  assert.equal(mcp.mcpExternalBusinessOperations.length, 19);
-  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 19);
-  assert.equal(registry.mcpV1BusinessRegistry.length, 19);
+  assert.equal(mcp.mcpExternalBusinessOperations.length, 28);
+  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 28);
+  assert.equal(registry.mcpV1BusinessRegistry.length, 28);
   assert.deepEqual(
     registry.mcpV1BusinessRegistry.map(({ operation }) => operation).sort(),
     [...mcp.mcpExternalBusinessOperations].sort()
@@ -87,7 +87,10 @@ test('every business tool has an exact runtime envelope and payload validator', 
     'tasks.create': { input: { list_id: 'list', title: 'Task' } }, 'tasks.update': { taskId: 'task', input: { title: 'Task' } },
     'tasks.complete': { taskId: 'task' }, 'tasks.uncomplete': { taskId: 'task' }, 'tasks.delete': { taskId: 'task' },
     'tasks.list': { filters: {} }, 'tasks.get': { taskId: 'task' },
-    'focus.sessions.create': { input: { start_time: '2026-07-16T09:00:00.000Z', duration_minutes: 25 } }, 'focus.sessions.list': { filters: {} }
+    'focus.sessions.create': { input: { start_time: '2026-07-16T09:00:00.000Z', duration_minutes: 25 } }, 'focus.sessions.list': { filters: {} },
+    'knowledge.list_nodes': { limit: 1 }, 'knowledge.get_node': { nodeId: 'node' }, 'knowledge.list_links': { nodeId: 'node', limit: 1 },
+    'textbooks.list': { limit: 1 }, 'textbooks.get': { textbookId: 1 }, 'analytics.get_weak_areas': { limit: 1 },
+    'knowledge.link_question': { questionId: 1, nodeId: 'node', matchType: 'manual' }, 'knowledge.unlink_question': { questionId: 1, nodeId: 'node' }, 'knowledge.bind_textbook': { nodeId: 'node', textbookId: 1 }
   };
   for (const descriptor of registry.mcpV1BusinessRegistry) {
     const command = descriptor.handler.gatewayMethod === 'execute';

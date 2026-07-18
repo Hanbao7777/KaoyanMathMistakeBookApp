@@ -214,6 +214,7 @@ function scanTransactionsAndMutators() {
       else if (bootstrapRanges.some((range) => inRange(match.index, range))) classification = 'database bootstrap/migration';
       else if (replacementRanges.some((range) => inRange(match.index, range))) classification = 'coordinator-fenced identity replacement';
       else if (repositoryScoped) classification = 'capability-scoped question repository';
+      else if (name === 'src/main/application/knowledge/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped knowledge application';
       else if (capabilityFiles.has(name)) classification = 'coordinator transaction/revision primitive';
       else if (candidateFiles.has(name)) classification = 'bootstrap/candidate validation';
       else if (name === 'src/main/database/schema.ts') classification = 'database bootstrap/migration schema';
@@ -276,7 +277,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 237,
+    line: 240,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -299,6 +300,7 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
   assert.deepEqual(counts, {
     'bootstrap/candidate validation': 7,
     'capability-scoped question repository': 2,
+    'capability-scoped knowledge application': 2,
     'control ledger read helper': 2,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
@@ -308,7 +310,7 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'coordinator-scoped agent durability collaborator': 42,
     'coordinator-scoped registry mutation seam': 14,
     'coordinator-fenced identity replacement': 16,
-    'database bootstrap/migration': 34,
+    'database bootstrap/migration': 39,
     'database bootstrap/migration schema': 4,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,

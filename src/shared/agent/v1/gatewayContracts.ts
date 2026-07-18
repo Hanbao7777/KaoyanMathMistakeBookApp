@@ -28,7 +28,10 @@ export const agentScopes = [
   'questions.archive',
   'reviews.read',
   'reviews.submit',
+  'knowledge.read',
   'knowledge.write',
+  'textbooks.read',
+  'analytics.read',
   'operations.batch',
   'tasks.read',
   'tasks.write',
@@ -370,7 +373,7 @@ export const approvalRequirements = ['never', 'policy', 'always', 'r4_grant'] as
 export type ApprovalRequirement = (typeof approvalRequirements)[number];
 export const operationKinds = ['command', 'query'] as const;
 export type OperationKind = (typeof operationKinds)[number];
-export const operationDomains = ['management', 'questions', 'tasks', 'focus'] as const;
+export const operationDomains = ['management', 'questions', 'tasks', 'focus', 'knowledge', 'textbooks', 'analytics'] as const;
 export type OperationDomain = (typeof operationDomains)[number];
 export const riskResolvers = ['static', 'question_delete', 'image_delete', 'bounded_batch', 'task_delete'] as const;
 export type RiskResolver = (typeof riskResolvers)[number];
@@ -490,7 +493,10 @@ export const gatewayBusinessCommandTypes = [
   'tasks.complete',
   'tasks.uncomplete',
   'tasks.delete',
-  'focus.sessions.create'
+  'focus.sessions.create',
+  'knowledge.link_question',
+  'knowledge.unlink_question',
+  'knowledge.bind_textbook'
 ] as const;
 
 export const gatewayBusinessQueryTypes = [
@@ -500,7 +506,13 @@ export const gatewayBusinessQueryTypes = [
   'questions.review_buckets',
   'tasks.list',
   'tasks.get',
-  'focus.sessions.list'
+  'focus.sessions.list',
+  'knowledge.list_nodes',
+  'knowledge.get_node',
+  'knowledge.list_links',
+  'textbooks.list',
+  'textbooks.get',
+  'analytics.get_weak_areas'
 ] as const;
 
 export const operationNames = [

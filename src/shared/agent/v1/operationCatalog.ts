@@ -21,7 +21,7 @@ import {
   validateOperationCatalog
 } from './gatewaySchemas';
 
-export const operationCatalogVersion = 'agent-catalog-v1@2' as const;
+export const operationCatalogVersion = 'agent-catalog-v1@3' as const;
 
 interface DescriptorDefinition {
   readonly kind: OperationKind;
@@ -134,13 +134,22 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'tasks.uncomplete': businessCommand('tasks', ['tasks.execute'], 'R2', 'inverse'),
   'tasks.delete': businessCommand('tasks', ['tasks.write'], 'R2', 'inverse', { maximumRisk: 'R3', riskResolver: 'task_delete', approval: 'policy' }),
   'focus.sessions.create': businessCommand('focus', ['focus.control'], 'R2', 'inverse'),
+  'knowledge.link_question': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
+  'knowledge.unlink_question': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
+  'knowledge.bind_textbook': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
   'questions.list': businessQuery('questions', ['questions.read']),
   'questions.get': businessQuery('questions', ['questions.read']),
   'questions.review_logs': businessQuery('questions', ['questions.read', 'reviews.read']),
   'questions.review_buckets': businessQuery('questions', ['questions.read', 'reviews.read']),
   'tasks.list': businessQuery('tasks', ['tasks.read']),
   'tasks.get': businessQuery('tasks', ['tasks.read']),
-  'focus.sessions.list': businessQuery('focus', ['focus.read'])
+  'focus.sessions.list': businessQuery('focus', ['focus.read']),
+  'knowledge.list_nodes': businessQuery('knowledge', ['knowledge.read']),
+  'knowledge.get_node': businessQuery('knowledge', ['knowledge.read']),
+  'knowledge.list_links': businessQuery('knowledge', ['knowledge.read']),
+  'textbooks.list': businessQuery('textbooks', ['textbooks.read']),
+  'textbooks.get': businessQuery('textbooks', ['textbooks.read']),
+  'analytics.get_weak_areas': businessQuery('analytics', ['analytics.read'])
 };
 
 function managementCommand(
@@ -159,7 +168,7 @@ function managementQuery(requiredScopes: readonly AgentScope[], rendererManageme
 }
 
 function businessCommand(
-  domain: 'questions' | 'tasks' | 'focus',
+  domain: 'questions' | 'tasks' | 'focus' | 'knowledge',
   requiredScopes: readonly AgentScope[],
   risk: RiskLevel,
   recovery: RecoveryRequirement,
@@ -188,7 +197,7 @@ function r4Command(domain: 'questions' | 'tasks', requiredScopes: readonly Agent
   });
 }
 
-function businessQuery(domain: 'questions' | 'tasks' | 'focus', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
+function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
   return { kind: 'query', domain, requiredScopes, risk: 'R1' };
 }
 

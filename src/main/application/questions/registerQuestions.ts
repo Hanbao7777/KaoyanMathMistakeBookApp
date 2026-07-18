@@ -1,12 +1,12 @@
 import { agentApiVersion } from '../../../shared/agent/versions';
 import type {
-  AppCommand,
-  AppQuery,
   CommandResult,
   EntityRef,
   QueryResult,
   QuestionCommandValues,
   QuestionQueryValues,
+  QuestionCommand,
+  QuestionQuery,
   TrustedExecutionContext
 } from '../../../shared/agent/v1/contracts';
 import type { AgentCommandEnvelope, AgentQueryEnvelope, JsonObject, OperationDescriptor } from '../../../shared/agent/v1/gatewayContracts';
@@ -19,10 +19,10 @@ import { QueryBus, type ReadOnlyDatabaseFacade } from '../queryBus';
 import { createQuestionCommandHandlers, finalizeQuestionFileOperation, type QuestionCommandDependencies } from './commands';
 import { getQuestionQuery, listQuestionsQuery, reviewBucketsQuery, reviewLogsQuery } from './queries';
 
-type CommandValue<C extends AppCommand> = QuestionCommandValues[C['type']];
-type QueryValue<Q extends AppQuery> = QuestionQueryValues[Q['type']];
+type CommandValue<C extends QuestionCommand> = QuestionCommandValues[C['type']];
+type QueryValue<Q extends QuestionQuery> = QuestionQueryValues[Q['type']];
 
-function questionEventDraft(command: AppCommand, value: unknown) {
+function questionEventDraft(command: QuestionCommand, value: unknown) {
   switch (command.type) {
     case 'questions.create':
       return { type: 'questions.question_created', payload: { questionId: (value as { id: number }).id, externalRef: command.payload.externalRef ?? null } };
@@ -42,9 +42,9 @@ function questionEventDraft(command: AppCommand, value: unknown) {
   }
 }
 
-type CommandOfType<T extends AppCommand['type']> = Extract<AppCommand, { type: T }>;
+type CommandOfType<T extends QuestionCommand['type']> = Extract<QuestionCommand, { type: T }>;
 
-function withQuestionEvent<T extends AppCommand['type']>(
+function withQuestionEvent<T extends QuestionCommand['type']>(
   handler: CommandHandler<CommandOfType<T>>
 ): CommandHandler<CommandOfType<T>> {
   return async (command, context, database, scope) => {
@@ -67,15 +67,15 @@ export interface RegisterQuestionsOptions {
 export interface QuestionsApplication {
   readonly eventBus: DomainEventBus;
   readonly gateway: QuestionsGatewayApplication;
-  execute<C extends AppCommand>(command: C, context: TrustedExecutionContext): Promise<CommandResult<CommandValue<C>>>;
-  query<Q extends AppQuery>(query: Q, context: TrustedExecutionContext): QueryResult<QueryValue<Q>>;
+  execute<C extends QuestionCommand>(command: C, context: TrustedExecutionContext): Promise<CommandResult<CommandValue<C>>>;
+  query<Q extends QuestionQuery>(query: Q, context: TrustedExecutionContext): QueryResult<QueryValue<Q>>;
 }
 
 export interface QuestionsGatewayApplication {
   readonly commandBus: CommandBus;
   readonly queryBus: QueryBus;
   execute(
-    command: AppCommand,
+    command: QuestionCommand,
     context: TrustedExecutionContext,
     dispatch: () => Promise<CommandResult>
   ): Promise<CommandResult>;
@@ -261,7 +261,7 @@ export function registerQuestions(options: RegisterQuestionsOptions): QuestionsA
   queryBus.register('questions.review_buckets', reviewBucketsQuery);
 
   const execute = async (
-    command: AppCommand,
+    command: QuestionCommand,
     context: TrustedExecutionContext,
     dispatch: () => Promise<CommandResult>
   ): Promise<CommandResult> => {
@@ -281,7 +281,7 @@ export function registerQuestions(options: RegisterQuestionsOptions): QuestionsA
     gateway: Object.freeze({
       commandBus,
       queryBus,
-      execute(command: AppCommand, context: TrustedExecutionContext, dispatch: () => Promise<CommandResult>) {
+      execute(command: QuestionCommand, context: TrustedExecutionContext, dispatch: () => Promise<CommandResult>) {
         const run = executionTail.then(() => execute(command, context, dispatch));
         executionTail = run.then(() => undefined, () => undefined);
         return run;
@@ -290,15 +290,15 @@ export function registerQuestions(options: RegisterQuestionsOptions): QuestionsA
         return questionGatewayState(envelope, descriptor, options.readOnlyDatabase, options.coordinator);
       }
     }),
-    async execute<C extends AppCommand>(command: C, context: TrustedExecutionContext): Promise<CommandResult<CommandValue<C>>> {
+    async execute<C extends QuestionCommand>(command: C, context: TrustedExecutionContext): Promise<CommandResult<CommandValue<C>>> {
       const run = executionTail.then(() => execute(command, context, () =>
         commandBus.execute({ apiVersion: agentApiVersion, kind: 'command', context, command })
       ));
       executionTail = run.then(() => undefined, () => undefined);
       return run as Promise<CommandResult<CommandValue<C>>>;
     },
-    query<Q extends AppQuery>(query: Q, context: TrustedExecutionContext): QueryResult<QueryValue<Q>> {
-      return queryBus.execute({ apiVersion: agentApiVersion, kind: 'query', context, query }) as QueryResult<QueryValue<Q>>;
+    query<Q extends QuestionQuery>(query: Q, context: TrustedExecutionContext): QueryResult<QueryValue<Q>> {
+      return queryBus.execute({ apiVersion: agentApiVersion, kind: 'query', context, query }) as unknown as QueryResult<QueryValue<Q>>;
     }
   });
 }

@@ -49,8 +49,8 @@ test('C8 rejects Tasks methods when the session did not negotiate Tasks', async 
   assert.equal(response.body.error.code, -32601);
 });
 
-test('C8 preserves the exact 19 business exposures with and without Tasks', async () => {
-  assert.equal(exposure.mcpExternalBusinessOperations.length, 19);
+test('C8 preserves the exact C6/C9 business exposures with and without Tasks', async () => {
+  assert.equal(exposure.mcpExternalBusinessOperations.length, 28);
   const current = principal(agent.agentScopes);
   const handler = protocol.createMcpProtocolHandler({ gateway: { async execute() { throw new Error('unexpected'); }, async query() { throw new Error('unexpected'); } } });
   const ordinary = await handler({ principal: current, tasksNegotiated: false, request: { id: 1, method: 'tools/list', params: {} } });

@@ -504,6 +504,41 @@ export interface Textbook {
   updated_at: string;
 }
 
+/** Public textbook metadata intentionally excludes every filesystem path field. */
+export interface SafeTextbook {
+  id: number;
+  title: string;
+  subject: string;
+  edition: string;
+  file_name: string;
+  note: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SafeKnowledgeNode {
+  id: number;
+  textbook_id: number | null;
+  node_id: string;
+  parent_node_id: string | null;
+  title: string;
+  subject: MathSubject | string;
+  category: string;
+  level: number;
+  sort_order: number;
+  book_page: number | null;
+  pdf_page: number | null;
+  summary: string;
+  coreFormulas: string[];
+  commonQuestionTypes: string[];
+  commonErrorReasons: string[];
+  tagList: string[];
+  textbook: SafeTextbook | null;
+  questionCount: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface KnowledgePoint {
   id: number;
   textbook_id: number | null;

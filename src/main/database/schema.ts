@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS agent_client_scopes (
     'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
     'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
     'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
-    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.write', 'operations.batch', 'tasks.read',
+    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'operations.batch', 'tasks.read',
     'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'focus.read', 'focus.control', 'files.images.read'
   )),

@@ -2,6 +2,7 @@ import type { AgentPrincipal, AgentScope, OperationName } from '../../shared/age
 import { validateQuestionCommand, validateQuestionQuery } from '../../shared/agent/v1/schemas';
 import { operationCatalog, operationCatalogIdentity, resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
 import { validateTickTickCommand, validateTickTickQuery } from '../application/ticktick/contracts';
+import { validateKnowledgeCommand, validateKnowledgeQuery } from '../application/knowledge/contracts';
 import { assertMcpExternalExposureManifest, mcpExternalExposureManifest, mcpExternalBusinessOperations } from '../../shared/mcp/v1/exposureManifest';
 import { mcpCapabilityVersion, mcpCurrentProtocolVersion, mcpProtocolVersions, mcpSchemaVersion, mcpServerVersion } from '../../shared/mcp/v1/versions';
 import type { McpCapabilitySummary, McpRegistryDescriptor, McpRuntimeValidator } from '../../shared/mcp/v1/contracts';
@@ -26,7 +27,12 @@ const descriptions: Readonly<Record<string, string>> = Object.freeze({
   'jobs.create': 'Create one durable bounded Gateway job.', 'jobs.get': 'Read one owner-bound durable job.',
   'jobs.list': 'List owner-bound durable jobs with bounded pagination.', 'jobs.cancel': 'Request cancellation at a declared safe checkpoint.',
   'jobs.result': 'Read one hash-verified durable job result.', 'jobs.view': 'Read one owner-bound durable job resource.',
-  'jobs.result.view': 'Read one verified durable job result resource.'
+   'jobs.result.view': 'Read one verified durable job result resource.',
+  'knowledge.list_nodes': 'List bounded knowledge nodes.', 'knowledge.get_node': 'Read one knowledge node.',
+  'knowledge.list_links': 'List bounded knowledge-question links.', 'textbooks.list': 'List bounded textbook metadata.',
+  'textbooks.get': 'Read one textbook metadata record.', 'analytics.get_weak_areas': 'List bounded weak knowledge areas.',
+  'knowledge.link_question': 'Link one question to one knowledge node.', 'knowledge.unlink_question': 'Unlink one question from one knowledge node.',
+  'knowledge.bind_textbook': 'Bind one knowledge node to one existing textbook.', 'knowledge.view': 'Read one addressable knowledge node resource.', 'textbooks.view': 'Read one addressable textbook metadata resource.'
 });
 
 function schema(id: string, direction: 'input' | 'output') {
@@ -44,6 +50,11 @@ function payloadValidator(operation: OperationName): McpRuntimeValidator {
     if (operation.startsWith('questions.')) {
       if (resolveOperationDescriptor(operation).kind === 'command') validateQuestionCommand(request);
       else validateQuestionQuery(request);
+      return;
+    }
+    if (operation.startsWith('knowledge.') || operation.startsWith('textbooks.') || operation.startsWith('analytics.')) {
+      if (resolveOperationDescriptor(operation).kind === 'command') validateKnowledgeCommand(request);
+      else validateKnowledgeQuery(request);
       return;
     }
     if (resolveOperationDescriptor(operation).kind === 'command') validateTickTickCommand(request);
@@ -100,7 +111,9 @@ export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.fre
   Object.freeze({ ...gatewayEntry('review.daily.zh_en', 'questions.review_buckets', 'prompt'), exposure: 'support' as const, name: 'review.daily.zh_en', promptArguments: Object.freeze(['focus']) }),
   Object.freeze({ ...gatewayEntry('review.weekly.zh_en', 'tasks.list', 'prompt'), exposure: 'support' as const, name: 'review.weekly.zh_en', promptArguments: Object.freeze(['week']) }),
   Object.freeze({ ...gatewayEntry('jobs.view', 'jobs.get', 'resource-template'), exposure: 'support' as const, name: 'jobs.view', uriTemplate: 'kaoyan://jobs/{jobId}' }),
-  Object.freeze({ ...gatewayEntry('jobs.result.view', 'jobs.result', 'resource-template'), exposure: 'support' as const, name: 'jobs.result.view', uriTemplate: 'kaoyan://jobs/{jobId}/result' })
+  Object.freeze({ ...gatewayEntry('jobs.result.view', 'jobs.result', 'resource-template'), exposure: 'support' as const, name: 'jobs.result.view', uriTemplate: 'kaoyan://jobs/{jobId}/result' }),
+  Object.freeze({ ...gatewayEntry('knowledge.view', 'knowledge.get_node', 'resource-template'), exposure: 'support' as const, name: 'knowledge.view', uriTemplate: 'kaoyan://knowledge/{nodeId}' }),
+  Object.freeze({ ...gatewayEntry('textbooks.view', 'textbooks.get', 'resource-template'), exposure: 'support' as const, name: 'textbooks.view', uriTemplate: 'kaoyan://textbooks/{textbookId}' })
 ]);
 
 export const mcpV1Registry: readonly McpRegistryDescriptor[] = Object.freeze([...mcpV1BusinessRegistry, ...mcpV1JobRegistry, ...mcpV1SupportRegistry]);
@@ -116,7 +129,7 @@ export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersi
 
 function assertRegistry(): void {
   assertMcpExternalExposureManifest(mcpExternalExposureManifest); validateMcpServerInstructions(mcpServerInstructionsValue);
-  if (mcpV1BusinessRegistry.length !== 19) throw new Error('MCP business registry must contain exactly 19 operations');
+  if (mcpV1BusinessRegistry.length !== 28) throw new Error('MCP business registry must contain exactly 28 operations');
   if (JSON.stringify([...mcpExternalExposureManifest.businessOperations].sort()) !== JSON.stringify(mcpV1BusinessRegistry.map(({ operation }) => operation).sort())) throw new Error('MCP registry and exposure manifest differ');
   if (new Set(mcpV1Registry.map(({ name }) => name)).size !== mcpV1Registry.length) throw new Error('MCP public names must be unique');
   for (const descriptor of mcpV1Registry) {

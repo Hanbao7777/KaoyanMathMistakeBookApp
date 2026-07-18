@@ -5,7 +5,7 @@ import type {
   CommandEnvelope,
   CommandResult,
   EntityRef,
-  QuestionCommandValues,
+  AppCommandValues,
   TrustedExecutionContext
 } from '../../shared/agent/v1/contracts';
 import { validateCommandEnvelope } from '../../shared/agent/v1/schemas';
@@ -24,7 +24,7 @@ import {
 } from './domainEvents';
 
 type CommandOfType<T extends AppCommand['type']> = Extract<AppCommand, { type: T }>;
-type CommandValue<C extends AppCommand> = QuestionCommandValues[C['type']];
+type CommandValue<C extends AppCommand> = AppCommandValues[C['type']];
 
 export interface CommandHandlerResult<T> extends DatabaseMutationResult<T> {
   readonly events?: readonly DomainEventDraft[];
