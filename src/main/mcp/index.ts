@@ -4,3 +4,7 @@ export * from './discovery';
 export * from './server';
 export * from './transport/loopbackHttp';
 export * from './auth/stdioAuthenticator';
+export * from './protocol';
+export * from './tools';
+export * from './resources';
+export * from './prompts';

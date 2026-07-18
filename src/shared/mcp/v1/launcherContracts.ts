@@ -73,11 +73,19 @@ export function mapGatewayValueToMcpOutcome(
   operation: OperationName,
   requestId: string,
   value: unknown,
-  dataVersion?: { readonly dataEpoch: string; readonly dataRevision: number }
+  dataVersion?: { readonly dataEpoch: string; readonly dataRevision: number },
+  options: {
+    readonly receiptId?: string;
+    readonly affectedEntities?: readonly { readonly entityType: string; readonly entityId: string }[];
+    readonly recovery?: 'none' | 'retry' | 'receipt-status' | 'approval' | 'changeset';
+    readonly page?: { readonly nextCursor?: string; readonly pageSize: number; readonly hasMore: boolean };
+  } = {}
 ): McpStructuredOutcome {
   const result = Object.freeze({
     schemaVersion: mcpSchemaVersion, ok: true as const, operation, requestId,
-    data: redact(value), ...(dataVersion ? { dataVersion } : {})
+    data: redact(value), ...(options.receiptId ? { receiptId: options.receiptId } : {}),
+    ...(dataVersion ? { dataVersion } : {}), ...(options.affectedEntities ? { affectedEntities: options.affectedEntities } : {}),
+    ...(options.recovery ? { recovery: options.recovery } : {}), ...(options.page ? { page: options.page } : {})
   });
   validateMcpStructuredOutcome(result);
   return result;

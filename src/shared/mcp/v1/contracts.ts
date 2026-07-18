@@ -123,6 +123,7 @@ export interface McpStructuredSuccess {
   readonly dataVersion?: DataVersion;
   readonly affectedEntities?: readonly EntityRef[];
   readonly recovery?: 'none' | 'retry' | 'receipt-status' | 'approval' | 'changeset';
+  readonly page?: McpPageInfo;
 }
 
 export interface McpStructuredToolError {
@@ -133,6 +134,8 @@ export interface McpStructuredToolError {
   readonly message: string;
   readonly retryable: boolean;
   readonly field?: string;
+  readonly recovery?: 'receipt-status' | 'approval' | 'changeset';
+  readonly workflow?: { readonly kind: 'approval' | 'changeset'; readonly id: string; readonly expiresAt: string };
 }
 
 export interface McpTransportError {

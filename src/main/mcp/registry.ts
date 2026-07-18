@@ -81,6 +81,8 @@ export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.fre
   }),
   Object.freeze({ ...gatewayEntry('questions.view', 'questions.get', 'resource-template'), exposure: 'support' as const, name: 'questions.view', uriTemplate: 'kaoyan://questions/{questionId}' }),
   Object.freeze({ ...gatewayEntry('tasks.view', 'tasks.get', 'resource-template'), exposure: 'support' as const, name: 'tasks.view', uriTemplate: 'kaoyan://tasks/{taskId}' }),
+  Object.freeze({ ...gatewayEntry('reviews.today', 'questions.review_buckets', 'resource'), exposure: 'support' as const, name: 'reviews.today', uri: 'kaoyan://reviews/today' }),
+  Object.freeze({ ...gatewayEntry('tasks.today', 'tasks.list', 'resource'), exposure: 'support' as const, name: 'tasks.today', uri: 'kaoyan://tasks/today' }),
   Object.freeze({ ...gatewayEntry('review.daily.zh_en', 'questions.review_buckets', 'prompt'), exposure: 'support' as const, name: 'review.daily.zh_en', promptArguments: Object.freeze(['focus']) }),
   Object.freeze({ ...gatewayEntry('review.weekly.zh_en', 'tasks.list', 'prompt'), exposure: 'support' as const, name: 'review.weekly.zh_en', promptArguments: Object.freeze(['week']) })
 ]);
@@ -93,7 +95,7 @@ export function createMcpCapabilitySummary(principal: AgentPrincipal): McpCapabi
   return Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, tools: visible.filter(({ primitive }) => primitive === 'tool').length, resources: visible.filter(({ primitive }) => primitive === 'resource').length, resourceTemplates: visible.filter(({ primitive }) => primitive === 'resource-template').length, prompts: visible.filter(({ primitive }) => primitive === 'prompt').length });
 }
 
-export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, tools: mcpV1BusinessRegistry.length, resources: 1, resourceTemplates: 2, prompts: 2 });
+export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, tools: mcpV1BusinessRegistry.length, resources: 3, resourceTemplates: 2, prompts: 2 });
 export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersion, capabilityVersion: mcpCapabilityVersion, schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: false, instructions: mcpServerInstructionsValue, exposureManifestVersion: mcpExternalExposureManifest.version });
 
 function assertRegistry(): void {

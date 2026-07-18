@@ -165,8 +165,11 @@ test('result mapping separates tool correction from transport failures and redac
   assert.doesNotThrow(() => mcp.validateMcpStructuredOutcome(result));
   const replay = mapping.mapMcpGatewayResult({ ...base, outcome: { kind: 'replayed', receiptId: requestId, result: { changed: true, value: { safe: true }, events: [], dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } } });
   const terminalReplay = mcp.mapGatewayTerminalToMcpOutcome('questions.create', requestId, { kind: 'command-result', result: { changed: true, value: { safe: true }, events: [], dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } });
-  assert.deepEqual(replay, terminalReplay);
-  assert.equal(replay.receiptId, undefined);
+  assert.equal(replay.receiptId, requestId);
+  assert.equal(terminalReplay.receiptId, undefined);
+  const replayWithoutReceipt = { ...replay }; delete replayWithoutReceipt.receiptId; delete replayWithoutReceipt.recovery;
+  const terminalWithoutRecovery = { ...terminalReplay }; delete terminalWithoutRecovery.recovery;
+  assert.deepEqual(replayWithoutReceipt, terminalWithoutRecovery);
   assert.equal(typeof mapping.resolveMcpResultMapper('questions.create'), 'function');
   assert.throws(() => mapping.resolveMcpResultMapper('questions.undo_review'), /No MCP result mapper/);
 });

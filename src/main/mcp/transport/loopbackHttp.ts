@@ -41,6 +41,7 @@ export interface LoopbackHttpOptions {
   readonly allowedOrigins?: readonly string[];
   readonly maxRequestBytes?: number;
   readonly now?: () => Date;
+  readonly initializeResult?: Readonly<Record<string, unknown>>;
 }
 
 export interface LoopbackMcpRequestHandler extends http.RequestListener {
@@ -218,7 +219,8 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       sessions.set(admission.sessionId, { admission: Object.freeze({ ...admission }), initialized: false });
       response.setHeader('mcp-session-id', admission.sessionId);
       response.setHeader('mcp-protocol-version', requested);
-      respond(response, 200, { jsonrpc: '2.0', id: payload.id, result: { protocolVersion: requested, capabilities: {}, serverInfo: { name: 'kaoyan-mcp-loopback', version: '1' }, instructions: 'Use the authenticated App-owned MCP session for every request.' } });
+      const initializeResult = options.initializeResult ?? { capabilities: {}, serverInfo: { name: 'kaoyan-mcp-loopback', version: '1' }, instructions: 'Use the authenticated App-owned MCP session for every request.' };
+      respond(response, 200, { jsonrpc: '2.0', id: payload.id, result: { protocolVersion: requested, ...initializeResult } });
       return;
     }
 

@@ -231,20 +231,30 @@ export function validateMcpStructuredOutcome(value: unknown, path = 'outcome'): 
   if (result.schemaVersion !== mcpSchemaVersion) fail(`${path}.schemaVersion`);
   boolean(result.ok, `${path}.ok`);
   if (result.ok === true) {
-    const success = exact(result, ['schemaVersion', 'ok', 'operation', 'requestId', 'data', 'receiptId', 'dataVersion', 'affectedEntities', 'recovery'], path);
+    const success = exact(result, ['schemaVersion', 'ok', 'operation', 'requestId', 'data', 'receiptId', 'dataVersion', 'affectedEntities', 'recovery', 'page'], path);
     required(success, ['schemaVersion', 'ok', 'operation', 'requestId', 'data'], path);
     safeName(success.operation, `${path}.operation`); uuid(success.requestId, `${path}.requestId`); json(success.data, `${path}.data`);
     if (success.receiptId !== undefined) uuid(success.receiptId, `${path}.receiptId`);
     if (success.dataVersion !== undefined) validateDataVersion(success.dataVersion, `${path}.dataVersion`);
     if (success.affectedEntities !== undefined) validateEntityRefs(success.affectedEntities, `${path}.affectedEntities`);
     if (success.recovery !== undefined) oneOf(success.recovery, ['none', 'retry', 'receipt-status', 'approval', 'changeset'] as const, `${path}.recovery`);
+    if (success.page !== undefined) validateMcpPageInfo(success.page, `${path}.page`);
     return;
   }
   if (result.kind === 'tool-error') {
-    const error = exact(result, ['schemaVersion', 'ok', 'kind', 'code', 'message', 'retryable', 'field'], path);
+    const error = exact(result, ['schemaVersion', 'ok', 'kind', 'code', 'message', 'retryable', 'field', 'recovery', 'workflow'], path);
     required(error, ['schemaVersion', 'ok', 'kind', 'code', 'message', 'retryable'], path);
     string(error.code, `${path}.code`, 100); string(error.message, `${path}.message`, 500); boolean(error.retryable, `${path}.retryable`);
-    if (error.field !== undefined) safeName(error.field, `${path}.field`); return;
+    if (error.field !== undefined) safeName(error.field, `${path}.field`);
+    if (error.recovery !== undefined) oneOf(error.recovery, ['receipt-status', 'approval', 'changeset'] as const, `${path}.recovery`);
+    if (error.workflow !== undefined) {
+      const workflow = exact(error.workflow, ['kind', 'id', 'expiresAt'], `${path}.workflow`);
+      required(workflow, ['kind', 'id', 'expiresAt'], `${path}.workflow`);
+      oneOf(workflow.kind, ['approval', 'changeset'] as const, `${path}.workflow.kind`);
+      uuid(workflow.id, `${path}.workflow.id`);
+      string(workflow.expiresAt, `${path}.workflow.expiresAt`, 40);
+    }
+    return;
   }
   if (result.kind === 'transport-error') {
     const error = exact(result, ['schemaVersion', 'ok', 'kind', 'category', 'code', 'message', 'retryable'], path);

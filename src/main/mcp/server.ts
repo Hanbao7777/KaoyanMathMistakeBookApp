@@ -1,5 +1,6 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import type { AgentGateway } from '../../shared/agent/v1/gatewayContracts';
 import { mcpProtocolVersions } from '../../shared/mcp/v1/versions';
 import { publishMcpDiscovery, readValidatedMcpDiscovery, removeMcpDiscovery, type McpDiscoveryRecord } from './discovery';
 import {
@@ -10,6 +11,7 @@ import {
   type LoopbackMcpRequestHandler,
   type LoopbackSessionAuthenticator
 } from './transport/loopbackHttp';
+import { createMcpProtocolHandler, mcpInitializeResult } from './protocol';
 
 export interface McpLoopbackHostOptions {
   readonly discoveryRoot: string;
@@ -22,6 +24,8 @@ export interface McpLoopbackHostOptions {
   readonly launcherRange?: string;
   readonly discoveryTtlMs?: number;
   readonly discoveryOwnershipCheck?: (filePath: string, root: string) => boolean;
+  readonly gateway?: AgentGateway;
+  readonly initializeResult?: Readonly<Record<string, unknown>>;
 }
 
 export interface McpLoopbackHostStatus {
@@ -139,13 +143,17 @@ export class McpLoopbackHost {
     removeMcpDiscovery(this.options.discoveryRoot, this.instanceId);
 
     let boundPort = 0;
+    const onAuthenticatedRequest = this.options.onAuthenticatedRequest ?? (this.options.gateway
+      ? createMcpProtocolHandler({ gateway: this.options.gateway })
+      : undefined);
     const handler = createLoopbackMcpRequestHandler({
       getPort: () => boundPort,
       instanceId: this.instanceId,
       authenticator: this.authenticator,
       externalControlEnabled: this.options.externalControlEnabled,
       onExternalControlDisabled: () => this.disable(),
-      onAuthenticatedRequest: this.options.onAuthenticatedRequest,
+      onAuthenticatedRequest,
+      initializeResult: this.options.initializeResult ?? (this.options.gateway ? mcpInitializeResult : undefined),
       now: this.options.now
     });
     const server = http.createServer(handler);

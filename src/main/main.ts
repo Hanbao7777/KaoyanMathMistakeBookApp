@@ -22,6 +22,7 @@ import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
 import { ensureDailyAutoBackup } from './services/backupService';
 import { McpLoopbackHost } from './mcp/server';
+import { createMcpProtocolHandler, mcpInitializeResult } from './mcp/protocol';
 import type {
   QuestionCategoryMigrationCommand,
   QuestionRematchCommand
@@ -404,7 +405,10 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
       discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
       externalControlEnabled: controlPlane.externalControlEnabled,
       authenticatedReady: () => controlPlane.stdioAuthenticator.ready(),
-      authenticator: controlPlane.stdioAuthenticator
+      authenticator: controlPlane.stdioAuthenticator,
+      gateway: controlPlane.gateway,
+      initializeResult: mcpInitializeResult,
+      onAuthenticatedRequest: createMcpProtocolHandler({ gateway: controlPlane.gateway })
     });
     mcpLoopbackHost = host;
     await host.start();
