@@ -28,6 +28,7 @@ export interface RegisterTickTickOptions {
   readonly eventBus?: DomainEventBus;
   readonly eventBusOptions?: DomainEventBusOptions;
   readonly commandDependencies?: TickTickCommandDependencies;
+  readonly today?: () => string;
 }
 
 export interface TickTickApplication {
@@ -58,7 +59,7 @@ function resolveState(
   database: ReadOnlyDatabaseFacade,
   coordinator: DatabaseCoordinator
 ): GatewayResolvedState {
-  if (!['tasks', 'focus'].includes(descriptor.domain) || descriptor.name !== envelope.operation) {
+  if (!['tasks', 'focus', 'ticktick'].includes(descriptor.domain) || descriptor.name !== envelope.operation) {
     throw new Error('TickTick Gateway descriptor mismatch');
   }
   const entities: EntityRef[] = [];
@@ -123,6 +124,35 @@ function resolveState(
     case 'focus.sessions.list':
       entities.push({ entityType: 'focus_session_collection', entityId: 'filtered' });
       break;
+    case 'ticktick.lists.create':
+      entities.push({ entityType: 'ticktick_list_create', entityId: hashCanonicalJson(payload) });
+      break;
+    case 'ticktick.lists.update': {
+      const listId = String(payload.listId); entities.push({ entityType: 'ticktick_list', entityId: listId });
+      affectedEntityCount = database.select<{ id: string }>('SELECT id FROM ticktick_lists WHERE id = ?', [listId]).length; recursiveAffectedEntityCount = affectedEntityCount;
+      break;
+    }
+    case 'ticktick.lists.list': entities.push({ entityType: 'ticktick_list_collection', entityId: 'all' }); break;
+    case 'ticktick.habits.create': entities.push({ entityType: 'ticktick_habit_create', entityId: hashCanonicalJson(payload) }); break;
+    case 'ticktick.habits.update': {
+      const habitId = String(payload.habitId); entities.push({ entityType: 'ticktick_habit', entityId: habitId });
+      affectedEntityCount = database.select<{ id: string }>('SELECT id FROM ticktick_habits WHERE id = ?', [habitId]).length; recursiveAffectedEntityCount = affectedEntityCount;
+      break;
+    }
+    case 'ticktick.habits.list': entities.push({ entityType: 'ticktick_habit_collection', entityId: 'all' }); break;
+    case 'ticktick.calendar.list_events': entities.push({ entityType: 'ticktick_calendar', entityId: `${String(payload.year)}-${String(payload.month)}` }); break;
+    case 'ticktick.bridges.get': {
+      const taskId = String(payload.taskId); entities.push({ entityType: 'task', entityId: taskId });
+      for (const bridge of database.select<{ id: number }>('SELECT id FROM ticktick_bridge WHERE ticktick_task_id = ?', [taskId])) entities.push({ entityType: 'ticktick_bridge', entityId: String(bridge.id) });
+      break;
+    }
+    case 'ticktick.bridges.update': {
+      const input = payload.input as JsonObject; const taskId = String(input.ticktick_task_id); const linkedType = String(input.linked_type); const linkedId = String(input.linked_id);
+      entities.push({ entityType: 'task', entityId: taskId }, { entityType: linkedType, entityId: linkedId });
+      const bridge = database.select<{ id: number }>('SELECT id FROM ticktick_bridge WHERE ticktick_task_id = ? AND linked_type = ? AND linked_id = ?', [taskId, linkedType, linkedId])[0];
+      if (bridge) entities.push({ entityType: 'ticktick_bridge', entityId: String(bridge.id) });
+      break;
+    }
     default:
       throw new Error(`TickTick Gateway mapping is missing for ${envelope.operation}`);
   }
@@ -135,6 +165,27 @@ function resolveState(
     targetHash: hashCanonicalJson({ operation: envelope.operation, affectedEntities } as unknown as JsonObject),
     dataVersion: Object.freeze({ ...coordinator.currentVersion() })
   });
+}
+
+function commandConflicts(command: TickTickCommand): readonly EntityRef[] | undefined {
+  switch (command.type) {
+    case 'tasks.update':
+    case 'tasks.complete':
+    case 'tasks.uncomplete':
+    case 'tasks.delete':
+      return [{ entityType: 'task', entityId: command.payload.taskId }];
+    case 'ticktick.lists.update':
+      return [{ entityType: 'ticktick_list', entityId: command.payload.listId }];
+    case 'ticktick.habits.update':
+      return [{ entityType: 'ticktick_habit', entityId: command.payload.habitId }];
+    case 'ticktick.bridges.update':
+      return [
+        { entityType: 'task', entityId: command.payload.input.ticktick_task_id },
+        { entityType: command.payload.input.linked_type, entityId: command.payload.input.linked_id }
+      ];
+    default:
+      return undefined;
+  }
 }
 
 export function registerTickTick(options: RegisterTickTickOptions): TickTickApplication {
@@ -155,7 +206,7 @@ export function registerTickTick(options: RegisterTickTickOptions): TickTickAppl
         requestId: context.requestId,
         concurrency: context.concurrency,
         expectedVersion: context.expectedVersion,
-        conflicts: 'taskId' in command.payload ? [{ entityType: 'task', entityId: String(command.payload.taskId) }] : undefined,
+        conflicts: commandConflicts(command),
         terminalHook,
         async execute(database, scope) {
           const mutation = await executeTickTickCommand(command, database, scope, context, options.commandDependencies);
@@ -187,7 +238,7 @@ export function registerTickTick(options: RegisterTickTickOptions): TickTickAppl
       if (options.coordinator.state === 'needs_recovery') throw new Error('TickTick query unavailable during recovery');
       if (options.coordinator.pendingWrites !== 0) throw new Error('TickTick query unavailable during a write');
       const versionBefore = options.coordinator.currentVersion();
-      const value = executeTickTickQuery(query, options.readOnlyDatabase);
+      const value = executeTickTickQuery(query, options.readOnlyDatabase, { today: options.today });
       const versionAfter = options.coordinator.currentVersion();
       if (versionBefore.dataEpoch !== versionAfter.dataEpoch || versionBefore.dataRevision !== versionAfter.dataRevision) {
         throw new Error('TickTick query version changed during execution');

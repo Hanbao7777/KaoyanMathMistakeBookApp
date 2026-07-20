@@ -106,26 +106,34 @@ import {
   updateStudyTask
 } from '../services/studySupervisorService';
 import {
-  listTickTickLists, getTickTickList, createTickTickList, updateTickTickList, deleteTickTickList, reorderTickTickLists,
+  getTickTickList, deleteTickTickList, reorderTickTickLists,
   getTodayTickTickTasks,
   listTickTickTags,
   createTickTickFocusSession,
-  getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
-  getTickTickCalendarMonth,
+  createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
   getTickTickSettings, saveTickTickSettings,
-  listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
+  deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
 import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
 import {
   completeTickTickTaskFromRenderer,
+  createTickTickHabitFromRenderer,
+  createTickTickListFromRenderer,
   createTickTickFocusSessionFromRenderer,
   createTickTickTaskFromRenderer,
   deleteTickTickTaskFromRenderer,
   getTickTickTaskFromRenderer,
+  getTickTickBridgesFromRenderer,
+  getTickTickCalendarEventsFromRenderer,
   listTickTickFocusSessionsFromRenderer,
+  listTickTickHabitsFromRenderer,
+  listTickTickListsFromRenderer,
   listTickTickTasksFromRenderer,
   uncompleteTickTickTaskFromRenderer,
-  updateTickTickTaskFromRenderer
+  updateTickTickTaskFromRenderer,
+  updateTickTickBridgeFromRenderer,
+  updateTickTickHabitFromRenderer,
+  updateTickTickListFromRenderer
 } from './adapters/ticktickIpc';
 import { agentControlCenterIpc } from './adapters/agentControlCenterIpc';
 import { FocusTimerEngine } from '../services/focusTimerEngine';
@@ -607,10 +615,10 @@ export function registerIpc() {
   });
 
   // TickTick Lists
-  handle('ticktick:lists:list', () => listTickTickLists());
+  handle('ticktick:lists:list', () => listTickTickListsFromRenderer());
   handle('ticktick:lists:get', (id: string) => getTickTickList(id));
-  handle('ticktick:lists:create', (input: TickTickListInput) => createTickTickList(input));
-  handle('ticktick:lists:update', (id: string, input: TickTickListInput) => updateTickTickList(id, input));
+  handle('ticktick:lists:create', (input: TickTickListInput) => createTickTickListFromRenderer(input));
+  handle('ticktick:lists:update', (id: string, input: TickTickListInput) => updateTickTickListFromRenderer(id, input));
   handle('ticktick:lists:delete', (id: string) => deleteTickTickList(id));
   handle('ticktick:lists:reorder', (ids: string[]) => reorderTickTickLists(ids));
 
@@ -632,13 +640,13 @@ export function registerIpc() {
   handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSessionFromRenderer(input));
 
   // TickTick Bridge
-  handle('ticktick:bridge:task', (taskId: string) => getTickTickTaskBridges(taskId));
-  handle('ticktick:bridge:create', (input: TickTickBridgeInput) => createTickTickBridge(input));
+  handle('ticktick:bridge:task', (taskId: string) => getTickTickBridgesFromRenderer(taskId));
+  handle('ticktick:bridge:create', (input: TickTickBridgeInput) => updateTickTickBridgeFromRenderer(input));
   handle('ticktick:bridge:delete', (id: number) => deleteTickTickBridge(id));
   handle('ticktick:bridge:linked', (linkedType: TickTickBridgeLinkedType, linkedId: string) => getBridgesForLinked(linkedType, linkedId));
 
   // TickTick Calendar
-  handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarMonth(year, month));
+  handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarEventsFromRenderer(year, month));
 
   // TickTick AI
   handle('ticktick:ai:decompose', (input: TickTickAiDecompositionInput) => aiDecomposeTask(input));
@@ -650,9 +658,9 @@ export function registerIpc() {
   handle('ticktick:settings:save', (settings: TickTickSettings) => saveTickTickSettings(settings));
 
   // TickTick Habits
-  handle('ticktick:habits:list', () => listTickTickHabits());
-  handle('ticktick:habits:create', (input: TickTickHabitInput) => createTickTickHabit(input));
-  handle('ticktick:habits:update', (id: string, input: TickTickHabitInput) => updateTickTickHabit(id, input));
+  handle('ticktick:habits:list', () => listTickTickHabitsFromRenderer());
+  handle('ticktick:habits:create', (input: TickTickHabitInput) => createTickTickHabitFromRenderer(input));
+  handle('ticktick:habits:update', (id: string, input: TickTickHabitInput) => updateTickTickHabitFromRenderer(id, input));
   handle('ticktick:habits:delete', (id: string) => deleteTickTickHabit(id));
   handle('ticktick:habits:toggle', (habitId: string, date: string) => toggleTickTickHabit(habitId, date));
   handle('ticktick:habits:logs', (habitId: string, fromDate?: string, toDate?: string) => getTickTickHabitLogs(habitId, fromDate, toDate));

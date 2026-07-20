@@ -233,11 +233,11 @@ for (const product of products) {
       await launcher.initialize();
       const listed = await launcher.request({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       const toolNames = listed.result.tools.map(({ name }) => name);
-       assert.equal(toolNames.length, 45);
+       assert.equal(toolNames.length, 54);
       assert.equal(toolNames.some((name) => /execute|query|catalog/.test(name)), false);
-       assertions.push('initialize and tools/list exposed the C6/C9/C10 business tools plus 5 C8 job tools');
+       assertions.push('initialize and tools/list exposed the C6/C9/C10/C11/C12 business tools plus 5 C8 job tools');
       const resources = await launcher.request({ jsonrpc: '2.0', id: 3, method: 'resources/read', params: { uri: 'kaoyan://capabilities/summary' } });
-       assert.equal(JSON.parse(resources.result.contents[0].text).data.tools, 45);
+       assert.equal(JSON.parse(resources.result.contents[0].text).data.tools, 54);
       assertions.push('resource read returned structured capability evidence');
       const prompt = await launcher.request({ jsonrpc: '2.0', id: 4, method: 'prompts/get', params: { name: 'review.daily.zh_en', arguments: { focus: '今日' } } });
       assert.match(prompt.result.messages[0].content.text, /请基于|今日复习/);
@@ -275,7 +275,7 @@ for (const product of products) {
       launcher = new LauncherProcess(root, journalRoot, clientId, connected.manualConfiguration.argv[connected.manualConfiguration.argv.indexOf('--key-name') + 1]);
       await launcher.initialize(20);
       const afterRestart = await launcher.request({ jsonrpc: '2.0', id: 10, method: 'tools/list', params: {} });
-       assert.equal(afterRestart.result?.tools?.length, 45, `${JSON.stringify(afterRestart)} stderr=${launcher.stderr} appTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-last-response.json')))} authTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-auth-trace.json')))} requestTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-request-trace.json')))} appStderr=${app.stderr()}`);
+       assert.equal(afterRestart.result?.tools?.length, 54, `${JSON.stringify(afterRestart)} stderr=${launcher.stderr} appTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-last-response.json')))} authTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-auth-trace.json')))} requestTrace=${JSON.stringify(readJson(path.join(root, 'protocol-app-request-trace.json')))} appStderr=${app.stderr()}`);
       assertions.push('App restart caused fresh bridge authentication and preserved protocol access');
       writeJson(controlFile, { revoke: true });
       const revoked = await launcher.request({ jsonrpc: '2.0', id: 11, method: 'tools/list', params: {} });

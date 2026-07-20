@@ -21,7 +21,7 @@ import {
   validateOperationCatalog
 } from './gatewaySchemas';
 
-export const operationCatalogVersion = 'agent-catalog-v1@5' as const;
+export const operationCatalogVersion = 'agent-catalog-v1@6' as const;
 
 interface DescriptorDefinition {
   readonly kind: OperationKind;
@@ -145,6 +145,11 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'imports.validate_draft': businessCommand('imports', ['imports.write'], 'R2', 'inverse', { maxAffectedEntities: 50 }),
   'imports.apply_draft': businessCommand('imports', ['imports.write', 'questions.write', 'operations.batch'], 'R3', 'quarantine', { sideEffects: ['database', 'managed_files'], riskResolver: 'bounded_batch', maxAffectedEntities: 50 }),
   'imports.cancel': businessCommand('imports', ['imports.write'], 'R2', 'quarantine', { sideEffects: ['database', 'managed_files'], maxAffectedEntities: 50 }),
+  'ticktick.lists.create': businessCommand('ticktick', ['ticktick.lists.write'], 'R2', 'inverse'),
+  'ticktick.lists.update': businessCommand('ticktick', ['ticktick.lists.write'], 'R2', 'inverse'),
+  'ticktick.habits.create': businessCommand('ticktick', ['ticktick.habits.write'], 'R2', 'inverse'),
+  'ticktick.habits.update': businessCommand('ticktick', ['ticktick.habits.write'], 'R2', 'inverse'),
+  'ticktick.bridges.update': businessCommand('ticktick', ['ticktick.bridges.write'], 'R2', 'inverse', { maxAffectedEntities: 3 }),
   'questions.list': businessQuery('questions', ['questions.read']),
   'questions.get': businessQuery('questions', ['questions.read']),
   'questions.review_logs': businessQuery('questions', ['questions.read', 'reviews.read']),
@@ -160,8 +165,12 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'analytics.get_weak_areas': businessQuery('analytics', ['analytics.read']),
   'study.get_today': businessQuery('study', ['study.read']),
   'study.get_week_summary': businessQuery('study', ['study.read'])
-  , 'imports.preview_draft': businessQuery('imports', ['imports.read'])
-  , 'imports.get': businessQuery('imports', ['imports.read'])
+   , 'imports.preview_draft': businessQuery('imports', ['imports.read'])
+   , 'imports.get': businessQuery('imports', ['imports.read'])
+   , 'ticktick.lists.list': businessQuery('ticktick', ['ticktick.lists.read'])
+   , 'ticktick.habits.list': businessQuery('ticktick', ['ticktick.habits.read'])
+   , 'ticktick.calendar.list_events': businessQuery('ticktick', ['ticktick.calendar.read'])
+   , 'ticktick.bridges.get': businessQuery('ticktick', ['ticktick.bridges.read'])
 };
 
 function managementCommand(
@@ -180,7 +189,7 @@ function managementQuery(requiredScopes: readonly AgentScope[], rendererManageme
 }
 
 function businessCommand(
-  domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'study' | 'imports',
+  domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'study' | 'imports' | 'ticktick',
   requiredScopes: readonly AgentScope[],
   risk: RiskLevel,
   recovery: RecoveryRequirement,
@@ -209,7 +218,7 @@ function r4Command(domain: 'questions' | 'tasks', requiredScopes: readonly Agent
   });
 }
 
-function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics' | 'study' | 'imports', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
+function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics' | 'study' | 'imports' | 'ticktick', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
   return { kind: 'query', domain, requiredScopes, risk: 'R1' };
 }
 

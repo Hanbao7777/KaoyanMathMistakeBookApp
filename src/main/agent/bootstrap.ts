@@ -261,6 +261,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         'agent-catalog-v1@2': 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049',
         'agent-catalog-v1@3': 'sha256-v1:45bfae255adb870e931ff677c039d813cc9f123b49960e2aa2a49145ed6553f5'
         , 'agent-catalog-v1@4': 'sha256-v1:61893de455c7ce347923307c6fe95d4d7fd58564dc5d3ddf72548375b1502514'
+        , 'agent-catalog-v1@5': 'sha256-v1:a57b576a972c4c57c8e182591914a3de3c00ca9279db2a521f1dc0493fc19f98'
       });
       if (acceptedPredecessorHashes[String(catalogVersion)] !== catalogHash) throw new AgentError('RECOVERY_FENCE');
       let policy: unknown;

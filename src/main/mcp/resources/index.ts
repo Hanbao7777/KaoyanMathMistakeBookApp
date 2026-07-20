@@ -6,7 +6,7 @@ import { visibleToPrincipal } from '../tools';
 export interface McpResourceDefinition {
   readonly descriptor: McpRegistryDescriptor;
   readonly operation?: OperationName;
-  readonly kind: 'summary' | 'question' | 'task' | 'knowledge' | 'textbook' | 'job' | 'job-result' | 'study' | 'import' | 'capabilities';
+  readonly kind: 'summary' | 'question' | 'task' | 'knowledge' | 'textbook' | 'job' | 'job-result' | 'study' | 'import' | 'ticktick-list' | 'ticktick-habit' | 'ticktick-calendar' | 'ticktick-bridge' | 'capabilities';
 }
 
 export const mcpV1Resources: readonly McpResourceDefinition[] = Object.freeze([
@@ -14,7 +14,9 @@ export const mcpV1Resources: readonly McpResourceDefinition[] = Object.freeze([
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'reviews.today')!, operation: 'questions.review_buckets' as const, kind: 'summary' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'tasks.today')!, operation: 'tasks.list' as const, kind: 'summary' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'study.today.view')!, operation: 'study.get_today' as const, kind: 'study' as const }),
-  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'study.week.view')!, operation: 'study.get_week_summary' as const, kind: 'study' as const })
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'study.week.view')!, operation: 'study.get_week_summary' as const, kind: 'study' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'ticktick.lists.view')!, operation: 'ticktick.lists.list' as const, kind: 'ticktick-list' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'ticktick.habits.view')!, operation: 'ticktick.habits.list' as const, kind: 'ticktick-habit' as const })
 ]);
 
 export const mcpV1ResourceTemplates: readonly McpResourceDefinition[] = Object.freeze([
@@ -24,7 +26,9 @@ export const mcpV1ResourceTemplates: readonly McpResourceDefinition[] = Object.f
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'jobs.result.view')!, operation: 'jobs.result' as const, kind: 'job-result' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'knowledge.view')!, operation: 'knowledge.get_node' as const, kind: 'knowledge' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'textbooks.view')!, operation: 'textbooks.get' as const, kind: 'textbook' as const })
-  , Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'imports.view')!, operation: 'imports.get' as const, kind: 'import' as const })
+  , Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'imports.view')!, operation: 'imports.get' as const, kind: 'import' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'ticktick.calendar.view')!, operation: 'ticktick.calendar.list_events' as const, kind: 'ticktick-calendar' as const }),
+  Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'ticktick.bridges.view')!, operation: 'ticktick.bridges.get' as const, kind: 'ticktick-bridge' as const })
 ]);
 
 export function visibleResources(principal: AgentPrincipal): readonly McpResourceDefinition[] {

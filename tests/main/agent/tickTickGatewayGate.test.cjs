@@ -28,6 +28,10 @@ const c10Operations = [
 const c11Operations = [
   'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
 ];
+const c12Operations = [
+  'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
+  'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
+];
 
 test('migrated Renderer task and focus channels have one authenticated Gateway path', () => {
   for (const channel of [
@@ -46,20 +50,17 @@ test('migrated Renderer task and focus channels have one authenticated Gateway p
   ]) assert.equal(adapter.includes(forbidden), false, `Forbidden Renderer bypass surface: ${forbidden}`);
 });
 
-test('Renderer business allowlist exactly equals accepted B6, B7, C9, and C10 adapter operations', () => {
+test('Renderer business allowlist exactly equals accepted B6, B7, C9, C10, C11, and C12 adapter operations', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block);
   const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations, ...c11Operations]);
+  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations, ...c11Operations, ...c12Operations]);
   for (const operation of b7Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
-  for (const operation of ['ticktick:lists:create', 'ticktick:settings:save', 'ticktick:habits:create', 'ticktick:bridge:create']) {
-    assert.equal(allowlist.includes(operation), false, operation);
-  }
+  for (const operation of c12Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
+  assert.equal(allowlist.includes('ticktick.settings.save'), false);
 });
 
-test('unmigrated TickTick IPC remains on fixed legacy handlers and is not generically forwarded', () => {
+test('excluded TickTick IPC remains on fixed legacy handlers and is not generically forwarded', () => {
   assert.doesNotMatch(adapter, /event\.sender|clientId\s*[:=]|scopes\s*[:=]|trust\s*[:=]|operation\s*:\s*operation/i);
-  for (const channel of ['ticktick:lists:create', 'ticktick:settings:save', 'ticktick:habits:create', 'ticktick:bridge:create']) {
-    assert.doesNotMatch(register, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));
-  }
+  for (const channel of ['ticktick:settings:save', 'ticktick:habits:delete', 'ticktick:bridge:delete']) assert.doesNotMatch(register, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));
 });

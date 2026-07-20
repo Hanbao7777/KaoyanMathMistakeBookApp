@@ -38,13 +38,13 @@ test('instructions and shared contracts are bounded and dependency-free', () => 
   assert.doesNotMatch(schemas, /from ['"](?:node:|@modelcontextprotocol)/);
 });
 
-test('external manifest and registry expose exactly the accepted C6 and C9 operations', () => {
-  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@4');
+test('external manifest and registry expose exactly the accepted C6, C9, C11, and C12 operations', () => {
+  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@5');
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest), true);
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest.businessOperations), true);
-  assert.equal(mcp.mcpExternalBusinessOperations.length, 40);
-  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 40);
-  assert.equal(registry.mcpV1BusinessRegistry.length, 40);
+  assert.equal(mcp.mcpExternalBusinessOperations.length, 49);
+  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 49);
+  assert.equal(registry.mcpV1BusinessRegistry.length, 49);
   assert.deepEqual(
     registry.mcpV1BusinessRegistry.map(({ operation }) => operation).sort(),
     [...mcp.mcpExternalBusinessOperations].sort()
@@ -99,7 +99,11 @@ test('every business tool has an exact runtime envelope and payload validator', 
     'imports.add_draft_image': { draftId: 'draft-1', itemId: 'item-1', assetId: 'asset-1', role: 'question' },
     'imports.validate_draft': { draftId: 'draft-1' }, 'imports.preview_draft': { draftId: 'draft-1' },
     'imports.apply_draft': { draftId: 'draft-1', previewHash: `sha256-v1:${'a'.repeat(64)}` },
-    'imports.get': { draftId: 'draft-1' }, 'imports.cancel': { draftId: 'draft-1' }
+    'imports.get': { draftId: 'draft-1' }, 'imports.cancel': { draftId: 'draft-1' },
+    'ticktick.lists.list': {}, 'ticktick.lists.create': { input: { name: 'List' } }, 'ticktick.lists.update': { listId: 'list-1', input: { color: '#fff' } },
+    'ticktick.habits.list': {}, 'ticktick.habits.create': { input: { name: 'Habit' } }, 'ticktick.habits.update': { habitId: 'habit-1', input: { target_count: 2 } },
+    'ticktick.calendar.list_events': { year: 2026, month: 7 }, 'ticktick.bridges.get': { taskId: 'task-1' },
+    'ticktick.bridges.update': { input: { ticktick_task_id: 'task-1', linked_type: 'question', linked_id: '1' } }
   };
   for (const descriptor of registry.mcpV1BusinessRegistry) {
     const command = descriptor.handler.gatewayMethod === 'execute';

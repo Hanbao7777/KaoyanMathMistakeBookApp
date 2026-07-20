@@ -106,6 +106,12 @@ function readResourceUri(uri: string): { readonly descriptor: McpRegistryDescrip
   if (uri === 'kaoyan://tasks/today') return { descriptor: mcpV1RegistryByName['tasks.today'], payload: { filters: {} } };
   if (uri === 'kaoyan://study/today') return { descriptor: mcpV1RegistryByName['study.today.view'], payload: {} };
   if (uri === 'kaoyan://study/week') return { descriptor: mcpV1RegistryByName['study.week.view'], payload: {} };
+  if (uri === 'kaoyan://ticktick/lists') return { descriptor: mcpV1RegistryByName['ticktick.lists.view'], payload: {} };
+  if (uri === 'kaoyan://ticktick/habits') return { descriptor: mcpV1RegistryByName['ticktick.habits.view'], payload: {} };
+  const calendar = uri.match(/^kaoyan:\/\/ticktick\/calendar\/(\d{4})\/(\d{1,2})$/);
+  if (calendar) return { descriptor: mcpV1RegistryByName['ticktick.calendar.view'], payload: { year: Number(calendar[1]), month: Number(calendar[2]) } };
+  const bridges = uri.match(/^kaoyan:\/\/ticktick\/bridges\/([^/]+)$/);
+  if (bridges) return { descriptor: mcpV1RegistryByName['ticktick.bridges.view'], payload: { taskId: decodeURIComponent(bridges[1]) } };
   const jobResult = uri.match(/^kaoyan:\/\/jobs\/([0-9a-f-]{36})\/result$/i);
   if (jobResult) return { descriptor: mcpV1RegistryByName['jobs.result.view'], payload: { jobId: jobResult[1] } };
   const job = uri.match(/^kaoyan:\/\/jobs\/([0-9a-f-]{36})$/i);

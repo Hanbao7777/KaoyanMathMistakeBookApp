@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS agent_client_scopes (
     'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
     'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'imports.read', 'imports.write', 'operations.batch', 'tasks.read',
     'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
-    'focus.read', 'focus.control', 'files.images.read'
+    'focus.read', 'focus.control', 'files.images.read',
+    'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
   )),
   catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
   created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),

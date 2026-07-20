@@ -848,7 +848,7 @@ async function initializeDatabaseOnce(
 
 function migrateDatabase(database: Database) {
   const scopeSql = String(all<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0]?.sql ?? '');
-  if (scopeSql && (!scopeSql.includes("'imports.read'") || !scopeSql.includes("'imports.write'"))) {
+  if (scopeSql && (!scopeSql.includes("'imports.read'") || !scopeSql.includes("'imports.write'") || !scopeSql.includes("'ticktick.lists.read'") || !scopeSql.includes("'ticktick.bridges.write'"))) {
     database.run('ALTER TABLE agent_client_scopes RENAME TO agent_client_scopes_legacy');
     database.run(`CREATE TABLE agent_client_scopes (
       client_id TEXT NOT NULL,
@@ -857,7 +857,8 @@ function migrateDatabase(database: Database) {
         'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
         'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
         'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'imports.read', 'imports.write', 'operations.batch', 'tasks.read',
-        'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin', 'focus.read', 'focus.control', 'files.images.read'
+        'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin', 'focus.read', 'focus.control', 'files.images.read',
+        'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
       )), catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0), created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
       PRIMARY KEY (client_id, scope), FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
     )`);

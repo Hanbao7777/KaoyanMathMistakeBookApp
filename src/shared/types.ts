@@ -900,6 +900,8 @@ export interface TickTickListInput {
   parent_id?: string | null;
 }
 
+export type TickTickListPatch = Partial<TickTickListInput>;
+
 export interface TickTickTask {
   id: string;
   list_id: string;
@@ -1102,6 +1104,8 @@ export interface TickTickHabitInput {
   frequency?: 'daily' | 'weekly';
   target_count?: number;
 }
+
+export type TickTickHabitPatch = Partial<TickTickHabitInput>;
 
 export interface TickTickHabitLog {
   id: string;

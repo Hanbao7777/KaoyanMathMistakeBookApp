@@ -1,6 +1,6 @@
 import type { OperationName } from '../../agent/v1/gatewayContracts';
 
-export const mcpExternalExposureManifestVersion = 'mcp-external-exposure-v1@4' as const;
+export const mcpExternalExposureManifestVersion = 'mcp-external-exposure-v1@5' as const;
 export const mcpExternalExposureManifest = Object.freeze({
   apiVersion: 1 as const,
   kind: 'mcp-external-exposure-manifest' as const,
@@ -45,7 +45,16 @@ export const mcpExternalExposureManifest = Object.freeze({
     'imports.preview_draft',
     'imports.apply_draft',
     'imports.get',
-    'imports.cancel'
+    'imports.cancel',
+    'ticktick.lists.list',
+    'ticktick.lists.create',
+    'ticktick.lists.update',
+    'ticktick.habits.list',
+    'ticktick.habits.create',
+    'ticktick.habits.update',
+    'ticktick.calendar.list_events',
+    'ticktick.bridges.get',
+    'ticktick.bridges.update'
   ] as const)
 });
 
@@ -62,7 +71,7 @@ export function assertMcpExternalExposureManifest(value: unknown): asserts value
     throw new Error('MCP external exposure manifest is not the code-owned immutable manifest');
   }
   const manifest = value as typeof mcpExternalExposureManifest;
-  if (!Object.isFrozen(manifest.businessOperations) || manifest.businessOperations.length !== 40 || new Set(manifest.businessOperations).size !== 40) throw new Error('MCP external exposure manifest is not exact');
+  if (!Object.isFrozen(manifest.businessOperations) || manifest.businessOperations.length !== 49 || new Set(manifest.businessOperations).size !== 49) throw new Error('MCP external exposure manifest is not exact');
 }
 
 export const mcpExternalBusinessOperations: readonly OperationName[] = mcpExternalExposureManifest.businessOperations;

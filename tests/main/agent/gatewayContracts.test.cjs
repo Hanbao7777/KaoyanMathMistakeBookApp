@@ -43,7 +43,7 @@ function grant(overrides = {}) {
 
 test('exports an immutable, exhaustive, versioned catalog', () => {
   assert.doesNotThrow(() => agent.validateOperationCatalog(agent.operationCatalog));
-  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@5');
+  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@6');
   assert.deepEqual(
     agent.operationCatalog.operations.map((descriptor) => descriptor.name),
     [...agent.operationNames].sort()
@@ -67,7 +67,9 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
     'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
     'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook',
     'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
-    'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
+    'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel',
+    'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
+    'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
   ]);
   assert.equal(mcp.isMcpExternalBusinessOperation('questions.migrate_categories'), false);
   assert.equal(mcp.isMcpExternalBusinessOperation('tasks.create'), true);

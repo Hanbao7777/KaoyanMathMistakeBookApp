@@ -102,13 +102,7 @@ async function executeTickTickQuery<Q extends TickTickQuery>(query: Q) {
 // ── Lists CRUD ──
 
 export async function listTickTickLists(): Promise<TickTickList[]> {
-  const database = await getReadOnlyDatabase();
-  return readAll<TickTickList & { task_count: number }>(
-    database,
-    `SELECT l.*, (SELECT COUNT(*) FROM ticktick_tasks t WHERE t.list_id = l.id) AS task_count
-     FROM ticktick_lists l
-     ORDER BY l.sort_order ASC, l.created_at ASC`
-  );
+  return executeTickTickQuery({ type: 'ticktick.lists.list', payload: {} });
 }
 
 export async function getTickTickList(listId: string): Promise<TickTickList | null> {
@@ -125,51 +119,11 @@ function getTickTickListFrom(database: TickTickReadDatabase, listId: string): Ti
 }
 
 export async function createTickTickList(input: TickTickListInput): Promise<TickTickList> {
-  const name = input.name.trim();
-  if (!name) throw new Error('清单名称不能为空');
-
-  return executeLegacyMutation('ticktick-list-create', (database) => {
-    const listId = id('list');
-    const timestamp = nowIso();
-    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_lists');
-    const sortOrder = (maxOrder?.m ?? -1) + 1;
-    const changed = runMutation(
-      database,
-      `INSERT INTO ticktick_lists (id, name, color, icon, sort_order, is_folder, parent_id, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [listId, name, input.color || '#4a90d9', input.icon || 'list', sortOrder, input.is_folder ?? 0,
-        input.parent_id ?? null, timestamp, timestamp]
-    );
-    return { changed, value: getTickTickListFrom(database, listId)! };
-  });
+  return executeTickTickCommand({ type: 'ticktick.lists.create', payload: { input } });
 }
 
 export async function updateTickTickList(listId: string, input: TickTickListInput): Promise<TickTickList | null> {
-  return executeLegacyMutation('ticktick-list-update', (database) => {
-    const current = getTickTickListFrom(database, listId);
-    if (!current) return { changed: false, value: null };
-    const changed = runMutation(
-      database,
-    `UPDATE ticktick_lists SET
-       name = COALESCE(?, name),
-       color = COALESCE(?, color),
-       icon = COALESCE(?, icon),
-       is_folder = COALESCE(?, is_folder),
-       parent_id = COALESCE(?, parent_id),
-       updated_at = ?
-     WHERE id = ?`,
-    [
-      input.name?.trim() ?? null,
-      input.color ?? null,
-      input.icon ?? null,
-      input.is_folder ?? null,
-      input.parent_id !== undefined ? input.parent_id : null,
-      nowIso(),
-      listId
-    ]
-    );
-    return { changed, value: getTickTickListFrom(database, listId) };
-  });
+  return executeTickTickCommand({ type: 'ticktick.lists.update', payload: { listId, input } });
 }
 
 export async function deleteTickTickList(listId: string): Promise<boolean> {
@@ -418,36 +372,11 @@ export async function createTickTickFocusSession(input: TickTickFocusSessionInpu
 // ── Bridge ──
 
 export async function getTickTickTaskBridges(taskId: string): Promise<TickTickBridge[]> {
-  return readAll<TickTickBridge>(
-    await getReadOnlyDatabase(),
-    'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? ORDER BY linked_type, linked_id',
-    [taskId]
-  );
+  return executeTickTickQuery({ type: 'ticktick.bridges.get', payload: { taskId } });
 }
 
 export async function createTickTickBridge(input: TickTickBridgeInput): Promise<TickTickBridge> {
-  return executeLegacyMutation('ticktick-bridge-create', (database) => {
-    const timestamp = nowIso();
-    const changed = runMutation(
-      database,
-    `INSERT OR IGNORE INTO ticktick_bridge (ticktick_task_id, linked_type, linked_id, sync_review, sync_mastery, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [
-      input.ticktick_task_id,
-      input.linked_type,
-      input.linked_id,
-      input.sync_review ?? 1,
-      input.sync_mastery ?? 0,
-      timestamp
-    ]
-    );
-    const value = readOne<TickTickBridge>(
-      database,
-      'SELECT * FROM ticktick_bridge WHERE ticktick_task_id = ? AND linked_type = ? AND linked_id = ?',
-      [input.ticktick_task_id, input.linked_type, input.linked_id]
-    )!;
-    return { changed, value };
-  });
+  return executeTickTickCommand({ type: 'ticktick.bridges.update', payload: { input } });
 }
 
 export async function deleteTickTickBridge(bridgeId: number): Promise<boolean> {
@@ -471,85 +400,7 @@ export async function getBridgesForLinked(
 // ── Calendar ──
 
 export async function getTickTickCalendarMonth(year: number, month: number): Promise<TickTickCalendarDay[]> {
-  if (month < 1 || month > 12) throw new Error('月份必须在 1-12 之间');
-
-  const database = await getReadOnlyDatabase();
-
-  // Month range
-  const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
-  const lastDay = new Date(year, month, 0).getDate(); // month is 0-indexed
-  const endDate = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
-
-  // 1) Tasks in this month (parent tasks only)
-  const tasks = readAll<TickTickTask>(database,
-    `${TASK_SELECT} WHERE t.parent_id IS NULL AND t.due_date >= ? AND t.due_date <= ? ORDER BY t.due_date, t.sort_order`,
-    [startDate, endDate]
-  ).map((task) => hydrateTask(database, task));
-
-  // 2) Review due dates from questions table
-  const reviews = readAll<{ next_review_at: string | null }>(database,
-    `SELECT next_review_at FROM questions WHERE next_review_at >= ? AND next_review_at <= ?`,
-    [startDate, endDate]
-  );
-  const reviewMap = new Map<string, number>();
-  for (const review of reviews) {
-      if (review.next_review_at) {
-        const d = review.next_review_at.slice(0, 10);
-        reviewMap.set(d, (reviewMap.get(d) || 0) + 1);
-      }
-  }
-
-  // 3) Focus sessions (pomodoro count is per day)
-  const sessions = readAll<{ d: string; cnt: number }>(database,
-    `SELECT date(start_time) AS d, COUNT(*) AS cnt
-     FROM ticktick_focus_sessions
-     WHERE session_type = 'focus' AND completed = 1 AND date(start_time) >= ? AND date(start_time) <= ?
-     GROUP BY d`,
-    [startDate, endDate]
-  );
-  const pomodoroMap = new Map<string, number>();
-  for (const session of sessions) pomodoroMap.set(String(session.d), Number(session.cnt));
-
-  // 4) AI plans
-  const plans = readAll<{ plan_date: string }>(database,
-    `SELECT plan_date FROM ticktick_ai_plans WHERE plan_date >= ? AND plan_date <= ?`,
-    [startDate, endDate]
-  );
-  const planSet = new Set<string>();
-  for (const plan of plans) planSet.add(String(plan.plan_date));
-
-  // Build day-by-day map
-  const dayMap = new Map<string, TickTickCalendarDay>();
-
-  // Group tasks by date
-  const tasksByDate = new Map<string, TickTickTask[]>();
-  for (const t of tasks) {
-    if (t.due_date) {
-      const list = tasksByDate.get(t.due_date) || [];
-      list.push(t);
-      tasksByDate.set(t.due_date, list);
-    }
-  }
-
-  // Create a calendar day entry for each day of the month
-  for (let day = 1; day <= lastDay; day++) {
-    const dateKey = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-    const dayTasks = tasksByDate.get(dateKey) || [];
-    const completedCount = dayTasks.filter((t) => t.is_completed === 1).length;
-
-    dayMap.set(dateKey, {
-      date: dateKey,
-      task_count: dayTasks.length,
-      completed_count: completedCount,
-      review_due_count: reviewMap.get(dateKey) || 0,
-      pomodoro_count: pomodoroMap.get(dateKey) || 0,
-      has_ai_plan: planSet.has(dateKey),
-      tasks: dayTasks,
-    });
-  }
-
-  // Return sorted by date
-  return Array.from(dayMap.values()).sort((a, b) => a.date.localeCompare(b.date));
+  return executeTickTickQuery({ type: 'ticktick.calendar.list_events', payload: { year, month } });
 }
 
 // ── Settings ──
@@ -622,71 +473,15 @@ export async function saveTickTickSettings(settings: TickTickSettings): Promise<
 const togglingHabits = new Set<string>();
 
 export async function listTickTickHabits(): Promise<TickTickHabit[]> {
-  const database = await getReadOnlyDatabase();
-  const today = localDate();
-  const habits = readAll<TickTickHabit>(database, 'SELECT * FROM ticktick_habits ORDER BY sort_order ASC')
-    .map((habit) => ({ ...habit }));
-  if (habits.length === 0) return [];
-
-  // Batch load all logs for the last 365 days
-  const since = localDate(new Date(Date.now() - 365 * 86400000));
-  const allLogs = readAll<{ habit_id: string; log_date: string }>(database,
-    'SELECT habit_id, log_date FROM ticktick_habit_logs WHERE habit_id IN (' + habits.map(() => '?').join(',') + ') AND log_date >= ? ORDER BY log_date DESC',
-    [...habits.map(h => h.id), since]
-  );
-
-  // Group logs by habit_id
-  const logMap = new Map<string, Set<string>>();
-  for (const log of allLogs) {
-    if (!logMap.has(log.habit_id)) logMap.set(log.habit_id, new Set());
-    logMap.get(log.habit_id)!.add(log.log_date);
-  }
-
-  for (const h of habits) {
-    const logs = logMap.get(h.id) || new Set();
-    h.today_completed = logs.has(today) ? 1 : 0;
-
-    // Streak calculation
-    let streak = 0;
-    for (let i = 0; i < 365; i++) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const ds = localDate(d);
-      if (logs.has(ds)) {
-        streak++;
-      } else if (i === 0) {
-        continue; // Today not yet completed
-      } else {
-        break;
-      }
-    }
-    h.streak = streak;
-  }
-  return habits;
+  return executeTickTickQuery({ type: 'ticktick.habits.list', payload: {} });
 }
 
 export async function createTickTickHabit(input: TickTickHabitInput): Promise<TickTickHabit> {
-  return executeLegacyMutation('ticktick-habit-create', (database) => {
-    const habitId = id('habit');
-    const timestamp = nowIso();
-    const maxOrder = readOne<{ m: number }>(database, 'SELECT MAX(sort_order) AS m FROM ticktick_habits');
-    const sortOrder = (maxOrder?.m ?? -1) + 1;
-    const changed = runMutation(database,
-      'INSERT INTO ticktick_habits (id, name, icon, color, goal_description, frequency, target_count, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [habitId, input.name.trim(), input.icon || 'check', input.color || '#4a90d9', input.goal_description || '', input.frequency || 'daily', input.target_count || 1, sortOrder, timestamp, timestamp]
-    );
-    return { changed, value: readOne<TickTickHabit>(database, 'SELECT * FROM ticktick_habits WHERE id = ?', [habitId])! };
-  });
+  return executeTickTickCommand({ type: 'ticktick.habits.create', payload: { input } });
 }
 
 export async function updateTickTickHabit(id: string, input: TickTickHabitInput): Promise<TickTickHabit | null> {
-  return executeLegacyMutation('ticktick-habit-update', (database) => {
-    const changed = runMutation(database,
-      `UPDATE ticktick_habits SET name = COALESCE(?, name), icon = COALESCE(?, icon), color = COALESCE(?, color), goal_description = COALESCE(?, goal_description), frequency = COALESCE(?, frequency), target_count = COALESCE(?, target_count), updated_at = ? WHERE id = ?`,
-      [input.name?.trim() || null, input.icon || null, input.color || null, input.goal_description || null, input.frequency || null, input.target_count || null, nowIso(), id]
-    );
-    return { changed, value: readOne<TickTickHabit>(database, 'SELECT * FROM ticktick_habits WHERE id = ?', [id]) };
-  });
+  return executeTickTickCommand({ type: 'ticktick.habits.update', payload: { habitId: id, input } });
 }
 
 export async function deleteTickTickHabit(id: string): Promise<boolean> {

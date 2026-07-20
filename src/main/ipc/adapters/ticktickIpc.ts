@@ -5,7 +5,10 @@ import type { DataVersion } from '../../../shared/agent/v1/contracts';
 import type { JsonObject } from '../../../shared/agent/v1/gatewayContracts';
 import { operationCatalogIdentity } from '../../../shared/agent/v1/operationCatalog';
 import type {
+  TickTickBridgeInput,
   TickTickFocusSessionInput,
+  TickTickHabitInput,
+  TickTickListInput,
   TickTickTaskFilters,
   TickTickTaskInput
 } from '../../../shared/types';
@@ -92,3 +95,13 @@ export function listTickTickFocusSessionsFromRenderer(filters: { date?: string; 
 export function createTickTickFocusSessionFromRenderer(input: TickTickFocusSessionInput, requestId?: string) {
   return executeWrite({ type: 'focus.sessions.create', payload: { input } }, requestId);
 }
+
+export function listTickTickListsFromRenderer() { return executeQuery({ type: 'ticktick.lists.list', payload: {} }); }
+export function createTickTickListFromRenderer(input: TickTickListInput, requestId?: string) { return executeWrite({ type: 'ticktick.lists.create', payload: { input } }, requestId); }
+export function updateTickTickListFromRenderer(listId: string, input: TickTickListInput, requestId?: string) { return executeWrite({ type: 'ticktick.lists.update', payload: { listId, input } }, requestId); }
+export function listTickTickHabitsFromRenderer() { return executeQuery({ type: 'ticktick.habits.list', payload: {} }); }
+export function createTickTickHabitFromRenderer(input: TickTickHabitInput, requestId?: string) { return executeWrite({ type: 'ticktick.habits.create', payload: { input } }, requestId); }
+export function updateTickTickHabitFromRenderer(habitId: string, input: TickTickHabitInput, requestId?: string) { return executeWrite({ type: 'ticktick.habits.update', payload: { habitId, input } }, requestId); }
+export function getTickTickCalendarEventsFromRenderer(year: number, month: number) { return executeQuery({ type: 'ticktick.calendar.list_events', payload: { year, month } }); }
+export function getTickTickBridgesFromRenderer(taskId: string) { return executeQuery({ type: 'ticktick.bridges.get', payload: { taskId } }); }
+export function updateTickTickBridgeFromRenderer(input: TickTickBridgeInput, requestId?: string) { return executeWrite({ type: 'ticktick.bridges.update', payload: { input } }, requestId); }

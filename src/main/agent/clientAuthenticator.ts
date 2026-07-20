@@ -83,7 +83,9 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'knowledge.unlink_question',
   'knowledge.bind_textbook',
   'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
-  'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
+  'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel',
+  'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
+  'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
 ] as const);
 
 const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
@@ -101,7 +103,8 @@ const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'study.read', 'study.write',
   'imports.read', 'imports.write', 'operations.batch',
   'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
-  'sessions.manage', 'sessions.read', 'system.read'
+  'sessions.manage', 'sessions.read', 'system.read',
+  'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
 ]);
 
 export interface AuthenticationAdapters {
