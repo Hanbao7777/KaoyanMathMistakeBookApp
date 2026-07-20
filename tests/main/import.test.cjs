@@ -140,9 +140,9 @@ test('prepareJsonImport happy path creates valid preview and confirms import', a
   const detail = await importBatchService.getImportBatchDetail(batches[0].id);
   const metadata = JSON.parse(detail.batch.metadata_json);
   assert.equal(detail.batch.item_count, 2);
-  assert.equal(metadata.phase, 'completed');
-  assert.equal(metadata.cleanup, 'completed');
-  assert.deepEqual(metadata.rows.map((row) => row.status), ['succeeded', 'succeeded']);
+  assert.equal(metadata.schemaVersion, 1);
+  assert.match(metadata.draftId, /^draft-/);
+  assert.match(metadata.previewHash, /^sha256-v1:/);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -166,8 +166,9 @@ test('confirmStructuredImport records invalid and successful rows independently'
   const metadata = JSON.parse(detail.batch.metadata_json);
   assert.equal(detail.batch.status, 'active');
   assert.equal(detail.batch.item_count, 1);
-  assert.deepEqual(metadata.rows.map((row) => row.status), ['succeeded', 'invalid']);
-  assert.match(metadata.rows[1].reason, /图片文件不存在/);
+  assert.equal(metadata.schemaVersion, 1);
+  assert.equal(result.failures[0].title, '无效图片题');
+  assert.match(result.failures[0].reason, /图片文件不存在/);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
@@ -231,11 +232,6 @@ test('confirmStructuredImport records cleanup failure and leaves cleanup retryab
 
   assert.equal(result.successCount, 1);
   assert.match(result.warnings[0].message, /cleanup blocked/);
-  const batches = await importBatchService.listImportBatches();
-  const detail = await importBatchService.getImportBatchDetail(batches[0].id);
-  const metadata = JSON.parse(detail.batch.metadata_json);
-  assert.equal(metadata.phase, 'cleanup_failed');
-  assert.equal(metadata.cleanup, 'failed');
   const journalRoot = path.join(requireMain('services/pathService.js').getPaths().data, 'operation-journal');
   const failedCleanup = fs.readdirSync(journalRoot)
     .filter((name) => name.endsWith('.operation.json'))

@@ -15,6 +15,7 @@ import type {
   StudySession
 } from '../../types';
 import type { AgentApiVersion } from '../versions';
+import type { ImportsCommand, ImportsCommandValues, ImportsQuery, ImportsQueryValues } from '../../imports/v1';
 
 export interface DataVersion {
   readonly dataEpoch: string;
@@ -222,8 +223,8 @@ export interface TextbooksGetQuery { type: 'textbooks.get'; payload: { textbookI
 export interface AnalyticsWeakAreasQuery { type: 'analytics.get_weak_areas'; payload: { subject?: string; limit: number }; }
 export type KnowledgeQuery = KnowledgeListNodesQuery | KnowledgeGetNodeQuery | KnowledgeListLinksQuery | TextbooksListQuery | TextbooksGetQuery | AnalyticsWeakAreasQuery;
 
-export type AppCommand = QuestionCommand | KnowledgeCommand;
-export type AppQuery = QuestionQuery | KnowledgeQuery;
+export type AppCommand = QuestionCommand | KnowledgeCommand | ImportsCommand;
+export type AppQuery = QuestionQuery | KnowledgeQuery | ImportsQuery;
 
 export interface StudyCreatePlanDraftCommand { type: 'study.create_plan_draft'; payload: { date: string; tasks: readonly { subjectId: string; title: string; estimatedMinutes: number; priority?: '高' | '中' | '低'; note?: string }[] }; }
 export interface StudyApplyPlanAdjustmentCommand { type: 'study.apply_plan_adjustment'; payload: { taskId: string; estimatedMinutes?: number; priority?: '高' | '中' | '低'; note?: string; status?: '未开始' | '进行中' | '部分完成' | '已完成' | '已跳过'; skippedReason?: string }; }
@@ -321,5 +322,7 @@ export interface StudyCommandValues {
 }
 export interface StudyQueryValues { 'study.get_today': StudyTodaySummary; 'study.get_week_summary': StudyWeekSummary; }
 
-export type AppCommandValues = QuestionCommandValues & KnowledgeCommandValues & StudyCommandValues;
-export type AppQueryValues = QuestionQueryValues & KnowledgeQueryValues & StudyQueryValues;
+export type AppCommandValues = QuestionCommandValues & KnowledgeCommandValues & StudyCommandValues & ImportsCommandValues;
+export type AppQueryValues = QuestionQueryValues & KnowledgeQueryValues & StudyQueryValues & ImportsQueryValues;
+
+export type { ImportsCommand, ImportsCommandValues, ImportsQuery, ImportsQueryValues } from '../../imports/v1';

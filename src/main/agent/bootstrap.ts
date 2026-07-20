@@ -64,6 +64,7 @@ import {
   type KnowledgeQuery
 } from '../application/knowledge';
 import { isStudyCommandOperation, isStudyQueryOperation, type StudyApplication, type StudyCommand, type StudyQuery, validateStudyCommand, validateStudyQuery } from '../application/study';
+import { isImportsCommandOperation, isImportsQueryOperation, type ImportsApplication, type ImportsCommand, type ImportsQuery, validateImportsCommand, validateImportsQuery } from '../application/imports';
 import {
   createDatabaseCoordinatorControlCapability,
   type DatabaseMutationResult,
@@ -132,6 +133,7 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
   readonly tickTickApplication?: TickTickApplication;
   readonly knowledgeApplication?: KnowledgeApplication;
   readonly studyApplication?: StudyApplication;
+  readonly importsApplication?: ImportsApplication;
 }
 
 export interface AgentGatewayComposition {
@@ -258,6 +260,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         'agent-catalog-v1@1': 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2',
         'agent-catalog-v1@2': 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049',
         'agent-catalog-v1@3': 'sha256-v1:45bfae255adb870e931ff677c039d813cc9f123b49960e2aa2a49145ed6553f5'
+        , 'agent-catalog-v1@4': 'sha256-v1:61893de455c7ce347923307c6fe95d4d7fd58564dc5d3ddf72548375b1502514'
       });
       if (acceptedPredecessorHashes[String(catalogVersion)] !== catalogHash) throw new AgentError('RECOVERY_FENCE');
       let policy: unknown;
@@ -405,6 +408,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       return;
     }
     if (isStudyCommandOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateStudyCommand({ type: envelope.operation, payload: envelope.payload }); return; }
+    if (isImportsCommandOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateImportsCommand({ type: envelope.operation, payload: envelope.payload }); return; }
     validateCommandEnvelope({
       apiVersion: agentApiVersion,
       kind: 'command',
@@ -429,6 +433,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       return;
     }
     if (isStudyQueryOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateStudyQuery({ type: envelope.operation, payload: envelope.payload }); return; }
+    if (isImportsQueryOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateImportsQuery({ type: envelope.operation, payload: envelope.payload }); return; }
     validateQueryEnvelope({
       apiVersion: agentApiVersion,
       kind: 'query',
@@ -687,6 +692,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         );
       }
       if (isStudyCommandOperation(plan.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); return options.studyApplication.execute({ type: plan.operation, payload: plan.payload } as StudyCommand, context, terminalHook); }
+      if (isImportsCommandOperation(plan.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); return options.importsApplication.execute({ type: plan.operation, payload: plan.payload } as ImportsCommand, context, terminalHook); }
       const command = { type: plan.operation, payload: plan.payload } as AppCommand;
       const dispatch = () => options.commandBus.executeWithExecutionReceipt(
         receiptCapability,
@@ -724,6 +730,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         ));
       }
       if (isStudyQueryOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); return Promise.resolve(options.studyApplication.query({ type: envelope.operation, payload: envelope.payload } as StudyQuery, context)); }
+      if (isImportsQueryOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); return Promise.resolve(options.importsApplication.query({ type: envelope.operation, payload: envelope.payload } as ImportsQuery, context)); }
       return Promise.resolve(options.queryBus.execute({
         apiVersion: agentApiVersion,
         kind: 'query',

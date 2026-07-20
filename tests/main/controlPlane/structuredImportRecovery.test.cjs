@@ -96,16 +96,13 @@ test('image staging failure compensates the row and finalization survives restar
     return originalOpen.call(fs.promises, filePath, ...args);
   };
 
-  let result;
   try {
-    result = await structuredImportService.confirmStructuredImport(preview.sessionId);
+    await assert.rejects(structuredImportService.confirmStructuredImport(preview.sessionId), /injected stage failure/);
   } finally {
     fs.promises.open = originalOpen;
   }
-  assert.equal(result.successCount, 0);
-  assert.equal(result.failCount, 1);
   assert.equal((await databaseService.listQuestions({})).length, 0);
-  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 3);
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
   const journalRoot = path.join(getControlPlanePaths().dataRoot, 'data', 'operation-journal');
   const manifestPath = path.join(journalRoot, fs.readdirSync(journalRoot).find((name) => name.endsWith('.operation.json')));
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -115,15 +112,10 @@ test('image staging failure compensates the row and finalization survives restar
 
   await reopenExistingDatabase();
   assert.equal(JSON.parse(fs.readFileSync(manifestPath, 'utf8')).state, 'compensated');
-  const detail = await onlyBatchDetail();
-  const metadata = JSON.parse(detail.batch.metadata_json);
-  assert.equal(detail.batch.status, 'failed');
-  assert.equal(detail.batch.item_count, 0);
-  assert.equal(detail.batch.asset_count, 0);
-  assert.equal(metadata.phase, 'completed');
-  assert.equal(metadata.rows[0].status, 'failed');
-  assert.equal(metadata.rows[0].imageStatus, 'failed');
-  assert.equal(metadata.rows[0].reason, 'An internal error occurred.');
+  assert.equal((await importBatchService.listImportBatches()).length, 0);
+  const failedDatabase = await databaseService.getDatabase();
+  assert.equal(databaseService.oneSql(failedDatabase, 'SELECT COUNT(*) AS count FROM import_drafts WHERE state = ?', ['collecting']).count, 1);
+  assert.equal(databaseService.oneSql(failedDatabase, 'SELECT COUNT(*) AS count FROM import_managed_assets').count, 0);
 });
 
 test('journaled image commit and explainable finalization survive restart', async () => {
@@ -138,19 +130,22 @@ test('journaled image commit and explainable finalization survive restart', asyn
   const manifests = fs.readdirSync(journalRoot)
     .filter((name) => name.endsWith('.operation.json'))
     .map((name) => JSON.parse(fs.readFileSync(path.join(journalRoot, name), 'utf8')));
-  assert.equal(manifests.length, 1);
-  assert.equal(manifests[0].state, 'completed');
-  assert.equal(fs.existsSync(manifests[0].files[0].targetPath), true);
+  const applyManifest = manifests.find((manifest) => manifest.commandType === 'imports.apply_draft');
+  assert.ok(applyManifest);
+  assert.equal(applyManifest.state, 'completed');
+  assert.equal(fs.existsSync(applyManifest.files[0].targetPath), true);
 
   await reopenExistingDatabase();
   const detail = await onlyBatchDetail();
   const metadata = JSON.parse(detail.batch.metadata_json);
+  assert.equal(detail.batch.status, 'active');
   assert.equal(detail.batch.item_count, 1);
   assert.equal(detail.batch.asset_count, 1);
-  assert.equal(metadata.phase, 'completed');
-  assert.equal(metadata.cleanup, 'completed');
-  assert.equal(metadata.rows[0].status, 'succeeded');
-  assert.equal(metadata.rows[0].imageStatus, 'committed');
+  assert.equal(metadata.schemaVersion, 1);
+  assert.match(metadata.draftId, /^draft-/);
+  assert.match(metadata.previewHash, /^sha256-v1:/);
+  assert.equal(metadata.provenance.source, 'structured_file');
+  assert.equal(metadata.provenance.networkDisclosure, 'none');
   assert.equal(fs.existsSync(detail.assets[0].file_path), true);
 });
 

@@ -78,6 +78,7 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
     'clients.manage', 'clients.read', 'control.manage', 'policy.read', 'questions.archive', 'questions.read', 'questions.write', 'r4.manage', 'r4.read',
     'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
     'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write',
+    'imports.read', 'imports.write', 'operations.batch',
     'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'sessions.manage', 'sessions.read', 'system.read'
   ]);
@@ -105,7 +106,8 @@ test('renderer business allowlist is exact, frozen, and module-owned', () => {
     'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links',
     'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
     'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook',
-    'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
+    'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
+    'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
   ]);
   assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);

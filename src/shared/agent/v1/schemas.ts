@@ -9,6 +9,7 @@ import type {
   ExecutionContext,
   QueryEnvelope
 } from './contracts';
+import { validateImportsCommand, validateImportsQuery } from '../../imports/v1';
 
 type JsonObject = Record<string, unknown>;
 type Assertion = (value: unknown, path: string) => void;
@@ -281,7 +282,8 @@ export function validateCommandEnvelope(value: unknown): asserts value is Comman
   const context = envelope.context;
   validateExecutionContext(context);
   validateCommandConcurrency(context);
-  if (String((envelope.command as { type: string }).type).startsWith('study.')) validateStudyCommand(envelope.command);
+  if (String((envelope.command as { type: string }).type).startsWith('imports.')) validateImportsCommand(envelope.command);
+  else if (String((envelope.command as { type: string }).type).startsWith('study.')) validateStudyCommand(envelope.command);
   else if (String((envelope.command as { type: string }).type).startsWith('knowledge.')) validateKnowledgeCommand(envelope.command);
   else validateQuestionCommand(envelope.command);
 }
@@ -292,7 +294,8 @@ export function validateQueryEnvelope(value: unknown): asserts value is QueryEnv
   if (envelope.apiVersion !== agentApiVersion) throw new AgentError('UNSUPPORTED_API_VERSION');
   if (envelope.kind !== 'query') fail('envelope.kind');
   validateExecutionContext(envelope.context);
-  if (String((envelope.query as { type: string }).type).startsWith('study.')) validateStudyQuery(envelope.query);
+  if (String((envelope.query as { type: string }).type).startsWith('imports.')) validateImportsQuery(envelope.query);
+  else if (String((envelope.query as { type: string }).type).startsWith('study.')) validateStudyQuery(envelope.query);
   else if (['knowledge.', 'textbooks.', 'analytics.'].some((prefix) => String((envelope.query as { type: string }).type).startsWith(prefix))) validateKnowledgeQuery(envelope.query);
   else validateQuestionQuery(envelope.query);
 }

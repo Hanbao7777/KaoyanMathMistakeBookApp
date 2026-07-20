@@ -25,6 +25,9 @@ const c9Operations = [
 const c10Operations = [
   'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
 ];
+const c11Operations = [
+  'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
+];
 
 test('migrated Renderer task and focus channels have one authenticated Gateway path', () => {
   for (const channel of [
@@ -47,7 +50,7 @@ test('Renderer business allowlist exactly equals accepted B6, B7, C9, and C10 ad
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block);
   const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations]);
+  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations, ...c11Operations]);
   for (const operation of b7Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   for (const operation of ['ticktick:lists:create', 'ticktick:settings:save', 'ticktick:habits:create', 'ticktick:bridge:create']) {
     assert.equal(allowlist.includes(operation), false, operation);

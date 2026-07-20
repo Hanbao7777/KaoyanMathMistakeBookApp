@@ -4,6 +4,7 @@ import { operationCatalog, operationCatalogIdentity, resolveOperationDescriptor 
 import { validateTickTickCommand, validateTickTickQuery } from '../application/ticktick/contracts';
 import { validateKnowledgeCommand, validateKnowledgeQuery } from '../application/knowledge/contracts';
 import { validateStudyCommand, validateStudyQuery } from '../application/study/contracts';
+import { validateImportsCommand, validateImportsQuery } from '../application/imports/contracts';
 import { assertMcpExternalExposureManifest, mcpExternalExposureManifest, mcpExternalBusinessOperations } from '../../shared/mcp/v1/exposureManifest';
 import { mcpCapabilityVersion, mcpCurrentProtocolVersion, mcpProtocolVersions, mcpSchemaVersion, mcpServerVersion } from '../../shared/mcp/v1/versions';
 import type { McpCapabilitySummary, McpRegistryDescriptor, McpRuntimeValidator } from '../../shared/mcp/v1/contracts';
@@ -33,7 +34,8 @@ const descriptions: Readonly<Record<string, string>> = Object.freeze({
   'knowledge.list_links': 'List bounded knowledge-question links.', 'textbooks.list': 'List bounded textbook metadata.',
   'textbooks.get': 'Read one textbook metadata record.', 'analytics.get_weak_areas': 'List bounded weak knowledge areas.',
   'knowledge.link_question': 'Link one question to one knowledge node.', 'knowledge.unlink_question': 'Unlink one question from one knowledge node.',
-   'knowledge.bind_textbook': 'Bind one knowledge node to one existing textbook.', 'knowledge.view': 'Read one addressable knowledge node resource.', 'textbooks.view': 'Read one addressable textbook metadata resource.',
+    'knowledge.bind_textbook': 'Bind one knowledge node to one existing textbook.', 'knowledge.view': 'Read one addressable knowledge node resource.', 'textbooks.view': 'Read one addressable textbook metadata resource.',
+   'imports.create_draft': 'Create one bounded structured import draft.', 'imports.add_draft_image': 'Bind one App-managed user-selected image to a draft item.', 'imports.validate_draft': 'Validate and deduplicate one bounded import draft.', 'imports.preview_draft': 'Read the deterministic change preview for one draft.', 'imports.apply_draft': 'Apply one validated import draft through a durable job and journal.', 'imports.get': 'Read one owner-bound import draft.', 'imports.cancel': 'Cancel one owner-bound draft and quarantine staged assets.', 'imports.view': 'Read one owner-bound import draft resource.',
    'study.get_today': 'Read one bounded daily study supervision summary.', 'study.get_week_summary': 'Read one bounded week-to-date study summary.', 'study.create_plan_draft': 'Create at most twenty bounded draft study tasks.', 'study.apply_plan_adjustment': 'Adjust one existing study task.', 'study.record_manual_progress': 'Record one bounded manual study session.', 'study.today.view': 'Read one addressable daily study summary.', 'study.week.view': 'Read one addressable weekly study summary.', 'study.daily_review.zh_en': 'Use the bilingual bounded daily study review workflow.', 'study.weekly_review.zh_en': 'Use the bilingual bounded weekly study review workflow.'
 });
 
@@ -60,6 +62,7 @@ function payloadValidator(operation: OperationName): McpRuntimeValidator {
       return;
     }
     if (operation.startsWith('study.')) { if (resolveOperationDescriptor(operation).kind === 'command') validateStudyCommand(request); else validateStudyQuery(request); return; }
+    if (operation.startsWith('imports.')) { if (resolveOperationDescriptor(operation).kind === 'command') validateImportsCommand(request); else validateImportsQuery(request); return; }
     if (resolveOperationDescriptor(operation).kind === 'command') validateTickTickCommand(request);
     else validateTickTickQuery(request);
   };
@@ -117,6 +120,7 @@ export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.fre
   Object.freeze({ ...gatewayEntry('jobs.result.view', 'jobs.result', 'resource-template'), exposure: 'support' as const, name: 'jobs.result.view', uriTemplate: 'kaoyan://jobs/{jobId}/result' }),
   Object.freeze({ ...gatewayEntry('knowledge.view', 'knowledge.get_node', 'resource-template'), exposure: 'support' as const, name: 'knowledge.view', uriTemplate: 'kaoyan://knowledge/{nodeId}' }),
   Object.freeze({ ...gatewayEntry('textbooks.view', 'textbooks.get', 'resource-template'), exposure: 'support' as const, name: 'textbooks.view', uriTemplate: 'kaoyan://textbooks/{textbookId}' }),
+  Object.freeze({ ...gatewayEntry('imports.view', 'imports.get', 'resource-template'), exposure: 'support' as const, name: 'imports.view', uriTemplate: 'kaoyan://imports/{draftId}' }),
   Object.freeze({ ...gatewayEntry('study.today.view', 'study.get_today', 'resource'), exposure: 'support' as const, name: 'study.today.view', uri: 'kaoyan://study/today' }),
   Object.freeze({ ...gatewayEntry('study.week.view', 'study.get_week_summary', 'resource'), exposure: 'support' as const, name: 'study.week.view', uri: 'kaoyan://study/week' }),
   Object.freeze({ ...gatewayEntry('study.daily_review.zh_en', 'study.get_today', 'prompt'), exposure: 'support' as const, name: 'study.daily_review.zh_en', promptArguments: Object.freeze(['date']) }),
@@ -131,12 +135,12 @@ export function createMcpCapabilitySummary(principal: AgentPrincipal): McpCapabi
   return Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: visible.filter(({ primitive }) => primitive === 'tool').length, resources: visible.filter(({ primitive }) => primitive === 'resource').length, resourceTemplates: visible.filter(({ primitive }) => primitive === 'resource-template').length, prompts: visible.filter(({ primitive }) => primitive === 'prompt').length });
 }
 
-export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: mcpV1BusinessRegistry.length + mcpV1JobRegistry.length, resources: 5, resourceTemplates: 6, prompts: 4 });
+export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: mcpV1BusinessRegistry.length + mcpV1JobRegistry.length, resources: 5, resourceTemplates: 7, prompts: 4 });
 export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersion, capabilityVersion: mcpCapabilityVersion, schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, instructions: mcpServerInstructionsValue, exposureManifestVersion: mcpExternalExposureManifest.version });
 
 function assertRegistry(): void {
   assertMcpExternalExposureManifest(mcpExternalExposureManifest); validateMcpServerInstructions(mcpServerInstructionsValue);
-  if (mcpV1BusinessRegistry.length !== 33) throw new Error('MCP business registry must contain exactly 33 operations');
+  if (mcpV1BusinessRegistry.length !== 40) throw new Error('MCP business registry must contain exactly 40 operations');
   if (JSON.stringify([...mcpExternalExposureManifest.businessOperations].sort()) !== JSON.stringify(mcpV1BusinessRegistry.map(({ operation }) => operation).sort())) throw new Error('MCP registry and exposure manifest differ');
   if (new Set(mcpV1Registry.map(({ name }) => name)).size !== mcpV1Registry.length) throw new Error('MCP public names must be unique');
   for (const descriptor of mcpV1Registry) {

@@ -186,6 +186,17 @@ const api: AppApi = {
   prepareZipImport: () => invoke<StructuredImportPreview | null>('structuredImport:prepareZip'),
   confirmStructuredImport: (sessionId: string) => invoke<StructuredImportResult>('structuredImport:confirm', sessionId),
   cancelStructuredImport: (sessionId: string) => invoke<boolean>('structuredImport:cancel', sessionId),
+  imports: {
+    selectImages: () => invoke('imports:selectImages'),
+    createDraft: (payload) => invoke('imports:createDraft', payload),
+    addDraftImage: (payload) => invoke('imports:addDraftImage', payload),
+    validateDraft: (draftId) => invoke('imports:validateDraft', draftId),
+    previewDraft: (draftId) => invoke('imports:previewDraft', draftId),
+    applyDraft: (draftId, previewHash) => invoke('imports:applyDraft', draftId, previewHash),
+    get: (draftId) => invoke('imports:get', draftId),
+    cancel: (draftId) => invoke('imports:cancel', draftId),
+    stageSelectedImages: (selectionToken) => invoke('imports:stageSelectedImages', selectionToken)
+  },
   importKnowledgeMapZip: () => invoke<KnowledgeMapImportResult | null>('knowledgeMap:importZip'),
   importQuestionBankZip: () => invoke<QuestionBankImportResult | null>('questionBank:importZip'),
   listExternalQuestions: (filters: ExternalQuestionFilters) => invoke<ExternalQuestion[]>('questionBank:list', filters),
@@ -338,7 +349,6 @@ const api: AppApi = {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('deepseek:diagnose', questionId),
-  recordAiImport: (questionId: number) => invoke<{ batchId: string }>('ai:recordImport', questionId),
 
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };

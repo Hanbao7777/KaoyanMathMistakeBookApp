@@ -45,6 +45,7 @@ export const agentScopes = [
   'focus.read',
   'focus.control',
   'files.images.read'
+  , 'imports.read', 'imports.write'
 ] as const;
 
 export type AgentScope = (typeof agentScopes)[number];
@@ -375,7 +376,7 @@ export const approvalRequirements = ['never', 'policy', 'always', 'r4_grant'] as
 export type ApprovalRequirement = (typeof approvalRequirements)[number];
 export const operationKinds = ['command', 'query'] as const;
 export type OperationKind = (typeof operationKinds)[number];
-export const operationDomains = ['management', 'questions', 'tasks', 'focus', 'knowledge', 'textbooks', 'analytics', 'study'] as const;
+export const operationDomains = ['management', 'questions', 'tasks', 'focus', 'knowledge', 'textbooks', 'analytics', 'study', 'imports'] as const;
 export type OperationDomain = (typeof operationDomains)[number];
 export const riskResolvers = ['static', 'question_delete', 'image_delete', 'bounded_batch', 'task_delete'] as const;
 export type RiskResolver = (typeof riskResolvers)[number];
@@ -500,6 +501,7 @@ export const gatewayBusinessCommandTypes = [
   'knowledge.unlink_question',
   'knowledge.bind_textbook'
   , 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
+  , 'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.apply_draft', 'imports.cancel'
 ] as const;
 
 export const gatewayBusinessQueryTypes = [
@@ -517,6 +519,7 @@ export const gatewayBusinessQueryTypes = [
   'textbooks.get',
   'analytics.get_weak_areas'
   , 'study.get_today', 'study.get_week_summary'
+  , 'imports.preview_draft', 'imports.get'
 ] as const;
 
 export const operationNames = [

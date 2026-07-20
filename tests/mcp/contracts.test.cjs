@@ -39,12 +39,12 @@ test('instructions and shared contracts are bounded and dependency-free', () => 
 });
 
 test('external manifest and registry expose exactly the accepted C6 and C9 operations', () => {
-  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@3');
+  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@4');
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest), true);
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest.businessOperations), true);
-  assert.equal(mcp.mcpExternalBusinessOperations.length, 33);
-  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 33);
-  assert.equal(registry.mcpV1BusinessRegistry.length, 33);
+  assert.equal(mcp.mcpExternalBusinessOperations.length, 40);
+  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 40);
+  assert.equal(registry.mcpV1BusinessRegistry.length, 40);
   assert.deepEqual(
     registry.mcpV1BusinessRegistry.map(({ operation }) => operation).sort(),
     [...mcp.mcpExternalBusinessOperations].sort()
@@ -94,7 +94,12 @@ test('every business tool has an exact runtime envelope and payload validator', 
     'study.get_today': {}, 'study.get_week_summary': {},
     'study.create_plan_draft': { date: '2026-07-18', tasks: [{ subjectId: 'math', title: 'Study', estimatedMinutes: 30 }] },
     'study.apply_plan_adjustment': { taskId: 'task' },
-    'study.record_manual_progress': { date: '2026-07-18', subjectId: 'math', minutes: 30 }
+    'study.record_manual_progress': { date: '2026-07-18', subjectId: 'math', minutes: 30 },
+    'imports.create_draft': { source: 'external_multimodal', networkDisclosure: 'none', items: [{ itemId: 'item-1', title: 'T', content: 'C', wrongThinking: '', correctSolution: 'S', answer: 'A', subject: '高等数学', category: 'calculus', questionType: 'single', errorReason: 'careless', difficulty: '简单', masteryLevel: '未掌握', source: 'test', tags: [], knowledgePoints: [] }] },
+    'imports.add_draft_image': { draftId: 'draft-1', itemId: 'item-1', assetId: 'asset-1', role: 'question' },
+    'imports.validate_draft': { draftId: 'draft-1' }, 'imports.preview_draft': { draftId: 'draft-1' },
+    'imports.apply_draft': { draftId: 'draft-1', previewHash: `sha256-v1:${'a'.repeat(64)}` },
+    'imports.get': { draftId: 'draft-1' }, 'imports.cancel': { draftId: 'draft-1' }
   };
   for (const descriptor of registry.mcpV1BusinessRegistry) {
     const command = descriptor.handler.gatewayMethod === 'execute';

@@ -12,8 +12,8 @@ test('C9 inventory and external manifest keep the exact bounded slice', () => {
   const manifest = require(path.join(projectRoot, 'dist/main/shared/mcp/v1/exposureManifest.js'));
   const expected = ['knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas', 'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'];
   for (const operation of expected) assert.ok(manifest.mcpExternalBusinessOperations.includes(operation));
-  assert.equal(manifest.mcpExternalBusinessOperations.length, 33);
-  for (const forbidden of ['import', 'seed', 'rematch', 'sql', 'pdf']) assert.doesNotMatch(JSON.stringify(manifest.mcpExternalBusinessOperations), new RegExp(forbidden, 'i'));
+  assert.equal(manifest.mcpExternalBusinessOperations.length, 40);
+  for (const forbidden of ['seed', 'rematch', 'sql', 'pdf']) assert.doesNotMatch(JSON.stringify(manifest.mcpExternalBusinessOperations), new RegExp(forbidden, 'i'));
   assert.match(inventory, /Exact external set/);
 });
 

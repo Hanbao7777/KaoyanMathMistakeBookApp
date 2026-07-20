@@ -55,6 +55,14 @@ function questionInput(title = 'Direct IPC containment concurrent question') {
   };
 }
 
+function importItem(title = 'AI import containment question') {
+  return {
+    itemId: 'ai-item-1', title, content: 'content', wrongThinking: 'wrong', correctSolution: 'correct', answer: '1',
+    subject: '高等数学', category: '函数、极限、连续', questionType: '解答题', errorReason: '概念不清',
+    source: 'AI 导入', difficulty: '中等', masteryLevel: '未掌握', tags: [], knowledgePoints: []
+  };
+}
+
 async function waitFor(predicate, timeoutMs = 1000) {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
@@ -64,6 +72,7 @@ async function waitFor(predicate, timeoutMs = 1000) {
 }
 
 test.after(() => cleanupControlPlaneRoot());
+test.beforeEach(() => registerIpcModule.clearRendererImageSelectionProofs());
 
 test('registerIpc contains no mutable database acquisition or raw persistence bypass', () => {
   const source = fs.readFileSync(path.join(projectRoot, 'src/main/ipc/registerIpc.ts'), 'utf8');
@@ -74,6 +83,76 @@ test('registerIpc contains no mutable database acquisition or raw persistence by
   assert.match(source, /async function executeLegacyMutation/);
   assert.match(source, /legacy\.operation_completed/);
   assert.match(source, /getReadOnlyDatabase/);
+});
+
+test('renderer import staging denies an arbitrary local path and accepts only a main-process selection', async () => {
+  await resetControlPlaneEnvironment();
+  const arbitrary = path.join(getControlPlanePaths().testRoot, 'arbitrary-renderer.png');
+  fs.writeFileSync(arbitrary, Buffer.from('arbitrary'));
+  const denied = await invoke('imports:stageSelectedImages', 'invalid-selection-token');
+  assert.equal(denied.ok, false);
+  assert.match(denied.error, /selection token is invalid or expired/);
+
+  electron.dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [arbitrary] });
+  const selection = (await invoke('imports:selectImages')).data;
+  assert.deepEqual(selection.filePaths, [path.normalize(arbitrary)]);
+  const staged = (await invoke('imports:stageSelectedImages', selection.selectionToken)).data;
+  assert.equal(staged.length, 1);
+  assert.equal('filePath' in staged[0], false);
+  const database = await databaseService.getDatabase();
+  assert.equal(databaseService.oneSql(database, 'SELECT COUNT(*) AS count FROM import_managed_assets WHERE asset_id = ?', [staged[0].assetId]).count, 1);
+});
+
+test('C11 AI import metadata failure rolls back apply and preserves exact pre-apply revision', async () => {
+  await resetControlPlaneEnvironment();
+  const draft = (await invoke('imports:createDraft', { source: 'app_ocr_deepseek', networkDisclosure: 'deepseek_text_only', items: [importItem()] })).data;
+  const validation = (await invoke('imports:validateDraft', draft.draftId)).data;
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: 'install-c11-ai-import-failure-trigger',
+    concurrency: 'none',
+    execute(database) {
+      database.run(`CREATE TRIGGER fail_c11_ai_import_item BEFORE INSERT ON import_batch_items
+        BEGIN SELECT RAISE(ABORT, 'forced C11 AI import failure'); END`);
+      return { changed: true, value: null };
+    }
+  });
+  const versionBefore = coordinator.currentVersion();
+
+  const failed = await invoke('imports:applyDraft', draft.draftId, validation.previewHash);
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /internal error/i);
+  assert.deepEqual(coordinator.currentVersion(), versionBefore);
+  const database = await databaseService.getDatabase();
+  assert.equal(databaseService.oneSql(database, "SELECT COUNT(*) AS count FROM import_batches WHERE source = 'app_ocr_deepseek'").count, 0);
+  assert.equal(databaseService.oneSql(database, "SELECT COUNT(*) AS count FROM import_batch_items WHERE target_table = 'questions'").count, 0);
+  assert.equal(databaseService.oneSql(database, "SELECT state FROM import_drafts WHERE draft_id = ?", [draft.draftId]).state, 'validated');
+});
+
+test('C11 AI apply and a question command serialize into exact durable revisions', async () => {
+  await resetControlPlaneEnvironment();
+  const draft = (await invoke('imports:createDraft', { source: 'app_ocr_deepseek', networkDisclosure: 'deepseek_text_only', items: [importItem('AI durable import')] })).data;
+  const validation = (await invoke('imports:validateDraft', draft.draftId)).data;
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const application = await databaseService.getQuestionsApplication();
+  const versionBefore = coordinator.currentVersion();
+
+  const question = await application.execute(
+    { type: 'questions.create', payload: { input: questionInput() } },
+    createInternalExecutionContext({ concurrency: 'none', requestId: crypto.randomUUID(), traceId: crypto.randomUUID() })
+  );
+  const applied = (await invoke('imports:applyDraft', draft.draftId, validation.previewHash)).data;
+  assert.equal(applied.createdQuestionIds.length, 1);
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 2);
+
+  const durableVersion = coordinator.currentVersion();
+  databaseService.resetDatabaseConnection();
+  await databaseService.initializeDatabase();
+  const database = await databaseService.getDatabase();
+  assert.equal(databaseService.oneSql(database, 'SELECT COUNT(*) AS count FROM questions WHERE id = ?', [question.value.id]).count, 1);
+  assert.equal(databaseService.oneSql(database, 'SELECT COUNT(*) AS count FROM questions WHERE id = ?', [applied.createdQuestionIds[0]]).count, 1);
+  assert.equal(databaseService.oneSql(database, "SELECT state FROM import_drafts WHERE draft_id = ?", [draft.draftId]).state, 'applied');
+  assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), durableVersion);
 });
 
 test('white-noise read is pure and identical writes preserve the revision and envelope', async () => {
@@ -109,29 +188,6 @@ test('white-noise read is pure and identical writes preserve the revision and en
   assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), versionAfter);
 });
 
-test('AI import metadata failure rolls back the batch and returns the existing error envelope', async () => {
-  await resetControlPlaneEnvironment();
-  const coordinator = await databaseService.getDatabaseCoordinator();
-  await coordinator.executeWrite({
-    requestId: 'install-ai-import-failure-trigger',
-    concurrency: 'none',
-    execute(database) {
-      database.run(`CREATE TRIGGER fail_ai_import_item BEFORE INSERT ON import_batch_items
-        BEGIN SELECT RAISE(ABORT, 'forced AI import failure'); END`);
-      return { changed: true, value: null };
-    }
-  });
-  const versionBefore = coordinator.currentVersion();
-
-  const response = await invoke('ai:recordImport', 12345);
-  assert.equal(response.ok, false);
-  assert.match(response.error, /forced AI import failure/);
-  assert.deepEqual(coordinator.currentVersion(), versionBefore);
-  const database = await databaseService.getDatabase();
-  assert.equal(databaseService.oneSql(database, "SELECT COUNT(*) AS count FROM import_batches WHERE source = 'AI 智能导入'").count, 0);
-  assert.equal(databaseService.oneSql(database, "SELECT COUNT(*) AS count FROM import_batch_items WHERE target_table = 'questions'").count, 0);
-});
-
 test('white-noise publication failure restores durable state and does not report success', async () => {
   await resetControlPlaneEnvironment();
   const coordinator = await databaseService.getDatabaseCoordinator();
@@ -155,47 +211,6 @@ test('white-noise publication failure restores durable state and does not report
     ok: true,
     data: { enabled: false, noise: 'none' }
   });
-});
-
-test('AI metadata writer and a question command serialize into durable revisions', async () => {
-  await resetControlPlaneEnvironment();
-  const coordinator = await databaseService.getDatabaseCoordinator();
-  const application = await databaseService.getQuestionsApplication();
-  const seed = await application.execute(
-    { type: 'questions.create', payload: { input: questionInput('AI relation seed') } },
-    createInternalExecutionContext({ concurrency: 'none', requestId: crypto.randomUUID(), traceId: crypto.randomUUID() })
-  );
-  const versionBefore = coordinator.currentVersion();
-  const trace = [];
-  application.eventBus.subscribe((event) => {
-    if (event.type === 'legacy.operation_completed' || event.type.startsWith('questions.')) trace.push(event);
-  });
-
-  const questionPromise = application.execute(
-    { type: 'questions.create', payload: { input: questionInput() } },
-    createInternalExecutionContext({ concurrency: 'none', requestId: crypto.randomUUID(), traceId: crypto.randomUUID() })
-  );
-  const importPromise = invoke('ai:recordImport', seed.value.id);
-  const [question, importResponse] = await Promise.all([questionPromise, importPromise]);
-
-  assert.equal(importResponse.ok, true);
-  assert.match(importResponse.data.batchId, /^wrong_questions-/);
-  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 2);
-  assert.equal(trace.length, 2);
-  assert.deepEqual(trace.map((event) => event.versionAfter.dataRevision), [
-    versionBefore.dataRevision + 1,
-    versionBefore.dataRevision + 2
-  ]);
-
-  const durableVersion = coordinator.currentVersion();
-  databaseService.resetDatabaseConnection();
-  await databaseService.initializeDatabase();
-  const database = await databaseService.getDatabase();
-  assert.equal(databaseService.oneSql(database, 'SELECT COUNT(*) AS count FROM questions WHERE id = ?', [question.value.id]).count, 1);
-  assert.equal(databaseService.oneSql(database,
-    'SELECT COUNT(*) AS count FROM import_batch_items WHERE batch_id = ? AND target_id = ?',
-    [importResponse.data.batchId, String(seed.value.id)]).count, 1);
-  assert.deepEqual((await databaseService.getDatabaseCoordinator()).currentVersion(), durableVersion);
 });
 
 test('focus session-end publication failure is observed without false persistence', async () => {

@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS agent_client_scopes (
     'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
     'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
     'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
-    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'operations.batch', 'tasks.read',
+    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'imports.read', 'imports.write', 'operations.batch', 'tasks.read',
     'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'focus.read', 'focus.control', 'files.images.read'
   )),
@@ -561,6 +561,32 @@ CREATE TABLE IF NOT EXISTS import_assets (
   FOREIGN KEY (batch_id) REFERENCES import_batches(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS import_drafts (
+  draft_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('collecting', 'validated', 'applied', 'cancelled')),
+  source TEXT NOT NULL CHECK (source IN ('external_multimodal', 'app_ocr_deepseek', 'structured_file', 'question_bank')),
+  network_disclosure TEXT NOT NULL CHECK (network_disclosure IN ('none', 'deepseek_text_only')),
+  created_by TEXT NOT NULL CHECK (created_by IN ('renderer', 'mcp', 'internal')),
+  items_json TEXT NOT NULL,
+  validation_json TEXT,
+  applied_question_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS import_managed_assets (
+  asset_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_path TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('staged', 'consumed', 'cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS external_questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -713,6 +739,8 @@ CREATE INDEX IF NOT EXISTS idx_import_batches_type ON import_batches(type);
 CREATE INDEX IF NOT EXISTS idx_import_batches_status ON import_batches(status);
 CREATE INDEX IF NOT EXISTS idx_import_batch_items_batch ON import_batch_items(batch_id);
 CREATE INDEX IF NOT EXISTS idx_import_assets_batch ON import_assets(batch_id);
+CREATE INDEX IF NOT EXISTS idx_import_drafts_owner_state ON import_drafts(owner_client_id, state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_import_managed_assets_owner_state ON import_managed_assets(owner_client_id, state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_external_questions_subject ON external_questions(subject);
 CREATE INDEX IF NOT EXISTS idx_external_questions_year ON external_questions(year);
 CREATE INDEX IF NOT EXISTS idx_external_questions_format ON external_questions(question_format);

@@ -6,7 +6,7 @@ import { visibleToPrincipal } from '../tools';
 export interface McpResourceDefinition {
   readonly descriptor: McpRegistryDescriptor;
   readonly operation?: OperationName;
-  readonly kind: 'summary' | 'question' | 'task' | 'knowledge' | 'textbook' | 'job' | 'job-result' | 'study' | 'capabilities';
+  readonly kind: 'summary' | 'question' | 'task' | 'knowledge' | 'textbook' | 'job' | 'job-result' | 'study' | 'import' | 'capabilities';
 }
 
 export const mcpV1Resources: readonly McpResourceDefinition[] = Object.freeze([
@@ -24,6 +24,7 @@ export const mcpV1ResourceTemplates: readonly McpResourceDefinition[] = Object.f
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'jobs.result.view')!, operation: 'jobs.result' as const, kind: 'job-result' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'knowledge.view')!, operation: 'knowledge.get_node' as const, kind: 'knowledge' as const }),
   Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'textbooks.view')!, operation: 'textbooks.get' as const, kind: 'textbook' as const })
+  , Object.freeze({ descriptor: mcpV1Registry.find((entry) => entry.name === 'imports.view')!, operation: 'imports.get' as const, kind: 'import' as const })
 ]);
 
 export function visibleResources(principal: AgentPrincipal): readonly McpResourceDefinition[] {

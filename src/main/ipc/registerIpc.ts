@@ -11,7 +11,8 @@ import {
   getDatabaseCoordinator,
   getCurrentPaths,
   getDashboard,
-  getQuestionsApplication,
+    getQuestionsApplication,
+    getImportsApplication,
   getReadOnlyDatabase,
   getReviewBuckets,
   getStats,
@@ -33,6 +34,7 @@ import {
 } from './adapters/questionsIpc';
 import { createKnowledgeRendererAdapter } from './adapters/knowledgeIpc';
 import { createStudyRendererAdapter } from './adapters/studyIpc';
+import { createImportsRendererAdapter } from './adapters/importsIpc';
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
@@ -206,36 +208,6 @@ async function executeLegacyMutation<T>(
   return result.value;
 }
 
-async function recordAiImport(questionId: number): Promise<{ batchId: string }> {
-  const timestamp = new Date();
-  const batchId = `wrong_questions-${timestamp.getTime()}-${Math.random().toString(36).slice(2, 10)}`;
-  return executeLegacyMutation('ipc-ai-record-import', (database) => {
-    const batchStatement = database.prepare(`INSERT INTO import_batches (
-      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-    ) VALUES (?, 'wrong_questions', ?, ?, 'AI 智能导入', ?, 0, 0, 'active', '', NULL)`);
-    try {
-      batchStatement.run([
-        batchId,
-        `AI 导入 - ${timestamp.toLocaleString('zh-CN')}`,
-        `ai-import-${timestamp.getTime()}`,
-        timestamp.toISOString()
-      ]);
-    } finally {
-      batchStatement.free();
-    }
-
-    const itemStatement = database.prepare(
-      "INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, 'questions', ?, 'created', ?)"
-    );
-    try {
-      itemStatement.run([batchId, String(questionId), timestamp.toISOString()]);
-    } finally {
-      itemStatement.free();
-    }
-    return { changed: true, value: { batchId } };
-  });
-}
-
 async function getWhiteNoiseState(): Promise<{ enabled: boolean; noise: TickTickWhiteNoise }> {
   const database = await getReadOnlyDatabase();
   try {
@@ -271,6 +243,37 @@ async function setWhiteNoiseState(state: { enabled: boolean; noise: TickTickWhit
 }
 
 // ── Shared Timer State (single source of truth: FocusTimerEngine) ──
+interface RendererImageSelection {
+  readonly filePaths: readonly string[];
+  readonly expiresAt: number;
+}
+
+const rendererImageSelections = new Map<string, RendererImageSelection>();
+const RENDERER_IMAGE_SELECTION_TTL_MS = 10 * 60_000;
+
+async function canonicalSelectedImagePath(filePath: string): Promise<string> {
+  return path.normalize(await fs.promises.realpath(filePath));
+}
+
+async function createRendererImageSelection(): Promise<{ readonly selectionToken: string; readonly filePaths: readonly string[] }> {
+  const selected = await chooseImages();
+  const filePaths = Object.freeze(await Promise.all(selected.map(canonicalSelectedImagePath)));
+  const selectionToken = randomUUID().toLowerCase();
+  rendererImageSelections.set(selectionToken, Object.freeze({ filePaths, expiresAt: Date.now() + RENDERER_IMAGE_SELECTION_TTL_MS }));
+  return Object.freeze({ selectionToken, filePaths });
+}
+
+function consumeRendererImageSelection(selectionToken: string): readonly string[] {
+  const now = Date.now();
+  for (const [token, selection] of rendererImageSelections) if (selection.expiresAt <= now) rendererImageSelections.delete(token);
+  const selection = rendererImageSelections.get(selectionToken);
+  if (!selection || selection.expiresAt <= now) throw new Error('Import image selection token is invalid or expired');
+  rendererImageSelections.delete(selectionToken);
+  return selection.filePaths;
+}
+
+export function clearRendererImageSelectionProofs(): void { rendererImageSelections.clear(); }
+
 const focusTimerEngine = new FocusTimerEngine();
 let focusTimerInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -421,6 +424,10 @@ export function registerIpc() {
     const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
     return createStudyRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
   };
+  const imports = async () => {
+    const [controlPlane, coordinator, application] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator(), getImportsApplication()]);
+    return createImportsRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), application, currentVersion: () => coordinator.currentVersion() });
+  };
   handle('knowledge:listNodes', async (parentNodeId?: string, subject?: string) => (await knowledge()).listNodes(parentNodeId, subject));
   handle('knowledge:getNode', async (nodeId: string) => (await knowledge()).getNode(nodeId));
   handle('knowledge:listLinks', async (input: { nodeId?: string; questionId?: number }) => (await knowledge()).listLinks(input));
@@ -435,6 +442,18 @@ export function registerIpc() {
   handle('study:createPlanDraft', async (date: string, tasks: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.create_plan_draft' }>['payload']['tasks']) => (await study()).createPlanDraft(date, tasks));
   handle('study:applyPlanAdjustment', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.apply_plan_adjustment' }>['payload']) => (await study()).applyPlanAdjustment(payload));
   handle('study:recordManualProgress', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.record_manual_progress' }>['payload']) => (await study()).recordManualProgress(payload));
+  handle('imports:createDraft', async (payload: Extract<import('../../shared/imports/v1').ImportsCommand, { type: 'imports.create_draft' }>['payload']) => (await imports()).createDraft(payload));
+  handle('imports:addDraftImage', async (payload: Extract<import('../../shared/imports/v1').ImportsCommand, { type: 'imports.add_draft_image' }>['payload']) => (await imports()).addDraftImage(payload));
+  handle('imports:validateDraft', async (draftId: string) => (await imports()).validateDraft(draftId));
+  handle('imports:previewDraft', async (draftId: string) => (await imports()).previewDraft(draftId));
+  handle('imports:applyDraft', async (draftId: string, previewHash: string) => (await imports()).applyDraft(draftId, previewHash));
+  handle('imports:get', async (draftId: string) => (await imports()).get(draftId));
+  handle('imports:cancel', async (draftId: string) => (await imports()).cancel(draftId));
+  handle('imports:selectImages', () => createRendererImageSelection());
+  handle('imports:stageSelectedImages', async (selectionToken: string) => {
+    const filePaths = consumeRendererImageSelection(selectionToken);
+    return (await imports()).stageSelectedImages(filePaths, { kind: 'main_process_selection' });
+  });
   handle('agentControl:connectClient', (request: PairingRequest) => { validatePairingRequest(request, 'ipc.connectClient'); return agentControlCenterIpc.connectClient(request); });
   handle('agentControl:getClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.getClientConnection'); return agentControlCenterIpc.getClientConnection(request); });
   handle('agentControl:repairClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.repairClientConnection'); return agentControlCenterIpc.repairClientConnection(request); });
@@ -586,9 +605,6 @@ export function registerIpc() {
       throw new Error(`连接失败 (${response.status}): ${errorText.slice(0, 300)}`);
     }
   });
-
-  // AI import batch record
-  handle('ai:recordImport', (questionId: number) => recordAiImport(questionId));
 
   // TickTick Lists
   handle('ticktick:lists:list', () => listTickTickLists());

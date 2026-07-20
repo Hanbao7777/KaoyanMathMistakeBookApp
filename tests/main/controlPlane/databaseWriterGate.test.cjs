@@ -171,6 +171,7 @@ function scanTransactionsAndMutators() {
     const coordinatorRanges = [
       ...invocationRanges(source, /\bexecuteLegacyMutation\s*\(/g),
       ...invocationRanges(source, /\.executeWrite\s*\(/g),
+      ...invocationRanges(source, /\.executeBusinessWrite(?:<[^>]+>)?\s*\(/g),
       ...invocationRanges(source, /\bexecuteWriteWithVerifiedSnapshot\s*\(/g),
       ...(name === 'src/main/agent/bootstrap.ts' ? invocationRanges(source, /\bexecuteControlWrite\s*\(/g) : [])
     ];
@@ -216,6 +217,8 @@ function scanTransactionsAndMutators() {
       else if (repositoryScoped) classification = 'capability-scoped question repository';
       else if (name === 'src/main/application/knowledge/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped knowledge application';
       else if (name === 'src/main/application/study/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped study application';
+      else if (name === 'src/main/application/imports/registerImports.ts' && match.index < source.indexOf('export function registerImports')) classification = 'imports read helper';
+      else if (name === 'src/main/application/imports/registerImports.ts') classification = 'imports journal coordinator';
       else if (capabilityFiles.has(name)) classification = 'coordinator transaction/revision primitive';
       else if (candidateFiles.has(name)) classification = 'bootstrap/candidate validation';
       else if (name === 'src/main/database/schema.ts') classification = 'database bootstrap/migration schema';
@@ -278,7 +281,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 242,
+    line: 244,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -307,13 +310,15 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator control invocation scope': 7,
-    'coordinator invocation scope': 33,
+    'coordinator invocation scope': 44,
     'coordinator transaction/revision primitive': 24,
     'coordinator-scoped agent durability collaborator': 42,
     'coordinator-scoped registry mutation seam': 14,
     'coordinator-fenced identity replacement': 16,
     'database bootstrap/migration': 39,
     'database bootstrap/migration schema': 4,
+    'imports read helper': 1,
+    'imports journal coordinator': 1,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,
     'verified read-only database SQL call': 11

@@ -114,6 +114,8 @@ function readResourceUri(uri: string): { readonly descriptor: McpRegistryDescrip
   if (question) return { descriptor: mcpV1RegistryByName['questions.view'], payload: { questionId: Number(question[1]) } };
   const task = uri.match(/^kaoyan:\/\/tasks\/([^/]+)$/);
   if (task && task[1] !== 'today') return { descriptor: mcpV1RegistryByName['tasks.view'], payload: { taskId: decodeURIComponent(task[1]) } };
+  const draft = uri.match(/^kaoyan:\/\/imports\/([A-Za-z0-9_-]+)$/);
+  if (draft) return { descriptor: mcpV1RegistryByName['imports.view'], payload: { draftId: draft[1] } };
   throw new AgentError('HANDLER_NOT_FOUND');
 }
 

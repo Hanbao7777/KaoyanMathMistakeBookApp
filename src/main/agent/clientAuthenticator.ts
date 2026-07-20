@@ -82,7 +82,8 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'knowledge.link_question',
   'knowledge.unlink_question',
   'knowledge.bind_textbook',
-  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
+  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
+  'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
 ] as const);
 
 const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
@@ -98,6 +99,7 @@ const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
   'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read',
   'study.read', 'study.write',
+  'imports.read', 'imports.write', 'operations.batch',
   'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
   'sessions.manage', 'sessions.read', 'system.read'
 ]);

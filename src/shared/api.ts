@@ -205,6 +205,17 @@ export interface AppApi {
   prepareZipImport: () => Promise<StructuredImportPreview | null>;
   confirmStructuredImport: (sessionId: string) => Promise<StructuredImportResult>;
   cancelStructuredImport: (sessionId: string) => Promise<boolean>;
+  imports: {
+    selectImages: () => Promise<{ readonly selectionToken: string; readonly filePaths: readonly string[] }>;
+    createDraft: (payload: import('./imports/v1').ImportsCreateDraftCommand['payload']) => Promise<import('./imports/v1').ImportDraft>;
+    addDraftImage: (payload: import('./imports/v1').ImportsAddDraftImageCommand['payload']) => Promise<import('./imports/v1').ImportDraft>;
+    validateDraft: (draftId: string) => Promise<import('./imports/v1').ImportDraftValidation>;
+    previewDraft: (draftId: string) => Promise<import('./imports/v1').ImportDraftValidation>;
+    applyDraft: (draftId: string, previewHash: string) => Promise<import('./imports/v1').ImportsCommandValues['imports.apply_draft']>;
+    get: (draftId: string) => Promise<import('./imports/v1').ImportDraft>;
+    cancel: (draftId: string) => Promise<import('./imports/v1').ImportsCommandValues['imports.cancel']>;
+    stageSelectedImages: (selectionToken: string) => Promise<readonly { assetId: string; fileName: string; sha256: string; size: number }[]>;
+  };
   importKnowledgeMapZip: () => Promise<KnowledgeMapImportResult | null>;
   importQuestionBankZip: () => Promise<QuestionBankImportResult | null>;
   listExternalQuestions: (filters: ExternalQuestionFilters) => Promise<ExternalQuestion[]>;
@@ -275,7 +286,6 @@ export interface AppApi {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => Promise<AiDiagnosisResult>;
-  recordAiImport: (questionId: number) => Promise<{ batchId: string }>;
 
   // TickTick Lists
   listTickTickLists: () => Promise<TickTickList[]>;

@@ -142,7 +142,7 @@ test('question IPC registrations use the adapter boundary', () => {
 });
 
 test('direct IPC database writers use coordinator-contained application mutations', () => {
-  for (const channel of ['ai:recordImport', 'ticktick:whiteNoise:get', 'ticktick:whiteNoise:set']) {
+  for (const channel of ['imports:createDraft', 'imports:validateDraft', 'imports:previewDraft', 'imports:applyDraft', 'ticktick:whiteNoise:get', 'ticktick:whiteNoise:set']) {
     assert.equal(registeredChannels.has(channel), true, `missing contained IPC channel: ${channel}`);
   }
   assert.doesNotMatch(registerIpcSource, /\bgetDatabase\s*\(/);
@@ -150,7 +150,8 @@ test('direct IPC database writers use coordinator-contained application mutation
   assert.doesNotMatch(registerIpcSource, /\b(?:createImportBatch|recordImportBatchItem)\s*\(/);
   assert.match(registerIpcSource, /async function executeLegacyMutation/);
   assert.match(registerIpcSource, /getReadOnlyDatabase/);
-  assert.match(registerIpcSource, /handle\('ai:recordImport'[^\n]+recordAiImport/);
+  assert.doesNotMatch(registerIpcSource, /ai:recordImport|recordAiImport/);
+  assert.match(registerIpcSource, /from '\.\/adapters\/importsIpc'/);
   assert.match(registerIpcSource, /handle\('ticktick:whiteNoise:set'[^\n]+setWhiteNoiseState/);
 });
 

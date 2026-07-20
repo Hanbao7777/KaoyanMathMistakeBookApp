@@ -200,6 +200,7 @@ test('question repository construction is capability-scoped at every production 
     }
   }
   assert.deepEqual(constructions.map(({ file }) => file), [
+    'src/main/application/imports/registerImports.ts',
     'src/main/application/questions/commands.ts',
     'src/main/services/importBatchService.ts',
     'src/main/services/questionBankService.ts'

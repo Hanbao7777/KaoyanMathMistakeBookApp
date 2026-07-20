@@ -23,7 +23,8 @@ const rendererOperations = [
   'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list',
   'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
   'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook',
-  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
+  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
+  'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'
 ];
 
 test('migrated Renderer question writes have one authenticated Gateway path and no fallback', () => {

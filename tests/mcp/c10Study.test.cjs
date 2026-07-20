@@ -26,7 +26,7 @@ test('C10 MCP exposure is exact and prompts are bilingual, public-tool-only, and
     assert.equal(descriptor.handler.kind, 'gateway');
   }
   assert.equal(registry.mcpV1CapabilitySummary.resources, 5);
-  assert.equal(registry.mcpV1CapabilitySummary.resourceTemplates, 6);
+  assert.equal(registry.mcpV1CapabilitySummary.resourceTemplates, 7);
   assert.equal(registry.mcpV1CapabilitySummary.prompts, 4);
 });
 

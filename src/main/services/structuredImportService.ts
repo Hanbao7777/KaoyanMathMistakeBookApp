@@ -14,7 +14,7 @@ import {
   type OperationManifest,
   type OperationManifestError
 } from '../persistence/operationJournal';
-import { getDatabaseCoordinator, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
+import { getDatabaseCoordinator, getImportsApplication, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
 import { getPaths } from './pathService';
 import type {
   Difficulty,
@@ -27,6 +27,7 @@ import type {
   StructuredImportResult,
   StructuredImportRow
 } from '../../shared/types';
+import type { ImportsAddDraftImageCommand, ImportsApplyDraftCommand, ImportsCreateDraftCommand, ImportsValidateDraftCommand } from '../../shared/imports/v1';
 
 const TEMPLATE_HEADERS = [
   'title',
@@ -645,7 +646,6 @@ async function finalizeStructuredBatch(batchId: string, result: StructuredImport
 export async function confirmStructuredImport(sessionId: string): Promise<StructuredImportResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('导入会话已失效，请重新选择文件');
-
   const result: StructuredImportResult = {
     successCount: 0,
     failCount: 0,
@@ -653,85 +653,45 @@ export async function confirmStructuredImport(sessionId: string): Promise<Struct
     failures: [],
     warnings: []
   };
-  const traceId = crypto.randomUUID();
-  const batchId = await createStructuredBatch(session);
-  const application = await getQuestionsApplication();
-
-  for (const row of session.preview.rows) {
-    if (!row.isValid) {
-      const reason = row.errors.join('；');
-      result.failCount += 1;
-      result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
-      await recordRowOutcome(batchId, {
-        rowNumber: row.rowNumber,
-        title: row.title,
-        status: 'invalid',
-        imageStatus: row.hasImage ? 'failed' : 'not_requested',
-        knowledgeStatus: row.knowledge_points.length ? 'failed' : 'not_requested',
-        reason,
-        warnings: []
-      });
-      continue;
+  const validRows = session.preview.rows.filter((row) => row.isValid).slice(0, 50);
+  for (const row of session.preview.rows.filter((row) => !row.isValid || !validRows.includes(row))) {
+    const reason = row.isValid ? '单次导入最多支持 50 行' : row.errors.join('；');
+    result.failCount += 1;
+    result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
+  }
+  if (validRows.length) {
+    const application = await getImportsApplication();
+    const coordinator = await getDatabaseCoordinator();
+    const nextContext = () => createInternalExecutionContext({ concurrency: 'strict', expectedVersion: coordinator.currentVersion() });
+    const created = await application.execute<ImportsCreateDraftCommand>({ type: 'imports.create_draft', payload: { source: 'structured_file', networkDisclosure: 'none', items: validRows.map((row) => ({
+      itemId: `row-${row.rowNumber}`, title: row.title, content: row.content, wrongThinking: row.wrong_thinking,
+      correctSolution: row.correct_solution, answer: row.answer, subject: row.subject as '高等数学' | '线性代数' | '概率论' | '其他', category: row.category,
+      questionType: row.question_type, errorReason: row.error_reason, difficulty: row.difficulty,
+      masteryLevel: row.mastery_level, source: row.source, tags: row.tags, knowledgePoints: row.knowledge_points
+    })) } }, nextContext());
+    for (const row of validRows.filter((entry) => entry.hasImage && entry.resolved_image_path)) {
+      const [asset] = await application.stageSelectedImages([row.resolved_image_path!], nextContext());
+      await application.execute<ImportsAddDraftImageCommand>({ type: 'imports.add_draft_image', payload: { draftId: created.value.draftId, itemId: `row-${row.rowNumber}`, assetId: asset.assetId, role: 'question' } }, nextContext());
     }
-
-    let saved: Question | undefined;
-    try {
-      const created = await application.execute(
-        { type: 'questions.create', payload: { input: toQuestionInput(row, batchId), externalRef: `${batchId}:${row.rowNumber}` } },
-        commandContext(traceId)
-      );
-      saved = created.value;
-      const resolved = await resolveKnowledgePoints(row.knowledge_points);
-      for (const message of resolved.warnings) {
-        result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message });
-      }
-      if (resolved.nodeIds.length) {
-        await application.execute({
-          type: 'questions.link_knowledge',
-          payload: { questionId: saved.id, knowledgeNodeIds: resolved.nodeIds, matchType: 'gpt' }
-        }, commandContext(traceId));
-      }
-      await recordRowOutcome(batchId, {
-        rowNumber: row.rowNumber,
-        title: row.title,
-        status: 'succeeded',
-        questionId: saved.id,
-        imageStatus: row.hasImage ? 'committed' : 'not_requested',
-        knowledgeStatus: row.knowledge_points.length ? 'committed' : 'not_requested',
-        warnings: resolved.warnings
-      }, saved);
-      result.successCount += 1;
-      if (row.hasImage) result.imageCopiedCount += 1;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      result.failCount += 1;
-      result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
-      await recordRowOutcome(batchId, {
-        rowNumber: row.rowNumber,
-        title: row.title,
-        status: saved ? 'partial' : 'failed',
-        questionId: saved?.id,
-        imageStatus: saved && row.hasImage ? 'committed' : row.hasImage ? 'failed' : 'not_requested',
-        knowledgeStatus: row.knowledge_points.length ? 'failed' : 'not_requested',
-        reason,
-        warnings: []
-      }, saved);
+    const validation = await application.execute<ImportsValidateDraftCommand>({ type: 'imports.validate_draft', payload: { draftId: created.value.draftId } }, nextContext());
+    if (!validation.value.valid) throw new Error(validation.value.issues.map((issue) => issue.message).join('；'));
+    const applied = await application.execute<ImportsApplyDraftCommand>({ type: 'imports.apply_draft', payload: { draftId: created.value.draftId, previewHash: validation.value.previewHash } }, nextContext());
+    result.successCount = applied.value.createdQuestionIds.length;
+    result.imageCopiedCount = validRows.filter((row) => row.hasImage && !applied.value.skippedItemIds.includes(`row-${row.rowNumber}`)).length;
+    for (const itemId of applied.value.skippedItemIds) {
+      const row = validRows.find((entry) => `row-${entry.rowNumber}` === itemId)!;
+      result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message: '检测到重复错题，已跳过' });
     }
   }
-
-  let cleanup: 'completed' | 'failed' = 'completed';
   try {
     await cleanupStructuredImport(sessionId);
   } catch (error) {
-    cleanup = 'failed';
     result.warnings?.push({
       rowNumber: 0,
       title: path.basename(session.preview.sourceFile),
       message: `临时文件清理失败：${error instanceof Error ? error.message : String(error)}`
     });
   }
-  await finalizeStructuredBatch(batchId, result, cleanup);
-
   return result;
 }
 

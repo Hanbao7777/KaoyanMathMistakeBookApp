@@ -1,11 +1,10 @@
-import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronRight, Eye, FileUp, Loader2, RefreshCw, Sparkles } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Eye, FileUp, Loader2, Pencil, RefreshCw, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import type { AiStructuredQuestion, OcrResult } from '../../shared/types';
-import { QuestionForm } from '../components/QuestionForm';
 import { FormulaText } from '../components/FormulaText';
 import { useToast } from '../components/Toast';
 
-type WizardStep = 'select' | 'processing' | 'confirm' | 'edit' | 'done';
+type WizardStep = 'select' | 'processing' | 'confirm' | 'done';
 
 interface ProgressItem {
   label: string;
@@ -17,15 +16,18 @@ export function AiImportPage() {
   const { toast } = useToast();
   const [step, setStep] = useState<WizardStep>('select');
   const [imagePaths, setImagePaths] = useState<string[]>([]);
+  const [imageSelectionToken, setImageSelectionToken] = useState('');
   const [ocrResults, setOcrResults] = useState<OcrResult[]>([]);
   const [aiResult, setAiResult] = useState<AiStructuredQuestion | null>(null);
+  const [editing, setEditing] = useState(false);
   const [progress, setProgress] = useState<ProgressItem[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
 
   async function pickImages() {
-    const files = await window.api.chooseImages();
-    if (files.length) {
-      setImagePaths(files);
+    const selection = await window.api.imports.selectImages();
+    if (selection.filePaths.length) {
+      setImagePaths([...selection.filePaths]);
+      setImageSelectionToken(selection.selectionToken);
       setErrorMessage('');
     }
   }
@@ -89,10 +91,41 @@ export function AiImportPage() {
   function reset() {
     setStep('select');
     setImagePaths([]);
+    setImageSelectionToken('');
     setOcrResults([]);
     setAiResult(null);
+    setEditing(false);
     setProgress([]);
     setErrorMessage('');
+  }
+
+  async function applyDraft() {
+    if (!aiResult) return;
+    try {
+      const draft = await window.api.imports.createDraft({
+        source: 'app_ocr_deepseek',
+        networkDisclosure: 'deepseek_text_only',
+        items: [{
+          itemId: 'ocr-item-1', title: aiResult.title || '未命名错题', content: aiResult.content || '',
+          wrongThinking: aiResult.wrong_thinking || '', correctSolution: aiResult.correct_solution || '', answer: aiResult.answer || '',
+          subject: (['高等数学', '线性代数', '概率论', '其他'].includes(aiResult.subject) ? aiResult.subject : '其他') as '高等数学' | '线性代数' | '概率论' | '其他', category: aiResult.category || '其他', questionType: aiResult.question_type || '其他',
+          errorReason: aiResult.error_reason || '其他', difficulty: aiResult.difficulty as '简单' | '中等' | '困难' | '压轴',
+          masteryLevel: '未掌握', source: 'AI 导入', tags: aiResult.tags, knowledgePoints: aiResult.knowledge_points
+        }]
+      });
+      if (!imageSelectionToken) throw new Error('图片选择已失效，请重新选择');
+      const assets = await window.api.imports.stageSelectedImages(imageSelectionToken);
+      for (const asset of assets) await window.api.imports.addDraftImage({ draftId: draft.draftId, itemId: 'ocr-item-1', assetId: asset.assetId, role: 'question' });
+      const draftId = draft.draftId;
+      const validation = await window.api.imports.validateDraft(draftId);
+      if (!validation.valid) throw new Error(validation.issues.map((issue) => issue.message).join('；'));
+      const preview = await window.api.imports.previewDraft(draftId);
+      await window.api.imports.applyDraft(draftId, preview.previewHash);
+      setStep('done');
+      toast('错题已保存', 'success');
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
   }
 
   // ====== Step: select ======
@@ -220,7 +253,18 @@ export function AiImportPage() {
         <section className="section-card" style={{ marginTop: 20, padding: 20 }}>
           <h2 style={{ marginTop: 0 }}>AI 结构化预览</h2>
 
-          <div className="ai-confirm-grid">
+          {editing ? (
+            <div className="form-grid">
+              <label className="form-field"><span>标题</span><input value={aiResult.title} onChange={(event) => setAiResult({ ...aiResult, title: event.target.value })} /></label>
+              <label className="form-field"><span>章节</span><input value={aiResult.category} onChange={(event) => setAiResult({ ...aiResult, category: event.target.value })} /></label>
+              <label className="form-field" style={{ gridColumn: '1 / -1' }}><span>题目内容</span><textarea value={aiResult.content} onChange={(event) => setAiResult({ ...aiResult, content: event.target.value })} rows={5} /></label>
+              <label className="form-field" style={{ gridColumn: '1 / -1' }}><span>正确解析</span><textarea value={aiResult.correct_solution} onChange={(event) => setAiResult({ ...aiResult, correct_solution: event.target.value })} rows={6} /></label>
+              <label className="form-field"><span>答案</span><textarea value={aiResult.answer} onChange={(event) => setAiResult({ ...aiResult, answer: event.target.value })} rows={3} /></label>
+              <label className="form-field"><span>错误思考</span><textarea value={aiResult.wrong_thinking} onChange={(event) => setAiResult({ ...aiResult, wrong_thinking: event.target.value })} rows={3} /></label>
+            </div>
+          ) : null}
+
+          {!editing ? <div className="ai-confirm-grid">
             <div className="ai-confirm-field">
               <strong>标题</strong>
               <span>{aiResult.title || '（未识别）'}</span>
@@ -277,7 +321,7 @@ export function AiImportPage() {
                 </div>
               </div>
             ) : null}
-          </div>
+          </div> : null}
 
           {ocrResults.some((r) => r.text) ? (
             <details style={{ marginTop: 16, padding: 12, border: '1px solid var(--color-border)', borderRadius: 8 }}>
@@ -298,79 +342,14 @@ export function AiImportPage() {
             <button className="secondary-button" type="button" onClick={reset}>
               <RefreshCw size={16} /> 重新识别
             </button>
-            <button className="secondary-button" type="button" onClick={() => setStep('edit')}>
-              手动修改
-              <ChevronRight size={16} />
+            <button className="secondary-button" type="button" onClick={() => setEditing((value) => !value)}>
+              <Pencil size={16} /> {editing ? '完成修改' : '手动修改'}
             </button>
-            <button className="primary-button" type="button" onClick={() => setStep('edit')}>
-              <CheckCircle2 size={16} /> 确认，去编辑表单
+            <button className="primary-button" type="button" onClick={applyDraft}>
+              <CheckCircle2 size={16} /> 确认导入
             </button>
           </div>
         </section>
-      </div>
-    );
-  }
-
-  // ====== Step: edit ======
-  if (step === 'edit' && aiResult) {
-    return (
-      <div className="page">
-        <header className="library-hero app-card">
-          <div>
-            <span className="eyebrow"><Sparkles size={14} /> AI 智能导入</span>
-            <h1>编辑并保存</h1>
-            <p>AI 已预填表单，你可以修改任何字段后保存。</p>
-          </div>
-          <div className="header-actions">
-            <button className="secondary-button" type="button" onClick={() => setStep('confirm')}>
-              <ArrowLeft size={16} /> 返回预览
-            </button>
-            <button className="secondary-button" type="button" onClick={reset}>
-              <RefreshCw size={16} /> 重新开始
-            </button>
-          </div>
-        </header>
-
-        <div style={{ marginTop: 20 }}>
-          <QuestionForm
-            initial={{
-              id: 0,
-              title: aiResult.title,
-              content: aiResult.content,
-              wrong_thinking: aiResult.wrong_thinking,
-              wrong_solution: '',
-              correct_solution: aiResult.correct_solution,
-              answer: aiResult.answer,
-              subject: aiResult.subject,
-              category: aiResult.category,
-              question_type: aiResult.question_type,
-              error_reason: aiResult.error_reason,
-              difficulty: aiResult.difficulty as any,
-              mastery_level: '未掌握',
-              note: '',
-              review_count: 0,
-              correct_count: 0,
-              wrong_count: 0,
-              no_idea_count: 0,
-              consecutive_correct: 0,
-              last_reviewed_at: null,
-              next_review_at: null,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-              tags: aiResult.tags,
-              source: 'AI 导入',
-              question_images: [],
-              solution_images: [],
-              knowledge_points: []
-            }}
-            onCancel={reset}
-            onSaved={async (saved) => {
-              try { await window.api.recordAiImport(saved.id); } catch { /* non-critical */ }
-              setStep('done');
-              toast('错题已保存', 'success');
-            }}
-          />
-        </div>
       </div>
     );
   }
