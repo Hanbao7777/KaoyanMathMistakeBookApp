@@ -32,6 +32,7 @@ import {
   updateQuestionFromRenderer
 } from './adapters/questionsIpc';
 import { createKnowledgeRendererAdapter } from './adapters/knowledgeIpc';
+import { createStudyRendererAdapter } from './adapters/studyIpc';
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
@@ -416,6 +417,10 @@ export function registerIpc() {
     const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
     return createKnowledgeRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
   };
+  const study = async () => {
+    const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
+    return createStudyRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
+  };
   handle('knowledge:listNodes', async (parentNodeId?: string, subject?: string) => (await knowledge()).listNodes(parentNodeId, subject));
   handle('knowledge:getNode', async (nodeId: string) => (await knowledge()).getNode(nodeId));
   handle('knowledge:listLinks', async (input: { nodeId?: string; questionId?: number }) => (await knowledge()).listLinks(input));
@@ -425,6 +430,11 @@ export function registerIpc() {
   handle('knowledge:linkQuestion', async (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => (await knowledge()).linkQuestion(questionId, nodeId, matchType));
   handle('knowledge:unlinkQuestion', async (questionId: number, nodeId: string) => (await knowledge()).unlinkQuestion(questionId, nodeId));
   handle('knowledge:bindTextbook', async (nodeId: string, textbookId: number) => (await knowledge()).bindTextbook(nodeId, textbookId));
+  handle('study:getToday', async (date?: string) => (await study()).getToday(date));
+  handle('study:getWeekSummary', async (date?: string) => (await study()).getWeekSummary(date));
+  handle('study:createPlanDraft', async (date: string, tasks: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.create_plan_draft' }>['payload']['tasks']) => (await study()).createPlanDraft(date, tasks));
+  handle('study:applyPlanAdjustment', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.apply_plan_adjustment' }>['payload']) => (await study()).applyPlanAdjustment(payload));
+  handle('study:recordManualProgress', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.record_manual_progress' }>['payload']) => (await study()).recordManualProgress(payload));
   handle('agentControl:connectClient', (request: PairingRequest) => { validatePairingRequest(request, 'ipc.connectClient'); return agentControlCenterIpc.connectClient(request); });
   handle('agentControl:getClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.getClientConnection'); return agentControlCenterIpc.getClientConnection(request); });
   handle('agentControl:repairClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.repairClientConnection'); return agentControlCenterIpc.repairClientConnection(request); });

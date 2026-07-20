@@ -10,7 +10,9 @@ import type {
   KnowledgePoint,
   KnowledgePointReviewStats,
   SafeKnowledgeNode,
-  SafeTextbook
+  SafeTextbook,
+  StudyTask,
+  StudySession
 } from '../../types';
 import type { AgentApiVersion } from '../versions';
 
@@ -223,6 +225,14 @@ export type KnowledgeQuery = KnowledgeListNodesQuery | KnowledgeGetNodeQuery | K
 export type AppCommand = QuestionCommand | KnowledgeCommand;
 export type AppQuery = QuestionQuery | KnowledgeQuery;
 
+export interface StudyCreatePlanDraftCommand { type: 'study.create_plan_draft'; payload: { date: string; tasks: readonly { subjectId: string; title: string; estimatedMinutes: number; priority?: '高' | '中' | '低'; note?: string }[] }; }
+export interface StudyApplyPlanAdjustmentCommand { type: 'study.apply_plan_adjustment'; payload: { taskId: string; estimatedMinutes?: number; priority?: '高' | '中' | '低'; note?: string; status?: '未开始' | '进行中' | '部分完成' | '已完成' | '已跳过'; skippedReason?: string }; }
+export interface StudyRecordManualProgressCommand { type: 'study.record_manual_progress'; payload: { date: string; subjectId: string; minutes: number; note?: string; taskId?: string; materialId?: string; materialCurrentAmount?: number }; }
+export type StudyCommand = StudyCreatePlanDraftCommand | StudyApplyPlanAdjustmentCommand | StudyRecordManualProgressCommand;
+export interface StudyGetTodayQuery { type: 'study.get_today'; payload: { date?: string }; }
+export interface StudyGetWeekSummaryQuery { type: 'study.get_week_summary'; payload: { date?: string }; }
+export type StudyQuery = StudyGetTodayQuery | StudyGetWeekSummaryQuery;
+
 export interface CommandEnvelope<C extends AppCommand = AppCommand> {
   apiVersion: AgentApiVersion;
   kind: 'command';
@@ -302,5 +312,14 @@ export interface KnowledgeQueryValues {
   'analytics.get_weak_areas': KnowledgePointReviewStats[];
 }
 
-export type AppCommandValues = QuestionCommandValues & KnowledgeCommandValues;
-export type AppQueryValues = QuestionQueryValues & KnowledgeQueryValues;
+export interface StudyTodaySummary { readonly date: string; readonly dailyTargetMinutes: number; readonly totalMinutes: number; readonly completedTasks: number; readonly totalTasks: number; readonly unfinishedTasks: readonly StudyTask[]; }
+export interface StudyWeekSummary { readonly weekStart: string; readonly weekEnd: string; readonly totalMinutes: number; readonly completedTasks: number; readonly totalTasks: number; readonly daily: readonly { date: string; minutes: number; completedTasks: number; totalTasks: number }[]; }
+export interface StudyCommandValues {
+  'study.create_plan_draft': { readonly date: string; readonly createdTaskIds: readonly string[] };
+  'study.apply_plan_adjustment': StudyTask | null;
+  'study.record_manual_progress': StudySession;
+}
+export interface StudyQueryValues { 'study.get_today': StudyTodaySummary; 'study.get_week_summary': StudyWeekSummary; }
+
+export type AppCommandValues = QuestionCommandValues & KnowledgeCommandValues & StudyCommandValues;
+export type AppQueryValues = QuestionQueryValues & KnowledgeQueryValues & StudyQueryValues;

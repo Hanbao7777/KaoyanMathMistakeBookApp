@@ -43,7 +43,7 @@ function grant(overrides = {}) {
 
 test('exports an immutable, exhaustive, versioned catalog', () => {
   assert.doesNotThrow(() => agent.validateOperationCatalog(agent.operationCatalog));
-  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@3');
+  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@4');
   assert.deepEqual(
     agent.operationCatalog.operations.map((descriptor) => descriptor.name),
     [...agent.operationNames].sort()
@@ -65,7 +65,8 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
     'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete', 'tasks.list', 'tasks.get',
     'focus.sessions.create', 'focus.sessions.list',
     'knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
-    'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'
+    'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook',
+    'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
   ]);
   assert.equal(mcp.isMcpExternalBusinessOperation('questions.migrate_categories'), false);
   assert.equal(mcp.isMcpExternalBusinessOperation('tasks.create'), true);

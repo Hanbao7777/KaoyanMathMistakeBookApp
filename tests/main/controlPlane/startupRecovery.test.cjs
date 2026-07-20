@@ -17,6 +17,7 @@ const gatewaySchemas = require(path.join(environment.projectRoot, 'dist/main/sha
 
 const c7Catalog = Object.freeze({ version: 'agent-catalog-v1@1', hash: 'sha256-v1:08b0d87b9ded8ffd553e906a5d4757816f0b538be243888c1d708ad1581e7fd2' });
 const c8Catalog = Object.freeze({ version: 'agent-catalog-v1@2', hash: 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049' });
+const c9Catalog = Object.freeze({ version: 'agent-catalog-v1@3', hash: 'sha256-v1:45bfae255adb870e931ff677c039d813cc9f123b49960e2aa2a49145ed6553f5' });
 
 let SQL;
 let nonce = 0;
@@ -173,8 +174,8 @@ test('fresh database composes the recovered Gateway before publishing ready', as
   assert.ok(await databaseService.getAgentControlPlane());
 });
 
-test('C9 migrates only exact catalog predecessors and revalidates policy', async () => {
-  for (const predecessor of [c7Catalog, c8Catalog]) {
+test('C10 migrates only exact catalog predecessors and revalidates policy', async () => {
+  for (const predecessor of [c7Catalog, c8Catalog, c9Catalog]) {
     await resetRoots();
     fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(predecessor));
     await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
@@ -191,7 +192,8 @@ test('C9 migrates only exact catalog predecessors and revalidates policy', async
 test('C9 fences unknown, corrupt known, and future catalog mismatches', async () => {
   for (const invalid of [
     { version: 'agent-catalog-v1@99', hash: `sha256-v1:${'f'.repeat(64)}` },
-    { version: c8Catalog.version, hash: `sha256-v1:${'e'.repeat(64)}` }
+    { version: c8Catalog.version, hash: `sha256-v1:${'e'.repeat(64)}` },
+    { version: c9Catalog.version, hash: `sha256-v1:${'e'.repeat(64)}` }
   ]) {
     await resetRoots();
     fs.writeFileSync(currentPaths().database, createCatalogDatabaseBytes(invalid));
@@ -205,11 +207,11 @@ test('C9 upgrades the client-scope constraint without losing the accepted schema
   await initializeWithTrace({ randomId: environment.createDeterministicUuid() });
   const database = await databaseService.getDatabase();
   const scopeSql = String(database.exec("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0].values[0][0]);
-  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read']) assert.match(scopeSql, new RegExp(`'${scope.replace('.', '\\.')}'`));
+  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read', 'study.read', 'study.write']) assert.match(scopeSql, new RegExp(`'${scope.replace('.', '\\.')}'`));
   const timestamp = '2026-07-18T00:00:00.000Z';
   database.run(`INSERT INTO agent_clients (client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at)
     VALUES ('scope-upgrade-client', 'scope-upgrade-subject', 'Scope Upgrade', ?, 'observer', ?, ?)`, [`sha256-v1:${'1'.repeat(64)}`, timestamp, timestamp]);
-  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read']) {
+  for (const scope of ['knowledge.read', 'textbooks.read', 'analytics.read', 'study.read', 'study.write']) {
     assert.doesNotThrow(() => database.run('INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)', ['scope-upgrade-client', scope, agent.operationCatalogIdentity.version, timestamp]));
   }
 });

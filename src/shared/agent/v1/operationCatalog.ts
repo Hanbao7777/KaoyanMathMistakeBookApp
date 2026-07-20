@@ -21,7 +21,7 @@ import {
   validateOperationCatalog
 } from './gatewaySchemas';
 
-export const operationCatalogVersion = 'agent-catalog-v1@3' as const;
+export const operationCatalogVersion = 'agent-catalog-v1@4' as const;
 
 interface DescriptorDefinition {
   readonly kind: OperationKind;
@@ -137,6 +137,9 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'knowledge.link_question': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
   'knowledge.unlink_question': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
   'knowledge.bind_textbook': businessCommand('knowledge', ['knowledge.write'], 'R2', 'inverse', { maxAffectedEntities: 2 }),
+  'study.create_plan_draft': businessCommand('study', ['study.write'], 'R3', 'inverse', { maxAffectedEntities: 20 }),
+  'study.apply_plan_adjustment': businessCommand('study', ['study.write'], 'R2', 'inverse'),
+  'study.record_manual_progress': businessCommand('study', ['study.write'], 'R2', 'inverse', { maxAffectedEntities: 3 }),
   'questions.list': businessQuery('questions', ['questions.read']),
   'questions.get': businessQuery('questions', ['questions.read']),
   'questions.review_logs': businessQuery('questions', ['questions.read', 'reviews.read']),
@@ -149,7 +152,9 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
   'knowledge.list_links': businessQuery('knowledge', ['knowledge.read']),
   'textbooks.list': businessQuery('textbooks', ['textbooks.read']),
   'textbooks.get': businessQuery('textbooks', ['textbooks.read']),
-  'analytics.get_weak_areas': businessQuery('analytics', ['analytics.read'])
+  'analytics.get_weak_areas': businessQuery('analytics', ['analytics.read']),
+  'study.get_today': businessQuery('study', ['study.read']),
+  'study.get_week_summary': businessQuery('study', ['study.read'])
 };
 
 function managementCommand(
@@ -168,7 +173,7 @@ function managementQuery(requiredScopes: readonly AgentScope[], rendererManageme
 }
 
 function businessCommand(
-  domain: 'questions' | 'tasks' | 'focus' | 'knowledge',
+  domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'study',
   requiredScopes: readonly AgentScope[],
   risk: RiskLevel,
   recovery: RecoveryRequirement,
@@ -197,7 +202,7 @@ function r4Command(domain: 'questions' | 'tasks', requiredScopes: readonly Agent
   });
 }
 
-function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
+function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics' | 'study', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
   return { kind: 'query', domain, requiredScopes, risk: 'R1' };
 }
 

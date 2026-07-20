@@ -253,6 +253,11 @@ export interface AppApi {
   getDailyReview: (date: string) => Promise<DailyReview | null>;
   saveDailyReview: (input: DailyReviewInput) => Promise<DailyReview | null>;
   getStudySupervisorDashboard: (date?: string) => Promise<StudySupervisorDashboard>;
+  getStudyToday: (date?: string) => Promise<import('./agent/v1/contracts').StudyTodaySummary>;
+  getStudyWeekSummary: (date?: string) => Promise<import('./agent/v1/contracts').StudyWeekSummary>;
+  createStudyPlanDraft: (date: string, tasks: import('./agent/v1/contracts').StudyCreatePlanDraftCommand['payload']['tasks']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.create_plan_draft']>;
+  applyStudyPlanAdjustment: (payload: import('./agent/v1/contracts').StudyApplyPlanAdjustmentCommand['payload']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.apply_plan_adjustment']>;
+  recordStudyManualProgress: (payload: import('./agent/v1/contracts').StudyRecordManualProgressCommand['payload']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.record_manual_progress']>;
   saveWindowState: (state: WindowState) => void;
   loadWindowState: () => Promise<WindowState | null>;
 

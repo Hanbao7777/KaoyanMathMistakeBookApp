@@ -104,6 +104,8 @@ function readResourceUri(uri: string): { readonly descriptor: McpRegistryDescrip
   if (uri === 'kaoyan://capabilities/summary') return { descriptor: mcpV1RegistryByName['capabilities.summary'], payload: {} };
   if (uri === 'kaoyan://reviews/today') return { descriptor: mcpV1RegistryByName['reviews.today'], payload: {} };
   if (uri === 'kaoyan://tasks/today') return { descriptor: mcpV1RegistryByName['tasks.today'], payload: { filters: {} } };
+  if (uri === 'kaoyan://study/today') return { descriptor: mcpV1RegistryByName['study.today.view'], payload: {} };
+  if (uri === 'kaoyan://study/week') return { descriptor: mcpV1RegistryByName['study.week.view'], payload: {} };
   const jobResult = uri.match(/^kaoyan:\/\/jobs\/([0-9a-f-]{36})\/result$/i);
   if (jobResult) return { descriptor: mcpV1RegistryByName['jobs.result.view'], payload: { jobId: jobResult[1] } };
   const job = uri.match(/^kaoyan:\/\/jobs\/([0-9a-f-]{36})$/i);

@@ -234,6 +234,11 @@ const api: AppApi = {
   getDailyReview: (date: string) => invoke<DailyReview | null>('study:reviews:get', date),
   saveDailyReview: (input: DailyReviewInput) => invoke<DailyReview | null>('study:reviews:save', input),
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
+  getStudyToday: (date?: string) => invoke<import('../shared/agent/v1/contracts').StudyTodaySummary>('study:getToday', date),
+  getStudyWeekSummary: (date?: string) => invoke<import('../shared/agent/v1/contracts').StudyWeekSummary>('study:getWeekSummary', date),
+  createStudyPlanDraft: (date: string, tasks: import('../shared/agent/v1/contracts').StudyCreatePlanDraftCommand['payload']['tasks']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.create_plan_draft']>('study:createPlanDraft', date, tasks),
+  applyStudyPlanAdjustment: (payload: import('../shared/agent/v1/contracts').StudyApplyPlanAdjustmentCommand['payload']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.apply_plan_adjustment']>('study:applyPlanAdjustment', payload),
+  recordStudyManualProgress: (payload: import('../shared/agent/v1/contracts').StudyRecordManualProgressCommand['payload']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.record_manual_progress']>('study:recordManualProgress', payload),
 
   // TickTick Lists
   listTickTickLists: () => invoke<TickTickList[]>('ticktick:lists:list'),

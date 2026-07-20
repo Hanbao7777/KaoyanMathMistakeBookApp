@@ -255,6 +255,24 @@ export function validateKnowledgeQuery(value: unknown): void {
   }
 }
 
+export function isCanonicalStudyDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function studyDate(value: unknown, path: string): void { if (!isCanonicalStudyDate(value)) fail(path); }
+export function validateStudyCommand(value: unknown): void {
+  const command = exact(value, ['type', 'payload'], 'command'); required(command, ['type', 'payload'], 'command');
+  switch (command.type) {
+    case 'study.create_plan_draft': { const p = payload(command.payload, ['date', 'tasks'], ['date', 'tasks'], 'command.payload'); studyDate(p.date, 'command.payload.date'); array(p.tasks, 'command.payload.tasks', (item, path) => { const row = payload(item, ['subjectId', 'title', 'estimatedMinutes', 'priority', 'note'], ['subjectId', 'title', 'estimatedMinutes'], path); string(row.subjectId, `${path}.subjectId`, 100); string(row.title, `${path}.title`, 500); boundedPositive(row.estimatedMinutes, `${path}.estimatedMinutes`, 720); if (row.priority !== undefined) oneOf(row.priority, ['高', '中', '低'], `${path}.priority`); optionalString(row.note, `${path}.note`, 2_000); }, 20); return; }
+    case 'study.apply_plan_adjustment': { const p = payload(command.payload, ['taskId', 'estimatedMinutes', 'priority', 'note', 'status', 'skippedReason'], ['taskId'], 'command.payload'); string(p.taskId, 'command.payload.taskId', 200); if (p.estimatedMinutes !== undefined) boundedPositive(p.estimatedMinutes, 'command.payload.estimatedMinutes', 720); if (p.priority !== undefined) oneOf(p.priority, ['高', '中', '低'], 'command.payload.priority'); optionalString(p.note, 'command.payload.note', 2_000); if (p.status !== undefined) oneOf(p.status, ['未开始', '进行中', '部分完成', '已完成', '已跳过'], 'command.payload.status'); optionalString(p.skippedReason, 'command.payload.skippedReason', 500); return; }
+    case 'study.record_manual_progress': { const p = payload(command.payload, ['date', 'subjectId', 'minutes', 'note', 'taskId', 'materialId', 'materialCurrentAmount'], ['date', 'subjectId', 'minutes'], 'command.payload'); studyDate(p.date, 'command.payload.date'); string(p.subjectId, 'command.payload.subjectId', 100); boundedPositive(p.minutes, 'command.payload.minutes', 1_440); optionalString(p.note, 'command.payload.note', 2_000); optionalString(p.taskId, 'command.payload.taskId', 200); optionalString(p.materialId, 'command.payload.materialId', 200); if (p.materialCurrentAmount !== undefined && (typeof p.materialCurrentAmount !== 'number' || !Number.isFinite(p.materialCurrentAmount) || p.materialCurrentAmount < 0 || p.materialCurrentAmount > 10_000_000 || p.materialId === undefined)) fail('command.payload.materialCurrentAmount'); return; }
+    default: fail('command.type');
+  }
+}
+export function validateStudyQuery(value: unknown): void { const query = exact(value, ['type', 'payload'], 'query'); required(query, ['type', 'payload'], 'query'); switch (query.type) { case 'study.get_today': case 'study.get_week_summary': { const p = payload(query.payload, ['date'], [], 'query.payload'); if (p.date !== undefined) studyDate(p.date, 'query.payload.date'); return; } default: fail('query.type'); } }
+
 export function validateCommandEnvelope(value: unknown): asserts value is CommandEnvelope {
   const envelope = exact(value, ['apiVersion', 'kind', 'context', 'command'], 'envelope');
   required(envelope, ['apiVersion', 'kind', 'context', 'command'], 'envelope');
@@ -263,7 +281,8 @@ export function validateCommandEnvelope(value: unknown): asserts value is Comman
   const context = envelope.context;
   validateExecutionContext(context);
   validateCommandConcurrency(context);
-  if (String((envelope.command as { type: string }).type).startsWith('knowledge.')) validateKnowledgeCommand(envelope.command);
+  if (String((envelope.command as { type: string }).type).startsWith('study.')) validateStudyCommand(envelope.command);
+  else if (String((envelope.command as { type: string }).type).startsWith('knowledge.')) validateKnowledgeCommand(envelope.command);
   else validateQuestionCommand(envelope.command);
 }
 
@@ -273,7 +292,8 @@ export function validateQueryEnvelope(value: unknown): asserts value is QueryEnv
   if (envelope.apiVersion !== agentApiVersion) throw new AgentError('UNSUPPORTED_API_VERSION');
   if (envelope.kind !== 'query') fail('envelope.kind');
   validateExecutionContext(envelope.context);
-  if (['knowledge.', 'textbooks.', 'analytics.'].some((prefix) => String((envelope.query as { type: string }).type).startsWith(prefix))) validateKnowledgeQuery(envelope.query);
+  if (String((envelope.query as { type: string }).type).startsWith('study.')) validateStudyQuery(envelope.query);
+  else if (['knowledge.', 'textbooks.', 'analytics.'].some((prefix) => String((envelope.query as { type: string }).type).startsWith(prefix))) validateKnowledgeQuery(envelope.query);
   else validateQuestionQuery(envelope.query);
 }
 

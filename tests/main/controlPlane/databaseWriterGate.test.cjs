@@ -215,6 +215,7 @@ function scanTransactionsAndMutators() {
       else if (replacementRanges.some((range) => inRange(match.index, range))) classification = 'coordinator-fenced identity replacement';
       else if (repositoryScoped) classification = 'capability-scoped question repository';
       else if (name === 'src/main/application/knowledge/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped knowledge application';
+      else if (name === 'src/main/application/study/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped study application';
       else if (capabilityFiles.has(name)) classification = 'coordinator transaction/revision primitive';
       else if (candidateFiles.has(name)) classification = 'bootstrap/candidate validation';
       else if (name === 'src/main/database/schema.ts') classification = 'database bootstrap/migration schema';
@@ -277,7 +278,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 240,
+    line: 242,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -300,7 +301,8 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
   assert.deepEqual(counts, {
     'bootstrap/candidate validation': 7,
     'capability-scoped question repository': 2,
-    'capability-scoped knowledge application': 2,
+      'capability-scoped knowledge application': 2,
+      'capability-scoped study application': 2,
     'control ledger read helper': 2,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,

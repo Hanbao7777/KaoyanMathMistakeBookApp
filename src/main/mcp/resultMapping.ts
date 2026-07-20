@@ -37,7 +37,7 @@ function affectedEntities(result: { readonly value: unknown; readonly events?: r
   };
   const candidates: readonly [string, string][] = [
     ['questionId', 'question'], ['imageId', 'question_image'], ['reviewLogId', 'review_log'],
-    ['taskId', 'task'], ['sessionId', 'focus_session'], ['id', 'entity']
+    ['taskId', 'task'], ['studySessionId', 'study_session'], ['sessionId', 'focus_session'], ['id', 'entity']
   ];
   for (const event of result.events ?? []) {
     if (!event || typeof event !== 'object') continue;

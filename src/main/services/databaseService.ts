@@ -10,6 +10,7 @@ import { createInternalExecutionContext } from '../application/executionContext'
 import { registerQuestions, type QuestionsApplication } from '../application/questions';
 import { registerTickTick, type TickTickApplication } from '../application/ticktick';
 import { registerKnowledge, type KnowledgeApplication } from '../application/knowledge';
+import { registerStudy, type StudyApplication } from '../application/study';
 import type { QuestionCommand } from '../../shared/agent/v1/contracts';
 import { bootstrapAgentGateway, type AgentGatewayBootstrapOptions, type AgentGatewayComposition } from '../agent/bootstrap';
 import {
@@ -65,6 +66,7 @@ let readOnlyDatabase: ReadOnlyDatabaseFacade | null = null;
 let questionsApplication: QuestionsApplication | null = null;
 let tickTickApplication: TickTickApplication | null = null;
 let knowledgeApplication: KnowledgeApplication | null = null;
+let studyApplication: StudyApplication | null = null;
 let agentControlPlane: AgentGatewayComposition | null = null;
 const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
@@ -281,6 +283,12 @@ export async function getKnowledgeApplication(): Promise<KnowledgeApplication> {
   if (!knowledgeApplication) await initializeDatabase();
   if (!knowledgeApplication) throw new Error('Knowledge application is unavailable');
   return knowledgeApplication;
+}
+
+export async function getStudyApplication(): Promise<StudyApplication> {
+  if (!studyApplication) await initializeDatabase();
+  if (!studyApplication) throw new Error('Study application is unavailable');
+  return studyApplication;
 }
 
 export async function getAgentControlPlane(): Promise<AgentGatewayComposition> {
@@ -647,6 +655,7 @@ async function createAgentControlPlane(
   application: QuestionsApplication,
   tickTick: TickTickApplication,
   knowledge: KnowledgeApplication,
+  study: StudyApplication,
   operationJournalStores: readonly OperationManifestStore[],
   dependencies: DatabaseInitializationDependencies = {},
   onStage: (stage: DatabaseLifecycleStage) => void = () => undefined
@@ -679,10 +688,11 @@ async function createAgentControlPlane(
       ? application.gateway.resolveState(envelope, descriptor)
       : ['knowledge', 'textbooks', 'analytics'].includes(descriptor.domain)
         ? knowledge.resolveState(envelope, descriptor)
-        : tickTick.resolveState(envelope, descriptor),
+        : descriptor.domain === 'study' ? study.resolveState(envelope, descriptor) : tickTick.resolveState(envelope, descriptor),
     executeBusinessCommand: (command, context, dispatch) => application.gateway.execute(command as QuestionCommand, context, dispatch),
     tickTickApplication: tickTick,
     knowledgeApplication: knowledge,
+    studyApplication: study,
     onRecoveryStage(stage) {
       onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : stage === 'receipts_reconciled' ? 'agent_receipts_reconciled' : 'agent_jobs_reconciled');
     }
@@ -783,6 +793,7 @@ async function initializeDatabaseOnce(
   questionsApplication = registerQuestions({ coordinator, readOnlyDatabase });
   tickTickApplication = registerTickTick({ coordinator, readOnlyDatabase });
   knowledgeApplication = registerKnowledge({ coordinator, readOnlyDatabase });
+  studyApplication = registerStudy({ coordinator, readOnlyDatabase, now });
   onStage('coordinator_created');
 
   const dataJournalRoot = path.normalize(dependencies.dataJournalRoot ?? path.join(paths.data, 'operation-journal'));
@@ -802,7 +813,7 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
-      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, knowledgeApplication, operationJournalStores, dependencies, onStage);
+      agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, knowledgeApplication, studyApplication, operationJournalStores, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
         const gatewayFailureLease = await coordinator.beginMaintenance();
@@ -826,7 +837,7 @@ async function initializeDatabaseOnce(
 
 function migrateDatabase(database: Database) {
   const scopeSql = String(all<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0]?.sql ?? '');
-  if (scopeSql && !scopeSql.includes("'knowledge.read'")) {
+  if (scopeSql && (!scopeSql.includes("'study.read'") || !scopeSql.includes("'study.write'"))) {
     database.run('ALTER TABLE agent_client_scopes RENAME TO agent_client_scopes_legacy');
     database.run(`CREATE TABLE agent_client_scopes (
       client_id TEXT NOT NULL,
@@ -834,7 +845,7 @@ function migrateDatabase(database: Database) {
         'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
         'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
         'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
-        'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'operations.batch', 'tasks.read',
+        'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'operations.batch', 'tasks.read',
         'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin', 'focus.read', 'focus.control', 'files.images.read'
       )), catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0), created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
       PRIMARY KEY (client_id, scope), FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
@@ -2125,6 +2136,7 @@ export function resetDatabaseConnection() {
   questionsApplication = null;
   tickTickApplication = null;
   knowledgeApplication = null;
+  studyApplication = null;
   agentControlPlane = null;
   initializationPromise = null;
   initializationResult = null;

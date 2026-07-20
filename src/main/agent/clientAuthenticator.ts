@@ -81,7 +81,8 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'analytics.get_weak_areas',
   'knowledge.link_question',
   'knowledge.unlink_question',
-  'knowledge.bind_textbook'
+  'knowledge.bind_textbook',
+  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
 ] as const);
 
 const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
@@ -96,6 +97,7 @@ const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'r4.manage', 'r4.read',
   'reviews.read', 'reviews.submit', 'tasks.execute', 'tasks.read', 'tasks.write', 'focus.control', 'focus.read',
   'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read',
+  'study.read', 'study.write',
   'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
   'sessions.manage', 'sessions.read', 'system.read'
 ]);

@@ -22,6 +22,9 @@ const c9Operations = [
   'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas',
   'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'
 ];
+const c10Operations = [
+  'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
+];
 
 test('migrated Renderer task and focus channels have one authenticated Gateway path', () => {
   for (const channel of [
@@ -40,11 +43,11 @@ test('migrated Renderer task and focus channels have one authenticated Gateway p
   ]) assert.equal(adapter.includes(forbidden), false, `Forbidden Renderer bypass surface: ${forbidden}`);
 });
 
-test('Renderer business allowlist exactly equals accepted B6, B7, and C9 adapter operations', () => {
+test('Renderer business allowlist exactly equals accepted B6, B7, C9, and C10 adapter operations', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block);
   const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations]);
+  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations]);
   for (const operation of b7Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   for (const operation of ['ticktick:lists:create', 'ticktick:settings:save', 'ticktick:habits:create', 'ticktick:bridge:create']) {
     assert.equal(allowlist.includes(operation), false, operation);
