@@ -47,6 +47,7 @@ type ControlPlane = Awaited<ReturnType<typeof getAgentControlPlane>>;
 type PageValue<T> = { readonly items: readonly T[]; readonly page: AgentControlPage<T>['page'] };
 type AuditVerificationValue = { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string };
 type ControlSettings = { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number };
+type DirectHttpsStatus = { readonly port: number; readonly authority: string; readonly resource: string; readonly issuer: string; readonly appInstanceId: string; readonly enabled: boolean; readonly certificateThumbprint?: string; readonly rootCaThumbprint?: string };
 
 let externalControlLifecycle: ((enabled: boolean) => Promise<void> | void) | undefined;
 
@@ -126,15 +127,16 @@ function mapAudit(value: AuditRecord): AgentControlAuditSummary {
   });
 }
 
-function mapStatus(value: { readonly settings: ControlSettings; readonly runtimeState: string }): AgentControlStatus {
+function mapStatus(value: { readonly settings: ControlSettings; readonly runtimeState: string; readonly directHttps?: DirectHttpsStatus | null }): AgentControlStatus {
   return Object.freeze({
     settings: Object.freeze({
       externalControlEnabled: value.settings.externalControlEnabled,
       policyVersion: value.settings.policyVersion,
       privacyRevision: value.settings.privacyRevision
     }),
-    runtimeState: value.runtimeState
-  });
+    runtimeState: value.runtimeState,
+    ...(value.directHttps ? { directHttps: Object.freeze({ ...value.directHttps }) } : {})
+  }) as AgentControlStatus;
 }
 
 function mapAcknowledgement(value: { readonly clientId?: string; readonly sessionId?: string; readonly grantId?: string; readonly approvalId?: string; readonly changeSetId?: string; readonly enabled?: boolean; readonly revoked?: boolean; readonly terminated?: boolean }): AgentControlMutationAcknowledgement {
@@ -198,7 +200,7 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
   }
 
   return Object.freeze({
-    async getStatus() { return mapStatus(await query({ type: 'agent.status.get', payload: {} }) as { readonly settings: ControlSettings; readonly runtimeState: string }); },
+    async getStatus() { return mapStatus(await query({ type: 'agent.status.get', payload: {} }) as { readonly settings: ControlSettings; readonly runtimeState: string; readonly directHttps?: DirectHttpsStatus | null }); },
     async setExternalControlEnabled(enabled: boolean) {
       const result = (await execute({ type: 'agent.control.set_enabled', payload: { enabled } }) as { readonly enabled: boolean }).enabled;
       await externalControlLifecycle?.(result);

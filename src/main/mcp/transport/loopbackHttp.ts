@@ -28,7 +28,7 @@ export interface LoopbackHttpResponse {
 export interface LoopbackSessionAuthenticator {
   challengeInitialize?(request: { readonly headers: Readonly<Record<string, string | undefined>>; readonly protocolVersion: string }): Promise<object | null>;
   admitInitialize(request: { readonly headers: Readonly<Record<string, string | undefined>>; readonly protocolVersion: string }): Promise<McpSessionAdmission | null>;
-  validateSession(sessionId: string, protocolVersion: string): Promise<AgentPrincipal | null>;
+  validateSession(sessionId: string, protocolVersion: string, headers?: Readonly<Record<string, string | undefined>>): Promise<AgentPrincipal | null>;
   invalidateAll(): Promise<void> | void;
 }
 
@@ -43,6 +43,10 @@ export interface LoopbackHttpOptions {
   readonly maxRequestBytes?: number;
   readonly now?: () => Date;
   readonly initializeResult?: Readonly<Record<string, unknown>> | ((protocolVersion: string) => Readonly<Record<string, unknown>>);
+  readonly unauthorizedHeaders?: Readonly<Record<string, string>>;
+  readonly requireOrigin?: boolean;
+  readonly requireAccept?: boolean;
+  readonly allowDefaultOrigin?: boolean;
 }
 
 export interface LoopbackMcpRequestHandler extends http.RequestListener {
@@ -66,9 +70,9 @@ function validHost(request: IncomingMessage, port: number): boolean {
   return Number.isSafeInteger(port) && port > 0 && header(request, 'host') === `127.0.0.1:${port}`;
 }
 
-function validOrigin(request: IncomingMessage, port: number, allowedOrigins: readonly string[] = []): boolean {
+function validOrigin(request: IncomingMessage, port: number, allowedOrigins: readonly string[] = [], allowDefaultOrigin = true): boolean {
   const origin = header(request, 'origin');
-  return origin === undefined || origin === `http://127.0.0.1:${port}` || allowedOrigins.includes(origin);
+  return origin === undefined || (allowDefaultOrigin && origin === `http://127.0.0.1:${port}`) || allowedOrigins.includes(origin);
 }
 
 async function readJson(request: IncomingMessage, maximum: number): Promise<unknown> {
@@ -147,7 +151,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
   const now = options.now ?? (() => new Date());
 
   const invalidateSessions = () => { sessions.clear(); };
-  const validateSession = async (sessionId: string | undefined, protocolVersion: string | undefined): Promise<{ admission: McpSessionAdmission; principal: AgentPrincipal } | null> => {
+  const validateSession = async (sessionId: string | undefined, protocolVersion: string | undefined, headers?: Readonly<Record<string, string | undefined>>): Promise<{ admission: McpSessionAdmission; principal: AgentPrincipal } | null> => {
     if (!sessionId || !protocolVersion) return null;
     const local = sessions.get(sessionId);
     if (!local || local.admission.protocolVersion !== protocolVersion || Date.parse(local.admission.expiresAt) <= now().getTime()) {
@@ -155,7 +159,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       return null;
     }
     try {
-      const principal = await options.authenticator.validateSession(sessionId, protocolVersion);
+      const principal = await options.authenticator.validateSession(sessionId, protocolVersion, headers);
       if (!principal) {
         sessions.delete(sessionId);
         return null;
@@ -169,7 +173,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
 
   const handler = (async (request: IncomingMessage, response: ServerResponse) => {
     const port = options.getPort();
-    if (request.url !== loopbackMcpEndpoint || !validHost(request, port) || !validOrigin(request, port, options.allowedOrigins)) { respond(response, 404); return; }
+    if (request.url !== loopbackMcpEndpoint || !validHost(request, port) || !validOrigin(request, port, options.allowedOrigins, options.allowDefaultOrigin !== false) || (options.requireOrigin === true && header(request, 'origin') === undefined)) { respond(response, 404); return; }
     response.setHeader('mcp-instance-id', options.instanceId);
     if (options.externalControlEnabled && !await options.externalControlEnabled()) {
       invalidateSessions();
@@ -186,8 +190,9 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
     const sessionId = header(request, 'mcp-session-id');
     const sessionProtocol = header(request, 'mcp-protocol-version');
     if (request.method === 'GET') {
-      const session = await validateSession(sessionId, sessionProtocol);
-      if (!session || !sessions.get(session.admission.sessionId)?.initialized) { respond(response, 401); return; }
+       const session = await validateSession(sessionId, sessionProtocol, requestHeaders(request));
+       if (!session || !sessions.get(session.admission.sessionId)?.initialized) { respond(response, 401, undefined, options.unauthorizedHeaders); return; }
+       if (options.requireAccept === true && !(header(request, 'accept') ?? '').split(',').some((value) => value.trim().toLowerCase().startsWith('text/event-stream'))) { respond(response, 406); return; }
       response.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache, no-store', connection: 'close' });
       response.end();
       return;
@@ -208,7 +213,8 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
         respond(response, 400, errorBody(payload.id, -32602, 'Unsupported MCP protocol version'));
         return;
       }
-      if (!header(request, 'x-kaoyan-challenge-id') && options.authenticator.challengeInitialize) {
+       if (options.requireAccept === true && !(header(request, 'accept') ?? '').split(',').some((value) => ['application/json', 'text/event-stream'].includes(value.trim().toLowerCase().split(';')[0]))) { respond(response, 406); return; }
+       if (!header(request, 'x-kaoyan-challenge-id') && options.authenticator.challengeInitialize) {
         const challenge = await options.authenticator.challengeInitialize({ headers: requestHeaders(request), protocolVersion: requested }).catch(() => null);
         if (challenge) {
           respond(response, 401, errorBody(payload.id, -32002, 'Authentication challenge required', { challenge }));
@@ -221,7 +227,7 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       } catch {
         admission = null;
       }
-      if (!admission || admission.protocolVersion !== requested || !isUuid(admission.sessionId) || !canonicalExpiry(admission.expiresAt, now())) { respond(response, 401); return; }
+       if (!admission || admission.protocolVersion !== requested || !isUuid(admission.sessionId) || !canonicalExpiry(admission.expiresAt, now())) { respond(response, 401, undefined, options.unauthorizedHeaders); return; }
       sessions.set(admission.sessionId, { admission: Object.freeze({ ...admission }), initialized: false, tasksNegotiated: negotiatesTasks(payload.params) });
       response.setHeader('mcp-session-id', admission.sessionId);
       response.setHeader('mcp-protocol-version', requested);
@@ -230,8 +236,8 @@ export function createLoopbackMcpRequestHandler(options: LoopbackHttpOptions): L
       return;
     }
 
-    const session = await validateSession(sessionId, sessionProtocol);
-    if (!session) { respond(response, 401); return; }
+    const session = await validateSession(sessionId, sessionProtocol, requestHeaders(request));
+    if (!session) { respond(response, 401, undefined, options.unauthorizedHeaders); return; }
     if (!isJsonRpcMessage(payload)) { respond(response, 400, errorBody(null, -32600, 'Invalid JSON-RPC request')); return; }
     const localSession = sessions.get(session.admission.sessionId);
     if (!localSession) { respond(response, 401); return; }

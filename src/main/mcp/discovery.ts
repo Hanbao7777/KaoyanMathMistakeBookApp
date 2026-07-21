@@ -19,6 +19,11 @@ export interface McpDiscoveryRecord {
   readonly expiresAt: string;
   readonly protocolVersions: readonly string[];
   readonly launcherRange: string;
+  readonly directHttpsPort?: number;
+  readonly authority?: string;
+  readonly resource?: string;
+  readonly issuer?: string;
+  readonly certificateThumbprint?: string;
 }
 
 export interface DiscoveryValidationOptions {
@@ -76,8 +81,9 @@ function validateRecord(value: unknown, now: Date): McpDiscoveryRecord {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Discovery is malformed');
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).sort();
-  const expected = ['createdAt', 'expiresAt', 'instanceId', 'launcherRange', 'pid', 'port', 'protocolVersions', 'schemaVersion'];
-  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) throw new Error('Discovery contains unsupported fields');
+  const legacy = ['createdAt', 'expiresAt', 'instanceId', 'launcherRange', 'pid', 'port', 'protocolVersions', 'schemaVersion'];
+  const directAllowed = new Set(['authority', 'certificateThumbprint', 'directHttpsPort', 'issuer', 'resource']);
+  if (!(keys.length === legacy.length && keys.every((key, index) => key === legacy[index])) && (!keys.includes('directHttpsPort') || keys.some((key) => !legacy.includes(key) && !directAllowed.has(key)) || keys.filter((key) => legacy.includes(key)).length !== legacy.length)) throw new Error('Discovery contains unsupported fields');
   if (
     record.schemaVersion !== discoverySchemaVersion ||
     !Number.isSafeInteger(record.pid) || (record.pid as number) <= 0 ||
@@ -89,6 +95,18 @@ function validateRecord(value: unknown, now: Date): McpDiscoveryRecord {
     record.protocolVersions.length !== new Set(record.protocolVersions).size ||
     record.protocolVersions.some((version) => typeof version !== 'string' || !(mcpProtocolVersions as readonly string[]).includes(version))
   ) throw new Error('Discovery schema is invalid');
+  const directFields = ['directHttpsPort', 'authority', 'resource', 'issuer'] as const;
+  const hasDirect = directFields.some((key) => record[key] !== undefined);
+  if (hasDirect && (
+    record.directHttpsPort === undefined ||
+    record.authority !== `https://127.0.0.1:${record.directHttpsPort}` ||
+    record.resource !== `${record.authority}/mcp` ||
+    record.issuer !== record.authority ||
+    !Number.isSafeInteger(record.directHttpsPort) ||
+    (record.directHttpsPort as number) < 1 ||
+    (record.directHttpsPort as number) > 65535 ||
+    (record.certificateThumbprint !== undefined && !/^[0-9A-Fa-f]{40,128}$/.test(String(record.certificateThumbprint)))
+  )) throw new Error('Direct HTTPS discovery is invalid');
 
   const createdAt = new Date(record.createdAt);
   const expiresAt = new Date(record.expiresAt);
@@ -108,7 +126,8 @@ function validateRecord(value: unknown, now: Date): McpDiscoveryRecord {
     createdAt: record.createdAt,
     expiresAt: record.expiresAt,
     protocolVersions: Object.freeze([...(record.protocolVersions as string[])]),
-    launcherRange: record.launcherRange
+    launcherRange: record.launcherRange,
+    ...(hasDirect ? { directHttpsPort: record.directHttpsPort as number, authority: String(record.authority), resource: String(record.resource), issuer: String(record.issuer), ...(record.certificateThumbprint ? { certificateThumbprint: String(record.certificateThumbprint) } : {}) } : {})
   });
 }
 

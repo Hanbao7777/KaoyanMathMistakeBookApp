@@ -409,6 +409,100 @@ CREATE INDEX IF NOT EXISTS idx_agent_jobs_owner_session ON agent_jobs(owner_clie
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_receipt ON agent_jobs(receipt_id);
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_journal ON agent_jobs(operation_journal_id);
 CREATE INDEX IF NOT EXISTS idx_agent_jobs_retention ON agent_jobs(retain_until, status);
+
+CREATE TABLE IF NOT EXISTS agent_http_oauth_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  direct_https_port INTEGER NOT NULL CHECK (typeof(direct_https_port) = 'integer' AND direct_https_port BETWEEN 1 AND 65535),
+  authority TEXT NOT NULL CHECK (length(authority) BETWEEN 20 AND 100),
+  resource TEXT NOT NULL CHECK (length(resource) BETWEEN 25 AND 120),
+  issuer TEXT NOT NULL CHECK (length(issuer) BETWEEN 20 AND 100),
+  app_instance_id TEXT NOT NULL CHECK (length(trim(app_instance_id)) BETWEEN 1 AND 200),
+  root_ca_thumbprint TEXT CHECK (root_ca_thumbprint IS NULL OR root_ca_thumbprint GLOB '[0-9A-Fa-f]*'),
+  previous_root_ca_thumbprint TEXT CHECK (previous_root_ca_thumbprint IS NULL OR previous_root_ca_thumbprint GLOB '[0-9A-Fa-f]*'),
+  current_user_key_handle TEXT CHECK (current_user_key_handle IS NULL OR length(current_user_key_handle) BETWEEN 1 AND 200),
+  certificate_thumbprint TEXT CHECK (certificate_thumbprint IS NULL OR certificate_thumbprint GLOB '[0-9A-Fa-f]*'),
+  certificate_not_after TEXT,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS agent_http_clients (
+  client_id TEXT PRIMARY KEY CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  product TEXT NOT NULL CHECK (product IN ('codex', 'claude_code')),
+  version_evidence TEXT NOT NULL CHECK (length(trim(version_evidence)) BETWEEN 1 AND 200),
+  redirect_mode TEXT NOT NULL CHECK (redirect_mode IN ('codex-loopback', 'claude-exact')),
+  exact_redirect_uri TEXT,
+  resource TEXT NOT NULL CHECK (length(trim(resource)) BETWEEN 1 AND 200),
+  issuer TEXT NOT NULL CHECK (length(trim(issuer)) BETWEEN 1 AND 200),
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  trust TEXT NOT NULL CHECK (trust IN ('observer', 'collaborator', 'autonomous', 'full_control')),
+  refresh_tokens_allowed INTEGER NOT NULL CHECK (refresh_tokens_allowed IN (0, 1)),
+  metadata_hash TEXT CHECK (metadata_hash IS NULL OR (substr(metadata_hash, 1, 10) = 'sha256-v1:' AND length(metadata_hash) = 74)),
+  revoked_at TEXT,
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z')
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_authorization_codes (
+  code_hash TEXT PRIMARY KEY CHECK (substr(code_hash, 1, 10) = 'sha256-v1:' AND length(code_hash) = 74),
+  client_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  code_challenge TEXT NOT NULL,
+  nonce_hash TEXT,
+  app_instance_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  refresh_tokens_allowed INTEGER NOT NULL CHECK (refresh_tokens_allowed IN (0, 1)),
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_access_tokens (
+  token_id TEXT PRIMARY KEY CHECK (length(token_id) = 36),
+  token_hash TEXT NOT NULL UNIQUE CHECK (substr(token_hash, 1, 10) = 'sha256-v1:' AND length(token_hash) = 74),
+  client_id TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL,
+  family_id TEXT,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_refresh_families (
+  family_id TEXT PRIMARY KEY CHECK (length(family_id) = 36),
+  client_id TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  current_token_hash TEXT NOT NULL CHECK (substr(current_token_hash, 1, 10) = 'sha256-v1:' AND length(current_token_hash) = 74),
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_refresh_tokens (
+  token_hash TEXT PRIMARY KEY CHECK (substr(token_hash, 1, 10) = 'sha256-v1:' AND length(token_hash) = 74),
+  family_id TEXT NOT NULL,
+  used_at TEXT,
+  FOREIGN KEY (family_id) REFERENCES agent_oauth_refresh_families(family_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_revocations (
+  token_id TEXT PRIMARY KEY CHECK (length(token_id) BETWEEN 1 AND 200),
+  client_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 100),
+  revoked_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_http_clients_active ON agent_http_clients(revoked_at, product);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_access_active ON agent_oauth_access_tokens(client_id, expires_at, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_refresh_client ON agent_oauth_refresh_families(client_id, expires_at, revoked_at);
 `;
 
 export const schemaSql = `

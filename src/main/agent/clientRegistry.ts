@@ -18,6 +18,8 @@ import {
   validateOperationPolicyOverride
 } from '../../shared/agent/v1/gatewaySchemas';
 import type { PublicKeyBindingInput, SafeClientKeyBindingResult } from '../../shared/agent/v1/gatewayContracts';
+import { directHttpsAuthority, directHttpsDefaultPort, validateHttpOAuthClientRegistration, type DirectHttpsAuthority, type HttpOAuthClientRegistration } from '../../shared/mcp/v1/oauthContracts';
+import type { OAuthTokenStoreSnapshot } from '../mcp/auth/oauthTokenStore';
 import { resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
 import {
   assertDatabaseMutationScope,
@@ -92,6 +94,16 @@ export interface ClientRegistration {
   readonly credentialFingerprint: string;
   readonly scopes: readonly AgentScope[];
   readonly trust: TrustProfile;
+}
+
+export interface HttpOAuthAuthorityState extends DirectHttpsAuthority {
+  readonly appInstanceId: string;
+  readonly rootCaThumbprint?: string;
+  readonly previousRootCaThumbprint?: string;
+  readonly currentUserKeyHandle?: string;
+  readonly certificateThumbprint?: string;
+  readonly certificateNotAfter?: string;
+  readonly enabled: boolean;
 }
 
 export interface ClientRegistryDependencies {
@@ -174,12 +186,18 @@ function assertWindowLimit(limit: number): void {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 201) throw new AgentError('VALIDATION_ERROR', { field: 'limit' });
 }
 
+function executeOAuthSql(database: Database, sql: string, parameters: readonly SqlParameter[] = []): void {
+  const run = (database as unknown as { readonly run: (statement: string, values?: readonly SqlParameter[]) => void })['run'];
+  run.call(database, sql, parameters);
+}
+
 export class ClientRegistry {
   private readonly executeControlWrite: ClientRegistryDependencies['executeControlWrite'];
   private readonly appInstanceId: string;
   private readonly catalog: CatalogIdentity;
   private readonly now: () => string;
   private readonly randomUUID: () => string;
+  private httpOAuthRevocationHook?: (clientId: string) => Promise<void> | void;
 
   constructor(dependencies: ClientRegistryDependencies) {
     assertSafeIdentifier(dependencies.appInstanceId, 'appInstanceId');
@@ -323,6 +341,85 @@ export class ClientRegistry {
     });
   }
 
+  setHttpOAuthRevocationHook(hook?: (clientId: string) => Promise<void> | void): void { this.httpOAuthRevocationHook = hook; }
+
+  async registerHttpClient(registration: HttpOAuthClientRegistration): Promise<HttpOAuthClientRegistration> {
+    validateHttpOAuthClientRegistration(registration);
+    const scopes = normalizeScopes(registration.allowedScopes);
+    const timestamp = this.timestamp();
+    await this.write(`agent-http-client-register-${registration.clientId}`, (database) => {
+      const credentialFingerprint = hashCanonicalJson({ kind: 'http-oauth-client', clientId: registration.clientId });
+      const existing = one(database, 'SELECT revoked_at FROM agent_http_clients WHERE client_id = ?', [registration.clientId]);
+      if (existing && existing.revoked_at === null) throw new AgentError('IDEMPOTENCY_CONFLICT');
+      if (existing) {
+        executeOAuthSql(database, 'UPDATE agent_clients SET subject_id = ?, display_name = ?, credential_fingerprint = ?, trust = ?, revoked_at = NULL, updated_at = ? WHERE client_id = ?', [`http-${registration.clientId}`, registration.product === 'codex' ? 'Codex CLI' : 'Claude Code', credentialFingerprint, registration.trust, timestamp, registration.clientId]);
+        executeOAuthSql(database, 'DELETE FROM agent_client_scopes WHERE client_id = ?', [registration.clientId]);
+        executeOAuthSql(database, 'UPDATE agent_http_clients SET product = ?, version_evidence = ?, redirect_mode = ?, exact_redirect_uri = ?, resource = ?, issuer = ?, scopes_json = ?, trust = ?, refresh_tokens_allowed = ?, metadata_hash = ?, revoked_at = NULL, updated_at = ? WHERE client_id = ?', [registration.product, registration.versionEvidence, registration.redirectMode, registration.exactRedirectUri ?? null, registration.resource, registration.issuer, canonicalizeJson(scopes), registration.trust, registration.refreshTokensAllowed ? 1 : 0, registration.metadataHash ?? null, timestamp, registration.clientId]);
+      } else {
+        executeOAuthSql(database, 'INSERT INTO agent_clients (client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [registration.clientId, `http-${registration.clientId}`, registration.product === 'codex' ? 'Codex CLI' : 'Claude Code', credentialFingerprint, registration.trust, timestamp, timestamp]);
+        executeOAuthSql(database, `INSERT INTO agent_http_clients (client_id, product, version_evidence, redirect_mode, exact_redirect_uri, resource, issuer, scopes_json, trust, refresh_tokens_allowed, metadata_hash, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [registration.clientId, registration.product, registration.versionEvidence, registration.redirectMode, registration.exactRedirectUri ?? null, registration.resource, registration.issuer, canonicalizeJson(scopes), registration.trust, registration.refreshTokensAllowed ? 1 : 0, registration.metadataHash ?? null, timestamp, timestamp]);
+      }
+      for (const scope of scopes) executeOAuthSql(database, 'INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)', [registration.clientId, scope, this.catalog.version, timestamp]);
+      return { changed: true, value: undefined };
+    });
+    return Object.freeze({ ...registration, allowedScopes: scopes });
+  }
+
+  async getHttpClient(clientId: string): Promise<HttpOAuthClientRegistration | null> {
+    assertSafeIdentifier(clientId, 'clientId');
+    return this.read(`agent-http-client-${clientId}`, (database) => {
+      const row = one(database, 'SELECT * FROM agent_http_clients WHERE client_id = ?', [clientId]); if (!row || typeof row.revoked_at === 'string') return null;
+      let scopes: unknown; try { scopes = JSON.parse(String(row.scopes_json)); } catch { throw new AgentError('RECOVERY_FENCE'); }
+      if (!Array.isArray(scopes) || scopes.some((scope) => !agentScopes.includes(scope as AgentScope))) throw new AgentError('RECOVERY_FENCE');
+      return Object.freeze({ clientId, product: row.product as 'codex' | 'claude_code', versionEvidence: String(row.version_evidence), redirectMode: row.redirect_mode as 'codex-loopback' | 'claude-exact', ...(typeof row.exact_redirect_uri === 'string' ? { exactRedirectUri: row.exact_redirect_uri } : {}), resource: String(row.resource), issuer: String(row.issuer), allowedScopes: Object.freeze(scopes as AgentScope[]), trust: row.trust as TrustProfile, refreshTokensAllowed: row.refresh_tokens_allowed === 1, ...(typeof row.metadata_hash === 'string' ? { metadataHash: row.metadata_hash } : {}) });
+    });
+  }
+
+  async isHttpClientActive(clientId: string): Promise<boolean> { return (await this.getHttpClient(clientId)) !== null && await this.read(`agent-http-client-active-${clientId}`, (database) => { const row = one(database, 'SELECT revoked_at FROM agent_http_clients WHERE client_id = ?', [clientId]); return !!row && row.revoked_at === null; }); }
+  async getHttpClientScopes(clientId: string): Promise<readonly AgentScope[]> { const client = await this.getHttpClient(clientId); if (!client) throw new AgentError('CLIENT_REVOKED'); return client.allowedScopes; }
+
+  async getHttpOAuthAuthority(): Promise<HttpOAuthAuthorityState | null> {
+    return this.read('agent-http-authority', (database) => { const row = one(database, 'SELECT * FROM agent_http_oauth_config WHERE id = 1'); if (!row) return Object.freeze({ ...directHttpsAuthority(directHttpsDefaultPort), appInstanceId: this.appInstanceId, enabled: false }); const authority = directHttpsAuthority(Number(row.direct_https_port)); return Object.freeze({ ...authority, appInstanceId: String(row.app_instance_id), ...(typeof row.root_ca_thumbprint === 'string' ? { rootCaThumbprint: row.root_ca_thumbprint } : {}), ...(typeof row.previous_root_ca_thumbprint === 'string' ? { previousRootCaThumbprint: row.previous_root_ca_thumbprint } : {}), ...(typeof row.current_user_key_handle === 'string' ? { currentUserKeyHandle: row.current_user_key_handle } : {}), ...(typeof row.certificate_thumbprint === 'string' ? { certificateThumbprint: row.certificate_thumbprint } : {}), ...(typeof row.certificate_not_after === 'string' ? { certificateNotAfter: row.certificate_not_after } : {}), enabled: row.enabled === 1 }); });
+  }
+
+  async initializeHttpOAuthAuthority(input: Partial<HttpOAuthAuthorityState> & { readonly appInstanceId: string }): Promise<HttpOAuthAuthorityState> {
+    const authority = directHttpsAuthority(input.port ?? directHttpsDefaultPort); const timestamp = this.timestamp();
+    await this.write('agent-http-authority-init', (database) => { const existing = one(database, 'SELECT id FROM agent_http_oauth_config WHERE id = 1'); if (existing) return { changed: false, value: undefined }; executeOAuthSql(database, `INSERT INTO agent_http_oauth_config (id, direct_https_port, authority, resource, issuer, app_instance_id, enabled, updated_at) VALUES (1, ?, ?, ?, ?, ?, 0, ?)`, [authority.port, authority.authority, authority.resource, authority.issuer, input.appInstanceId, timestamp]); return { changed: true, value: undefined }; });
+    const value = await this.getHttpOAuthAuthority(); if (!value) throw new AgentError('RECOVERY_FENCE'); return value;
+  }
+
+  async updateHttpOAuthAuthority(input: Partial<HttpOAuthAuthorityState> & { readonly appInstanceId: string }): Promise<HttpOAuthAuthorityState> {
+    const authority = directHttpsAuthority(input.port ?? directHttpsDefaultPort); const timestamp = this.timestamp(); const prior = await this.getHttpOAuthAuthority(); const authorityChanged = !!prior && (prior.authority !== authority.authority || prior.resource !== authority.resource || prior.issuer !== authority.issuer);
+    await this.write('agent-http-authority-update', (database) => { executeOAuthSql(database, `INSERT OR REPLACE INTO agent_http_oauth_config (id, direct_https_port, authority, resource, issuer, app_instance_id, root_ca_thumbprint, previous_root_ca_thumbprint, current_user_key_handle, certificate_thumbprint, certificate_not_after, enabled, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [authority.port, authority.authority, authority.resource, authority.issuer, input.appInstanceId, input.rootCaThumbprint ?? null, input.previousRootCaThumbprint ?? null, input.currentUserKeyHandle ?? null, input.certificateThumbprint ?? null, input.certificateNotAfter ?? null, input.enabled ? 1 : 0, timestamp]); if (authorityChanged) executeOAuthSql(database, 'UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id IN (SELECT client_id FROM agent_http_clients)', [timestamp, timestamp]); if (authorityChanged) executeOAuthSql(database, 'UPDATE agent_http_clients SET revoked_at = ?, updated_at = ?', [timestamp, timestamp]); return { changed: true, value: undefined }; });
+    if (authorityChanged) { const ids = await this.read('agent-http-client-ids', (database) => all(database, 'SELECT client_id FROM agent_http_clients').map((row) => String(row.client_id))); for (const clientId of ids) await this.httpOAuthRevocationHook?.(clientId); }
+    const value = await this.getHttpOAuthAuthority(); if (!value) throw new AgentError('RECOVERY_FENCE'); return value;
+  }
+
+  async loadOAuthTokenSnapshot(): Promise<OAuthTokenStoreSnapshot | undefined> {
+    return this.read('agent-oauth-snapshot-load', (database) => {
+      const codes = all(database, 'SELECT * FROM agent_oauth_authorization_codes').map((row) => Object.freeze({ codeHash: String(row.code_hash), clientId: String(row.client_id), redirectUri: String(row.redirect_uri), resource: String(row.resource), issuer: String(row.issuer), scopes: Object.freeze(JSON.parse(String(row.scopes_json)) as AgentScope[]), codeChallenge: String(row.code_challenge), ...(typeof row.nonce_hash === 'string' ? { nonceHash: row.nonce_hash } : {}), appInstanceId: String(row.app_instance_id), expiresAt: String(row.expires_at), used: typeof row.used_at === 'string', refreshTokensAllowed: row.refresh_tokens_allowed === 1 }));
+      const accessTokens = all(database, 'SELECT * FROM agent_oauth_access_tokens').map((row) => Object.freeze({ tokenHash: String(row.token_hash), tokenId: String(row.token_id), clientId: String(row.client_id), scopes: Object.freeze(JSON.parse(String(row.scopes_json)) as AgentScope[]), resource: String(row.resource), issuer: String(row.issuer), appInstanceId: String(row.app_instance_id), ...(typeof row.family_id === 'string' ? { familyId: row.family_id } : {}), expiresAt: String(row.expires_at), revoked: typeof row.revoked_at === 'string' }));
+      const refreshFamilies = all(database, 'SELECT * FROM agent_oauth_refresh_families').map((row) => Object.freeze({ familyId: String(row.family_id), clientId: String(row.client_id), resource: String(row.resource), issuer: String(row.issuer), appInstanceId: String(row.app_instance_id), scopes: Object.freeze(JSON.parse(String(row.scopes_json)) as AgentScope[]), currentTokenHash: String(row.current_token_hash), expiresAt: String(row.expires_at), revoked: typeof row.revoked_at === 'string' }));
+      const refreshTokens = all(database, 'SELECT * FROM agent_oauth_refresh_tokens').map((row) => Object.freeze({ tokenHash: String(row.token_hash), familyId: String(row.family_id), used: typeof row.used_at === 'string' }));
+      const revokedTokenIds = all(database, 'SELECT token_id FROM agent_oauth_revocations').map((row) => String(row.token_id));
+      if (codes.length === 0 && accessTokens.length === 0 && refreshFamilies.length === 0 && refreshTokens.length === 0 && revokedTokenIds.length === 0) return undefined;
+      return Object.freeze({ version: 1 as const, codes: Object.freeze(codes), accessTokens: Object.freeze(accessTokens), refreshFamilies: Object.freeze(refreshFamilies), refreshTokens: Object.freeze(refreshTokens), revokedTokenIds: Object.freeze(revokedTokenIds) });
+    });
+  }
+
+  async persistOAuthTokenSnapshot(snapshot: OAuthTokenStoreSnapshot): Promise<void> {
+    await this.write('agent-oauth-snapshot-save', (database) => {
+      executeOAuthSql(database, 'DELETE FROM agent_oauth_authorization_codes'); executeOAuthSql(database, 'DELETE FROM agent_oauth_access_tokens'); executeOAuthSql(database, 'DELETE FROM agent_oauth_refresh_tokens'); executeOAuthSql(database, 'DELETE FROM agent_oauth_refresh_families'); executeOAuthSql(database, 'DELETE FROM agent_oauth_revocations');
+      for (const value of snapshot.codes) executeOAuthSql(database, 'INSERT INTO agent_oauth_authorization_codes (code_hash, client_id, redirect_uri, resource, issuer, scopes_json, code_challenge, nonce_hash, app_instance_id, expires_at, used_at, refresh_tokens_allowed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [value.codeHash, value.clientId, value.redirectUri, value.resource, value.issuer, canonicalizeJson(value.scopes), value.codeChallenge, value.nonceHash ?? null, value.appInstanceId, value.expiresAt, value.used ? this.timestamp() : null, value.refreshTokensAllowed ? 1 : 0]);
+      for (const value of snapshot.accessTokens) executeOAuthSql(database, 'INSERT INTO agent_oauth_access_tokens (token_id, token_hash, client_id, scopes_json, resource, issuer, app_instance_id, family_id, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [value.tokenId, value.tokenHash, value.clientId, canonicalizeJson(value.scopes), value.resource, value.issuer, value.appInstanceId, value.familyId ?? null, value.expiresAt, value.revoked ? this.timestamp() : null]);
+      for (const value of snapshot.refreshFamilies) executeOAuthSql(database, 'INSERT INTO agent_oauth_refresh_families (family_id, client_id, resource, issuer, app_instance_id, scopes_json, current_token_hash, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [value.familyId, value.clientId, value.resource, value.issuer, value.appInstanceId, canonicalizeJson(value.scopes), value.currentTokenHash, value.expiresAt, value.revoked ? this.timestamp() : null]);
+      for (const value of snapshot.refreshTokens) executeOAuthSql(database, 'INSERT INTO agent_oauth_refresh_tokens (token_hash, family_id, used_at) VALUES (?, ?, ?)', [value.tokenHash, value.familyId, value.used ? this.timestamp() : null]);
+      for (const tokenId of snapshot.revokedTokenIds) executeOAuthSql(database, 'INSERT INTO agent_oauth_revocations (token_id, client_id, reason, revoked_at) SELECT ?, client_id, ?, ? FROM agent_oauth_access_tokens WHERE token_id = ?', [tokenId, 'oauth-revoked', this.timestamp(), tokenId]);
+      return { changed: true, value: undefined };
+    });
+  }
+
   registerPublicKeyInTransaction(
     database: Database,
     scope: DatabaseMutationScope,
@@ -422,6 +519,7 @@ export class ClientRegistry {
       [clientId, scope, this.catalog.version, timestamp]
     );
     database.run('UPDATE agent_clients SET trust = ?, updated_at = ? WHERE client_id = ?', [trust, timestamp, clientId]);
+    executeOAuthSql(database, 'UPDATE agent_http_clients SET scopes_json = ?, trust = ?, updated_at = ? WHERE client_id = ?', [canonicalizeJson(scopes), trust, timestamp, clientId]);
     return { changed: true, value: undefined };
   }
 
@@ -444,6 +542,7 @@ export class ClientRegistry {
 
   async revokeClient(clientId: string): Promise<void> {
     await this.write(`agent-client-revoke-${clientId}`, (database, scope) => this.revokeClientInTransaction(database, scope, clientId));
+    await this.httpOAuthRevocationHook?.(clientId);
   }
 
   revokeClientInTransaction(database: Database, scope: DatabaseMutationScope, clientId: string): DatabaseMutationResult<void> {
@@ -454,6 +553,7 @@ export class ClientRegistry {
     if (typeof current.revoked_at === 'string') return { changed: false, value: undefined };
     const timestamp = this.timestamp();
     database.run('UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id = ?', [timestamp, timestamp, clientId]);
+    executeOAuthSql(database, 'UPDATE agent_http_clients SET revoked_at = ?, updated_at = ? WHERE client_id = ?', [timestamp, timestamp, clientId]);
     database.run('UPDATE agent_sessions SET terminated_at = ? WHERE client_id = ? AND terminated_at IS NULL', [timestamp, clientId]);
     return { changed: true, value: undefined };
   }

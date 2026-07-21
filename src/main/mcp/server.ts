@@ -12,6 +12,12 @@ import {
   type LoopbackSessionAuthenticator
 } from './transport/loopbackHttp';
 import { createMcpInitializeResult, createMcpProtocolHandler } from './protocol';
+import type { DirectHttpsOAuthHost } from './transport/httpsOAuthHttp';
+import { DirectHttpsOAuthHost as DirectHttpsOAuthHostImpl } from './transport/httpsOAuthHttp';
+import { createOAuthMetadata } from './auth/oauthMetadata';
+import { LocalOAuthAuthorizationServer } from './auth/oauthAuthorizationServer';
+import type { LocalHttpsCertificate } from './tls/localHttpsCertificate';
+import type { AgentGatewayComposition } from '../agent/bootstrap';
 
 export interface McpLoopbackHostOptions {
   readonly discoveryRoot: string;
@@ -26,6 +32,30 @@ export interface McpLoopbackHostOptions {
   readonly discoveryOwnershipCheck?: (filePath: string, root: string) => boolean;
   readonly gateway?: AgentGateway;
   readonly initializeResult?: Readonly<Record<string, unknown>> | ((protocolVersion: string) => Readonly<Record<string, unknown>>);
+  readonly directHttps?: DirectHttpsOAuthHost;
+}
+
+export interface DirectHttpsOAuthCompositionOptions {
+  readonly controlPlane: AgentGatewayComposition;
+  readonly certificate: LocalHttpsCertificate | (() => Promise<LocalHttpsCertificate>);
+  readonly consent?: (request: import('../../shared/mcp/v1/oauthContracts').OAuthAuthorizationRequest, client: import('../../shared/mcp/v1/oauthContracts').HttpOAuthClientRegistration) => Promise<boolean> | boolean;
+}
+
+export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthCompositionOptions): DirectHttpsOAuthHost {
+  const authority = options.controlPlane.httpOAuthAuthority;
+  const metadata = createOAuthMetadata({ authority });
+  const oauth = new LocalOAuthAuthorizationServer({
+    metadata,
+    tokenStore: options.controlPlane.httpOAuthTokens,
+    appInstanceId: authority.appInstanceId,
+    clients: {
+      getHttpClient: (clientId) => options.controlPlane.registry.getHttpClient(clientId),
+      isHttpClientActive: (clientId) => options.controlPlane.registry.isHttpClientActive(clientId),
+      currentScopes: (clientId) => options.controlPlane.registry.getHttpClientScopes(clientId)
+    },
+    consent: options.consent
+  });
+  return new DirectHttpsOAuthHostImpl({ authority, appInstanceId: authority.appInstanceId, externalControlEnabled: options.controlPlane.externalControlEnabled, authenticatedReady: () => true, authenticator: options.controlPlane.httpAuthenticator, certificate: options.certificate, oauth, gateway: options.controlPlane.gateway });
 }
 
 export interface McpLoopbackHostStatus {
@@ -98,6 +128,7 @@ export class McpLoopbackHost {
     await Promise.resolve(this.authenticator.invalidateAll()).catch(() => undefined);
     const server = this.server;
     this.server = null;
+    await this.options.directHttps?.stop().catch(() => undefined);
     if (server) await closeServer(server);
     if (token === this.lifecycle) this.handler = null;
   }
@@ -118,6 +149,7 @@ export class McpLoopbackHost {
     await Promise.resolve(this.authenticator.invalidateAll()).catch(() => undefined);
     const server = this.server;
     this.server = null;
+    await this.options.directHttps?.stop().catch(() => undefined);
     this.handler = null;
     if (server) await closeServer(server);
     if (this.startPromise) await this.startPromise.catch(() => undefined);
@@ -197,6 +229,7 @@ export class McpLoopbackHost {
       }
       if (token !== this.lifecycle) throw new StartCancelledError();
       this.state = 'ready';
+      if (this.options.directHttps) await this.options.directHttps.start().catch(() => undefined);
       return this.status();
     } catch (error) {
       this.server = this.server === server ? null : this.server;

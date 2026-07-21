@@ -10,6 +10,7 @@ import { agentApiVersion } from '../../shared/agent/versions';
 import { AgentError } from '../../shared/agent/errors';
 import type { ClientRegistry } from './clientRegistry';
 import type { RendererIdentityAdapter } from './rendererAdapter';
+import type { OAuthTokenClaims } from '../../shared/mcp/v1/oauthContracts';
 
 const issuedPrincipals = new WeakSet<object>();
 const durableJobPrincipals = new WeakSet<object>();
@@ -35,6 +36,24 @@ export function assertIssuedAgentPrincipal(principal: AgentPrincipal): void {
   if (!principal || typeof principal !== 'object' || !issuedPrincipals.has(principal as object) || !Object.isFrozen(principal)) {
     throw new AgentError('POLICY_DENIED');
   }
+}
+
+/** Converts already-validated HTTP OAuth claims into the only Gateway identity shape. */
+export function httpPrincipalFromOAuthClaims(claims: OAuthTokenClaims, client: { readonly subjectId: string; readonly displayName: string; readonly trust: import('../../shared/agent/v1/gatewayContracts').TrustProfile }, sessionId: string, authenticatedAt: string): AgentPrincipal {
+  if (!claims.clientId || !sessionId || !claims.tokenId) throw new AgentError('POLICY_DENIED');
+  return issuePrincipal({
+    apiVersion: agentApiVersion,
+    kind: 'agent-principal',
+    clientId: claims.clientId,
+    subjectId: client.subjectId,
+    displayName: client.displayName,
+    scopes: claims.scopes,
+    trust: client.trust,
+    credentialBinding: fingerprintCredential(claims.tokenId),
+    sessionId,
+    authenticatedAt,
+    renderer: false
+  });
 }
 
 /** Authenticates live registry bindings before issuing an opaque principal. */

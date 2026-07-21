@@ -96,6 +96,9 @@ import { WorkflowStore, type ChangeSetApplyBinding, type WorkflowBinding } from 
 import { JobStore } from './jobStore';
 import { JobExecutor, type JobExecutorDependencies } from './jobExecutor';
 import { JobRecovery, type VerifiedJobJournalEvidence } from './jobRecovery';
+import { OAuthTokenStore } from '../mcp/auth/oauthTokenStore';
+import { HttpBearerAuthenticator } from '../mcp/auth/httpBearerAuthenticator';
+import { directHttpsAuthority, directHttpsDefaultPort } from '../../shared/mcp/v1/oauthContracts';
 
 export interface AgentB3BootstrapOptions {
   readonly coordinator: DatabaseCoordinator;
@@ -142,11 +145,15 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
 }
 
 export interface AgentGatewayComposition {
+  readonly registry: ClientRegistry;
   readonly gateway: AgentGateway;
   readonly authenticator: ClientAuthenticator;
   readonly renderer: RendererIdentityAdapter;
   readonly stdioAuthenticator: StdioPublicKeyAuthenticator;
   readonly externalControlEnabled: () => Promise<boolean>;
+  readonly httpOAuthTokens: OAuthTokenStore;
+  readonly httpAuthenticator: HttpBearerAuthenticator;
+  readonly httpOAuthAuthority: import('./clientRegistry').HttpOAuthAuthorityState;
   readonly jobs: JobStore;
   readonly jobExecutor: JobExecutor;
 }
@@ -843,7 +850,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         const query = { type: envelope.operation, payload: envelope.payload } as GatewayWorkflowQuery | import('../../shared/agent/v1/gatewayContracts').GatewayManagementQuery;
         let value: unknown;
         switch (query.type) {
-          case 'agent.status.get': value = Object.freeze({ settings: await registry.getSettings(), runtimeState: options.coordinator.state }); break;
+           case 'agent.status.get': value = Object.freeze({ settings: await registry.getSettings(), runtimeState: options.coordinator.state, directHttps: await registry.getHttpOAuthAuthority() }); break;
           case 'agent.clients.list': {
             const visibility = principal.renderer ? undefined : principal.clientId;
             const window = pagination.createWindow({ query: { operation: query.type, clientId: visibility ?? null }, cursor: query.payload.cursor, pageSize: query.payload.pageSize, maxPageSize: 200 });
@@ -1014,5 +1021,17 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     now: () => new Date(now()),
     randomUUID: uuid
   });
-  return Object.freeze({ gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, jobs, jobExecutor, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled });
+  const persistedHttpAuthority = await registry.getHttpOAuthAuthority();
+  const httpOAuthAuthority = Object.freeze({ ...(persistedHttpAuthority ?? directHttpsAuthority(directHttpsDefaultPort)), appInstanceId: options.appInstanceId, enabled: persistedHttpAuthority?.enabled ?? false });
+  const httpOAuthSnapshot = await registry.loadOAuthTokenSnapshot();
+  const httpOAuthTokens = new OAuthTokenStore({ now: () => new Date(now()), load: () => httpOAuthSnapshot, persist: (snapshot) => registry.persistOAuthTokenSnapshot(snapshot) });
+  const httpAuthenticator = new HttpBearerAuthenticator({
+    tokenStore: httpOAuthTokens,
+    authority: httpOAuthAuthority,
+    appInstanceId: options.appInstanceId,
+    clients: { getHttpClient: async (clientId) => { const client = await registry.getHttpClient(clientId); if (!client) return null; return Object.freeze({ clientId: client.clientId, subjectId: `http-${client.clientId}`, displayName: client.product === 'codex' ? 'Codex CLI' : 'Claude Code', scopes: client.allowedScopes, trust: client.trust }); } },
+    now: () => new Date(now()), randomUUID: uuid
+  });
+  registry.setHttpOAuthRevocationHook((clientId) => httpOAuthTokens.revokeClient(clientId));
+  return Object.freeze({ registry, gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, jobs, jobExecutor, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled, httpOAuthTokens, httpAuthenticator, httpOAuthAuthority });
 }
