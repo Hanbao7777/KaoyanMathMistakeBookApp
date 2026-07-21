@@ -114,6 +114,123 @@ States: pending, approved, denied, expired, invalidated, consumed.
 - Consent never widens registered scopes. Scope increases use the separate
   audited registration update and require a fresh authorization request.
 
+### Browser continuation protocol
+
+- After full validation, GET /oauth/authorize creates an opaque 128-bit request
+  ID and a separate 256-bit browser capability. Only the capability hash is
+  stored. The raw capability is set as a Secure, HttpOnly, SameSite=Strict,
+  host-only cookie scoped to the authorization continuation paths. Neither
+  value is accepted from renderer IPC.
+- The endpoint returns 202 HTML with no external script. Its bounded script
+  polls GET /oauth/authorize/status/{requestId}. The status endpoint requires
+  the capability cookie, exact Host and Origin/Sec-Fetch-Site constraints, and
+  returns only pending, ready, denied, expired, or invalidated. It never returns
+  a code, state, redirect URI, or token.
+- When status becomes ready or denied, the page navigates the top-level browser
+  to GET /oauth/authorize/continue/{requestId}. That endpoint again verifies
+  the cookie and atomically consumes the terminal result. It returns the sole
+  302 to the exact registered redirect URI with code+state, or the RFC OAuth
+  error+state. It clears the cookie and a replay returns 410.
+- Poll interval is at least one second, total lifetime is at most five minutes,
+  response bodies are no-store, request IDs are unguessable, and a capability
+  never addresses another request. Closing the browser leaves a bounded record
+  that expires. App restart marks all pending/ready-but-unconsumed flows
+  invalidated; clients start a new authorization flow.
+
+### Durable OAuth decision protocol
+
+- Add targeted registry transactions rather than rewriting the complete token
+  snapshot. The decision transaction revalidates client, scopes, authority,
+  resource, redirect, App instance, capability hash, state, PKCE challenge, and
+  expiry; changes pending to approved/denied once; inserts the authorization
+  code hash for approval; and appends the required audit event in the same
+  DatabaseCoordinator write transaction.
+- The raw authorization code exists only in the controller's terminal-result
+  memory until continue consumes it. If the process dies after the decision
+  transaction, startup reconciliation marks the unreachable unused code and
+  consent row invalidated/revoked and appends a reconciliation audit event in
+  one transaction. No raw code is persisted to recover an abandoned browser.
+- Audit append failure rolls back the decision and code insert. Concurrent
+  decisions use a conditional pending-state update and exactly one succeeds.
+  Continue consumes the code delivery state once; token exchange independently
+  consumes the stored code hash once.
+
+## Durable Trust And Audit Protocol
+
+Certificate-store mutation is a recoverable saga because it cannot share a
+SQLite transaction.
+
+1. prepare persists the exact intent, public certificate hash/DER, key name,
+   expected thumbprint, authority generation, renderer binding, expiry, and
+   intent-created audit event in one control-write transaction.
+2. confirm transactionally checks the renderer binding and unchanged inputs,
+   changes intent to install_pending/removal_pending, and appends a
+   user-confirmed audit event. If audit fails, no certificate-store command runs.
+3. The controller performs the single external side effect, then independently
+   verifies CurrentUser My/Root counts, key association, thumbprint, and chain.
+   HTTPS remains stopped during this phase.
+4. finalize changes the durable authority and intent to ready/completed and
+   appends success audit in one transaction. Only after finalize commits may the
+   controller start HTTPS from a fresh authority read.
+5. If verification or finalize fails, the controller attempts the exact inverse
+   side effect and verifies it. A failure-result transaction records the result
+   and audit. If either compensation or audit is unavailable, durable state is
+   recovery_required, HTTPS stays disabled, and startup reconciliation is the
+   only permitted operation besides emergency removal.
+
+Startup reconciliation scans nonterminal intents before host creation. For
+install_pending it counts and verifies the exact expected root: zero becomes a
+failed audited intent; exactly one valid root may be finalized because durable
+user confirmation predates the side effect; any mismatch or multiple match is
+recovery_required and disabled. Removal_pending with zero matches finalizes;
+with one match it retries exact removal; ambiguity disables. Rotation uses
+separate new-root-installed and old-root-removal checkpoints, never publishes
+the new authority until its finalize transaction, and never enables both.
+
+All authority mutation, token/session invalidation, and audit rows that are
+database state share one DatabaseCoordinator control-write transaction. Store
+side effects occur only after a committed intent audit. The existing full OAuth
+snapshot delete/reinsert API is not used for consent decisions.
+
+## Trusted Renderer Caller Binding
+
+- ipcMain handlers receive Electron's IpcMainInvokeEvent. The registration layer
+  verifies senderFrame is the main frame and its URL is the exact packaged file
+  URL or configured development renderer origin before calling the adapter.
+- Main owns a renderer-session record {webContentsId, navigationGeneration}.
+  navigationGeneration increments on every committed top-level navigation,
+  reload, window replacement, or renderer crash. The adapter derives this
+  context from the event and never accepts it in preload arguments.
+- Trust intents bind durably to that context. Confirmation requires the same
+  live BrowserWindow, webContents ID, and generation; reload, replacement,
+  cross-window calls, detached frames, and stale intents fail. OAuth consent
+  decisions use the same caller check, but the browser capability remains a
+  separate HTTPS-only credential and never crosses IPC.
+- Closing/reloading the bound control-center window invalidates its outstanding
+  trust intents. A new session must prepare and display a fresh intent.
+
+## Exact CNG Certificate Association
+
+- currentUserRootIssuer opens the exact persisted key name with Microsoft
+  Software Key Storage Provider in CurrentUser scope and constructs RSACng from
+  that CngKey. It uses .NET CertificateRequest to create the self-signed CA with
+  BasicConstraints CA=true, keyCertSign+cRLSign usage, bounded subject/serial,
+  and at most 30-day validity.
+- The resulting certificate is added to Cert:\CurrentUser\My while retaining
+  its private-key association to that exact persistent CNG key. Only the public
+  DER is copied to Cert:\CurrentUser\Root after confirmation. No PFX or raw
+  private-key export is used for the root.
+- Verification reopens the My certificate by exact thumbprint, requires
+  HasPrivateKey, requires GetRSAPrivateKey to be RSACng with the exact provider
+  and CngKey.UniqueName, compares its SubjectPublicKeyInfo byte-for-byte with
+  CurrentUserKeyStore.verify, signs a random challenge and verifies it with the
+  public certificate, and checks the CA extensions and validity.
+- Leaf issuance no longer ignores rootKeyName. It either signs through the exact
+  reopened RSACng key or verifies that the exact My certificate selected as
+  signer has the rootKeyName association above before signing. A disposable
+  actual-Windows test must create/reopen/sign/verify a leaf chain, then delete
+  the exact My/Root thumbprints and key and verify zero remnants.
+
 ## Audit Requirements
 
 Append redacted events for trust intent creation/confirmation/denial/expiry,
@@ -137,6 +254,14 @@ tokens, codes, PKCE, session IDs, nonce/state, and redirect query strings.
   zero matching roots; no real store is touched by default tests.
 - OAuth tests cover safe DTOs, exact revalidation, approve/deny/expire/replay,
   concurrent decisions, restart invalidation, and one-use code exchange.
+- Browser tests cover capability-cookie theft/replay/cross-request denial,
+  bounded polling, ready/denied continue redirects, exact state preservation,
+  cookie clearing, 410 replay, and Codex/Claude callback completion.
+- Crash-point tests cover every committed trust checkpoint, audit failure before
+  side effects, finalize failure compensation, recovery_required, and startup
+  reconciliation with zero/one/mismatched roots.
+- IPC tests prove main-frame URL validation and webContents/navigation-generation
+  binding across reload, replacement, iframe, crash, and cross-window calls.
 - Controller tests prove approval starts HTTPS without Electron restart and
   refresh never uses captured startup authority.
 - Full C14, IPC, build, spike, secret-scan, graph, and repository tests pass.
