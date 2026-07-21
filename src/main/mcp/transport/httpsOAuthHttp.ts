@@ -47,6 +47,13 @@ function readBody(request: IncomingMessage): Promise<string> {
 }
 function responseBody(response: ServerResponse, result: { readonly status: number; readonly headers?: Readonly<Record<string, string>>; readonly body?: unknown }): void { const headers = result.headers ?? {}; if (result.body === undefined) { response.writeHead(result.status, { ...headers, connection: 'close' }); response.end(); return; } if (typeof result.body === 'string') { plainResponse(response, result.status, result.body, headers); return; } jsonResponse(response, result.status, result.body, headers); }
 
+export function isSameOriginOAuthContinuation(headers: Readonly<Record<string, string | undefined>>, authority: string): boolean {
+  if (headers['sec-fetch-site'] !== 'same-origin') return false;
+  if (headers.origin !== undefined) return headers.origin === authority;
+  if (!headers.referer) return false;
+  try { const referer = new URL(headers.referer); return referer.origin === authority && referer.pathname.startsWith('/oauth/authorize'); } catch { return false; }
+}
+
 export class DirectHttpsOAuthHost {
   private readonly authority: DirectHttpsAuthority;
   private readonly metadata: ReturnType<typeof createOAuthMetadata>;
@@ -80,9 +87,8 @@ export class DirectHttpsOAuthHost {
     if (pathname === oauthAuthorizationEndpointPath && request.method === 'GET') { responseBody(response, await this.options.oauth.authorize(new URL(request.url ?? '/', this.authority.authority).searchParams)); return; }
     const continuation = pathname.match(/^\/oauth\/authorize\/(status|continue)\/([0-9a-f-]{36})$/);
     if (continuation && request.method === 'GET') {
-      const fetchSite = header(request, 'sec-fetch-site');
-      if (header(request, 'origin') !== this.authority.authority || fetchSite !== 'same-origin') { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
-      const capability = oauthCapabilityFromCookie(header(request, 'cookie'));
+      if (!isSameOriginOAuthContinuation({ origin: header(request, 'origin'), referer: header(request, 'referer'), 'sec-fetch-site': header(request, 'sec-fetch-site') }, this.authority.authority)) { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
+      const capability = oauthCapabilityFromCookie(header(request, 'cookie'), continuation[2]);
       responseBody(response, continuation[1] === 'status' ? this.options.oauth.status(continuation[2], capability) : this.options.oauth.continue(continuation[2], capability));
       return;
     }

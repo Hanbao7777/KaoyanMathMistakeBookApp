@@ -1023,7 +1023,16 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     now: () => new Date(now()),
     randomUUID: uuid
   });
-  const persistedHttpAuthority = await registry.getHttpOAuthAuthority();
+  let persistedHttpAuthority = await registry.getHttpOAuthAuthority();
+  if (persistedHttpAuthority && persistedHttpAuthority.appInstanceId !== options.appInstanceId) {
+    const previousAppInstanceId = persistedHttpAuthority.appInstanceId;
+    await executeControlWrite({ requestId: uuid(), execute: (database, scope) => {
+      registry.updateHttpOAuthAuthorityInTransaction(database, scope, { ...persistedHttpAuthority!, appInstanceId: options.appInstanceId });
+      audit.appendReconciliationInTransaction(database, scope, { clientId: 'local-control', summary: { event: 'http_oauth_app_instance_refreshed', previousAppInstanceId, appInstanceId: options.appInstanceId } });
+      return { changed: true, value: undefined };
+    }});
+    persistedHttpAuthority = Object.freeze({ ...persistedHttpAuthority, appInstanceId: options.appInstanceId });
+  }
   const httpOAuthAuthority = Object.freeze({ ...(persistedHttpAuthority ?? directHttpsAuthority(directHttpsDefaultPort)), appInstanceId: options.appInstanceId, enabled: persistedHttpAuthority?.enabled ?? false });
   const httpOAuthSnapshot = await registry.loadOAuthTokenSnapshot();
   const httpOAuthTokens = new OAuthTokenStore({ now: () => new Date(now()), load: () => httpOAuthSnapshot, persist: (snapshot) => registry.persistOAuthTokenSnapshot(snapshot), persistAuthorizationCode: (code) => registry.persistOAuthAuthorizationCode(code), deleteAuthorizationCode: (codeHash) => registry.deleteOAuthAuthorizationCode(codeHash) });

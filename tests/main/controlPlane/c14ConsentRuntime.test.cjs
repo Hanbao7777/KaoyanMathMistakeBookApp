@@ -115,3 +115,61 @@ test('C14 trust confirmation rejects a stale navigation generation before any ro
   await assert.rejects(controller.confirmTrustInstall(intent.intentId, true, { webContentsId: 7, navigationGeneration: 4 }), /trust_intent_invalid/);
   assert.equal(installs, 0);
 });
+
+test('C14 cancelled and expired trust intents clean the exact My certificate and CNG key', async () => {
+  const controlPlane = await composition();
+  const authority = await controlPlane.registry.getHttpOAuthAuthority();
+  const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority }), tokenStore: controlPlane.httpOAuthTokens, appInstanceId: authority.appInstanceId, clients: { getHttpClient: () => null } });
+  const material = { der: Buffer.alloc(256, 9), thumbprint: 'C'.repeat(40), notAfter: '2099-01-01T00:00:00.000Z', subject: 'CN=Kaoyan Local HTTPS Root cleanup' };
+  let now = new Date('2026-01-01T00:00:00.000Z');
+  const removedKeys = [];
+  const removedCertificates = [];
+  const controller = new controllerModule.DirectHttpsOAuthController({
+    authority: () => controlPlane.registry.getHttpOAuthAuthority(),
+    updateAuthority: (value) => controlPlane.registry.updateHttpOAuthAuthority(value),
+    updateAuthorityInTransaction: (db, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(db, scope, value),
+    executeControlWrite: controlPlane.executeControlWrite,
+    audit: auditStub(),
+    keyStore: { async create(keyName) { return { keyName, provider: 'Microsoft Software Key Storage Provider', scope: 'CurrentUser', algorithm: 'RSA', exportable: false }; }, async verify(keyName) { return { keyName, provider: 'Microsoft Software Key Storage Provider', scope: 'CurrentUser', algorithm: 'RSA', exportable: false }; }, async remove(keyName) { removedKeys.push(keyName); } },
+    issuer: { async issue() { return material; }, async verify() {}, async remove(thumbprint) { removedCertificates.push(thumbprint); } },
+    roots: { async install() {}, async remove() {}, async count() { return 0; } },
+    oauth,
+    createHost: () => undefined,
+    now: () => now
+  });
+  const context = { webContentsId: 9, navigationGeneration: 1 };
+  const cancelled = await controller.prepareTrustInstall(context);
+  await controller.confirmTrustInstall(cancelled.intentId, false, context);
+  assert.equal(removedKeys.length, 1);
+  assert.deepEqual(removedCertificates, [material.thumbprint]);
+
+  const expired = await controller.prepareTrustInstall(context);
+  now = new Date(now.getTime() + 6 * 60_000);
+  await controller.reconcile();
+  assert.equal(removedKeys.length, 2);
+  assert.deepEqual(removedCertificates, [material.thumbprint, material.thumbprint]);
+  const database = await environment.databaseService.getDatabase();
+  assert.equal(database.exec('SELECT status FROM agent_https_trust_intents WHERE intent_id = "' + expired.intentId + '"')[0].values[0][0], 'expired');
+});
+
+test('C14 fixed-port bind failure stays visible and does not abort controller startup', async () => {
+  const controlPlane = await composition();
+  const initial = await controlPlane.registry.getHttpOAuthAuthority();
+  const authority = await controlPlane.registry.updateHttpOAuthAuthority({ ...initial, rootCaThumbprint: 'D'.repeat(40), currentUserKeyHandle: 'kaoyan-http-root-bindfailure', enabled: true });
+  const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority }), tokenStore: controlPlane.httpOAuthTokens, appInstanceId: authority.appInstanceId, clients: { getHttpClient: () => null } });
+  const controller = new controllerModule.DirectHttpsOAuthController({
+    authority: () => controlPlane.registry.getHttpOAuthAuthority(),
+    updateAuthority: (value) => controlPlane.registry.updateHttpOAuthAuthority(value),
+    updateAuthorityInTransaction: (db, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(db, scope, value),
+    executeControlWrite: controlPlane.executeControlWrite,
+    audit: auditStub(),
+    keyStore: { async create() { throw new Error('unused'); }, async verify() { throw new Error('unused'); } },
+    issuer: { async issue() { throw new Error('unused'); }, async verify() {} },
+    roots: { async install() {}, async remove() {}, async count() { return 1; } },
+    oauth,
+    createHost: () => ({ async start() { throw new Error('EADDRINUSE'); }, async stop() {}, status() { return { state: 'disabled', reason: 'bind_failed', authority, resource: authority.resource, issuer: authority.issuer, appInstanceId: authority.appInstanceId }; } })
+  });
+  await controller.startIfAuthorized();
+  assert.equal((await controller.status()).reason, 'bind_failed');
+  assert.equal((await controlPlane.registry.getHttpOAuthAuthority()).enabled, true);
+});

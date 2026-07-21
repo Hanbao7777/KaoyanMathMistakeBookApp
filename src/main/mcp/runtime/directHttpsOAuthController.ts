@@ -20,7 +20,7 @@ export interface DirectHttpsOAuthControllerDependencies {
   readonly executeControlWrite: AgentControlWriteExecutor;
   readonly audit: AuditLedger;
   readonly keyStore: Pick<CurrentUserKeyStore, 'create' | 'verify'> & Partial<Pick<CurrentUserKeyStore, 'remove'>>;
-  readonly issuer: Pick<CurrentUserRootIssuer, 'issue' | 'verify'>;
+  readonly issuer: Pick<CurrentUserRootIssuer, 'issue' | 'verify'> & Partial<Pick<CurrentUserRootIssuer, 'remove'>>;
   readonly roots: Pick<CurrentUserRootCaLifecycle, 'install' | 'remove' | 'count'>;
   readonly oauth: LocalOAuthAuthorizationServer;
   readonly oauthTokenRecovery?: () => Promise<void>;
@@ -206,13 +206,13 @@ export class DirectHttpsOAuthController {
     try {
       if (await this.deps.roots.count(authority.rootCaThumbprint) !== 1) {
         await this.stop();
-        await this.deps.updateAuthority({ ...authority, enabled: false });
+        await this.disableAuthorityForTrustFailure(authority, 'https_root_count_invalid');
         await this.status();
         return;
       }
     } catch {
       await this.stop();
-      await this.deps.updateAuthority({ ...authority, enabled: false }).catch(() => undefined);
+      await this.disableAuthorityForTrustFailure(authority, 'https_root_verification_failed').catch(() => undefined);
       await this.status();
       return;
     }
@@ -221,7 +221,7 @@ export class DirectHttpsOAuthController {
     await this.stop();
     this.host = this.deps.createHost(authority);
     if (!this.host) throw new Error('https_host_unavailable');
-    await this.host.start();
+    try { await this.host.start(); } catch { await this.status(); return; }
     await this.status();
   }
 
@@ -234,6 +234,12 @@ export class DirectHttpsOAuthController {
     this.deps.oauth.invalidatePending();
     await this.deps.oauthTokenRecovery?.();
     await this.invalidatePersistedConsents();
+    const expiredIntents = (await this.deps.executeControlWrite({ requestId: 'c14-trust-expired-read', execute: (db) => ({ changed: false, value: rows(db, "SELECT * FROM agent_https_trust_intents WHERE status = 'pending' AND expires_at <= ?", [this.now().toISOString()]) }) })).value;
+    for (const intent of expiredIntents) {
+      let cleaned = true;
+      try { if (intent.kind === 'install' && typeof intent.thumbprint === 'string') await this.deps.issuer.remove?.(intent.thumbprint); if (intent.kind === 'install' && typeof intent.key_name === 'string') await this.deps.keyStore.remove?.(intent.key_name); } catch { cleaned = false; }
+      await this.invalidatePersistedIntent(String(intent.intent_id), cleaned ? 'expired' : 'recovery_required');
+    }
     const intents = (await this.deps.executeControlWrite({ requestId: 'c14-trust-reconcile-read', execute: (db) => ({ changed: false, value: rows(db, "SELECT * FROM agent_https_trust_intents WHERE status IN ('install_pending','removal_pending')") }) })).value;
     for (const intent of intents) {
       try {
@@ -325,7 +331,7 @@ export class DirectHttpsOAuthController {
   private async completeFailure(intentId: string, status: 'failed' | 'recovery_required', event: string): Promise<void> {
     try {
       await this.deps.executeControlWrite({ requestId: `c14-intent-failure-${intentId}-${status}`, execute: (db, scope) => {
-        sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status IN (?, ?)', [status, this.now().toISOString(), intentId, 'install_pending', 'removal_pending']);
+        sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status IN (?, ?, ?, ?)', [status, this.now().toISOString(), intentId, 'install_pending', 'removal_pending', 'invalidated', 'expired']);
         if ((db as unknown as { getRowsModified(): number }).getRowsModified() !== 1) return { changed: false, value: undefined };
         this.deps.audit.appendTerminalFailureInTransaction(db, scope, { clientId: controlClientId, requestId: intentId, summary: { event, intentId, status } });
         return { changed: true, value: undefined };
@@ -354,13 +360,34 @@ export class DirectHttpsOAuthController {
     }
   }
 
+  private async disableAuthorityForTrustFailure(authority: HttpOAuthAuthorityState, event: string): Promise<void> {
+    await this.deps.executeControlWrite({ requestId: `c14-trust-runtime-${this.randomUUID()}`, execute: (db, scope) => {
+      if (!this.deps.updateAuthorityInTransaction) throw new Error('authority_transaction_boundary_unavailable');
+      this.deps.updateAuthorityInTransaction(db, scope, { ...authority, enabled: false });
+      this.deps.audit.appendTerminalFailureInTransaction(db, scope, { clientId: controlClientId, summary: { event, authority: authority.authority } });
+      return { changed: true, value: undefined };
+    }});
+  }
+
   private async invalidateIntent(intentId: string, context: RendererTrustContext, status: 'invalidated' | 'expired'): Promise<void> {
     validContext(context);
+    const intent = (await this.deps.executeControlWrite({ requestId: `c14-intent-invalidate-read-${intentId}`, execute: (db) => ({ changed: false, value: rows(db, 'SELECT * FROM agent_https_trust_intents WHERE intent_id = ?', [intentId])[0] }) })).value;
     await this.deps.executeControlWrite({ requestId: `c14-intent-invalidate-${intentId}`, execute: (db, scope) => {
-      const intent = rows(db, 'SELECT * FROM agent_https_trust_intents WHERE intent_id = ?', [intentId])[0];
       if (!intent || Number(intent.renderer_web_contents_id) !== context.webContentsId || Number(intent.navigation_generation) !== context.navigationGeneration || intent.status !== 'pending') throw new Error('trust_intent_invalid');
       sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status = ?', [status, this.now().toISOString(), intentId, 'pending']);
       this.deps.audit.appendTerminalFailureInTransaction(db, scope, { clientId: controlClientId, requestId: intentId, summary: { event: 'https_trust_intent_cancelled', intentId, status } });
+      return { changed: true, value: undefined };
+    }});
+    if (intent.kind === 'install') {
+      try { if (typeof intent.thumbprint === 'string') await this.deps.issuer.remove?.(intent.thumbprint); if (typeof intent.key_name === 'string') await this.deps.keyStore.remove?.(intent.key_name); }
+      catch (error) { await this.completeFailure(intentId, 'recovery_required', 'https_trust_intent_cleanup_failed'); throw error; }
+    }
+  }
+
+  private async invalidatePersistedIntent(intentId: string, status: 'expired' | 'invalidated' | 'recovery_required'): Promise<void> {
+    await this.deps.executeControlWrite({ requestId: `c14-intent-expire-${intentId}`, execute: (db, scope) => {
+      sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status = ?', [status, this.now().toISOString(), intentId, 'pending']);
+      this.deps.audit.appendTerminalFailureInTransaction(db, scope, { clientId: controlClientId, requestId: intentId, summary: { event: status === 'recovery_required' ? 'https_trust_intent_cleanup_failed' : 'https_trust_intent_expired', intentId, status } });
       return { changed: true, value: undefined };
     }});
   }

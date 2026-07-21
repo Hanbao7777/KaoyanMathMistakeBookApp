@@ -140,13 +140,9 @@ client evidence.
 
 - A packaged Electron run with a freshly issued certificate and an interactive
   control-center consent callback remains the final end-to-end evidence step.
-  The current OAuth server is intentionally fail-closed by queuing authorization
-  requests until a control-center consent callback is composed; no existing IPC
-  API safely authorizes trust installation or resolves those requests.
-- Root CA installation remains intentionally absent from the Electron startup
-  path. A future focused control-center authorization flow must persist the
-  explicit user decision before it can create/install/rotate a CurrentUser Root
-  CA and enable this lane; there is no silent trust fallback.
+- Root CA installation is available only through the explicit, audited
+  control-center trust intent. Electron startup never installs trust and there
+  is no silent trust fallback.
 
 ## Consent Runtime Follow-up (2026-07-22)
 
@@ -166,7 +162,7 @@ Validation executed in this worktree:
   persistence, and IPC tests PASS.
 - `node --test tests/mcp/spikes/*.test.cjs` PASS: 8 passed, 1 opt-in CNG
   association spike skipped by default.
-- `npm test` PASS: 679 passed, 0 failed, 2 skipped. The other skipped test is
+- `npm test` PASS: 686 passed, 0 failed, 2 skipped. The other skipped test is
   the existing win-unpacked launcher gate.
 - `git diff --check` PASS.
 - Static scans found no production `Cert:\\LocalMachine\\Root` path and no
@@ -177,17 +173,43 @@ The new controller test uses the real control database and audit transaction
 boundary with disposable injected key/certificate-store ports. It proves exact
 issued DER, subject, and expiry persistence, finalization before host start,
 atomic consent code projection, stale navigation denial, exact-root removal,
-and zero-root cleanup. The opt-in Windows CNG association spike was attempted
-with a random disposable key; issuer association and leaf-signing verification
-reached the CurrentUser Root installation step, where this host's noninteractive
-certificate-store import prompt timed out. Its `finally` block removes the exact
-My certificate and CNG key. Issuer association verification passed; leaf
-issuance was not reached because the root import did not complete. A supported
-interactive packaged Electron consent
-and tool matrix remains unrun, as does final C15 installer evidence.
+and zero-root cleanup. The opt-in Windows CNG association spike was rerun with
+a random disposable key after the leaf issuer was corrected to use .NET
+CertificateRequest. It verified the exact persistent CurrentUser CNG/My
+certificate association, issued an in-memory localhost + 127.0.0.1 SAN leaf,
+exported its encrypted PFX, removed the exact My certificate and key, and
+verified zero matching My/Root certificates plus a missing key. No Root
+installation was needed for this association proof; C0-E6 owns the explicit
+CurrentUser Root trust evidence. A supported interactive packaged Electron
+consent and tool matrix remains unrun, as does final C15 installer evidence.
 
 The repository graph database is present and refreshed to 2,967 nodes and
 24,321 edges. The commit hook analyzed 23 changed files, 111 changed
 functions/classes, 0 affected flows, and risk score 0.60. The graph reported
 111 broad test gaps in existing bootstrap/registry helpers; the focused C14
 controller, OAuth, TLS, IPC, and persistence tests cover the new runtime paths.
+
+## Coordinator acceptance corrections (2026-07-22)
+
+Direct review corrected issues not covered by the worker validation:
+
+- encrypted PFX passphrase propagation and actual Node TLS startup;
+- conflicting leaf SAN issuance, replaced by in-memory CertificateRequest;
+- browser continuation GETs without Origin and concurrent request cookies;
+- fixed-port bind failures no longer abort Electron startup;
+- persisted App instance refresh across restart;
+- cancelled/expired trust-intent certificate and key cleanup;
+- main-frame origin and navigation-generation renderer validation;
+- renderer cancellation is returned to main for exact cleanup.
+
+Final coordinator validation:
+
+- `npm run typecheck`, `npm run build:main`, and `npm run build`: PASS.
+- `npm test`: 688 tests; 686 passed, 0 failed, 2 skipped.
+- Focused C14 controller/OAuth/TLS/IPC/restart tests: 16 passed.
+- Opt-in actual Windows CNG/My association and leaf-signing spike: PASS with
+  exact certificate/key cleanup.
+- MCP spike suite: 8 passed, 1 opt-in test skipped by the default invocation.
+- `git diff --check` and production LocalMachine/secret scans: PASS.
+- Updated graph: 2,973 indexed nodes; risk 0.60; no stored affected flows.
+  Dynamic CommonJS tests are not associated by graph `tests_for` edges.

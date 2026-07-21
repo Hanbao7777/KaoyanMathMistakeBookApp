@@ -11,7 +11,7 @@ function runCertutil(args: readonly string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('certutil.exe', [...args], { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
     let stderr = '';
-    const timer = setTimeout(() => { child.kill(); reject(new Error('CurrentUser Root certificate command timed out')); }, 15_000);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('CurrentUser Root certificate command timed out')); }, 120_000);
     child.stderr.on('data', (chunk: Buffer | string) => { stderr += String(chunk).slice(0, 4_096); });
     child.once('error', (error) => { clearTimeout(timer); reject(error); });
     child.once('close', (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error(`CurrentUser Root certificate command failed${stderr ? `: ${stderr}` : ''}`)); });

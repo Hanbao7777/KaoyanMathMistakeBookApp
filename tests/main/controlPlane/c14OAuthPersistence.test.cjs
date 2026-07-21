@@ -26,3 +26,19 @@ test('C14 OAuth authorization and token state survives registry persistence with
   const reopened = new tokenModule.OAuthTokenStore({ load: () => snapshot });
   assert.equal(reopened.snapshot().codes.length, 1);
 });
+
+test('C14 bootstrap refreshes the persisted OAuth App instance while preserving the stable authority', async () => {
+  const authority = contracts.directHttpsAuthority(39458);
+  await environment.databaseService.initializeDatabase({ agent: { appInstanceId: 'c14-old-instance', cursorSecret: 'o'.repeat(32) } });
+  const first = await environment.databaseService.getAgentControlPlane();
+  await first.registry.updateHttpOAuthAuthority({ ...authority, appInstanceId: 'c14-old-instance', enabled: false });
+  await environment.databaseService.shutdownDatabase();
+  environment.databaseService.resetDatabaseConnection();
+  await environment.databaseService.initializeDatabase({ agent: { appInstanceId: 'c14-new-instance', cursorSecret: 'n'.repeat(32) } });
+  const second = await environment.databaseService.getAgentControlPlane();
+  const persisted = await second.registry.getHttpOAuthAuthority();
+  assert.equal(persisted.authority, authority.authority);
+  assert.equal(persisted.resource, authority.resource);
+  assert.equal(persisted.issuer, authority.issuer);
+  assert.equal(persisted.appInstanceId, 'c14-new-instance');
+});

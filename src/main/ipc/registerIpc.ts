@@ -138,6 +138,7 @@ import {
   updateTickTickListFromRenderer
 } from './adapters/ticktickIpc';
 import { agentControlCenterIpc } from './adapters/agentControlCenterIpc';
+import { advanceRendererSession, deriveTrustedRendererContext, registerRendererSession, removeRendererSession } from './trustedRendererContext';
 import { FocusTimerEngine } from '../services/focusTimerEngine';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
@@ -187,16 +188,9 @@ import type { AgentScope, TrustProfile } from '../../shared/agent/v1/gatewayCont
 import type { AgentControlCreateR4GrantRequest, AgentControlPageRequest } from '../../shared/api';
 import { validatePairingRequest, validatePairingTargetRequest, type PairingRequest, type PairingTargetRequest } from '../../shared/mcp/v1/pairingContracts';
 
-const rendererGenerations = new Map<number, number>();
 function trustedRendererContext(event: Electron.IpcMainInvokeEvent): { readonly webContentsId: number; readonly navigationGeneration: number } {
-  const frame = event.senderFrame;
-  if (!frame || frame !== event.sender.mainFrame) throw new Error('Untrusted renderer frame');
-  const url = frame.url;
   const packagedUrl = pathToFileURL(path.resolve(__dirname, '../../../renderer/index.html')).href;
-  const allowed = app.isPackaged ? url === packagedUrl : url.startsWith('http://127.0.0.1:5173/');
-  if (!allowed) throw new Error('Untrusted renderer origin');
-  const id = event.sender.id;
-  return Object.freeze({ webContentsId: id, navigationGeneration: rendererGenerations.get(id) ?? 0 });
+  return deriveTrustedRendererContext(event, { packaged: app.isPackaged, packagedUrl, developmentOrigin: 'http://127.0.0.1:5173' });
 }
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
@@ -416,11 +410,11 @@ function focusMainWindow() {
 
 export function registerIpc() {
   if (typeof app.on === 'function') app.on('web-contents-created', (_event, contents) => {
-    rendererGenerations.set(contents.id, 0);
-    contents.on('did-frame-navigate', (_event, _url, _httpResponseCode, _httpStatusText, isMainFrame) => { if (isMainFrame) rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1); });
-    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1); });
-    contents.on('render-process-gone', () => rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1));
-    contents.once('destroyed', () => rendererGenerations.delete(contents.id));
+    registerRendererSession(contents.id);
+    contents.on('did-frame-navigate', (_event, _url, _httpResponseCode, _httpStatusText, isMainFrame) => { if (isMainFrame) advanceRendererSession(contents.id); });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) advanceRendererSession(contents.id); });
+    contents.on('render-process-gone', () => advanceRendererSession(contents.id));
+    contents.once('destroyed', () => removeRendererSession(contents.id));
   });
   handle('agentControl:getStatus', () => agentControlCenterIpc.getStatus());
   handle('agentControl:setExternalControlEnabled', (enabled: boolean) => agentControlCenterIpc.setExternalControlEnabled(enabled));

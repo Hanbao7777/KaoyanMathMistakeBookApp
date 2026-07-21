@@ -104,6 +104,15 @@ test('C14 direct HTTPS host passes the transient PFX passphrase to Node TLS', ()
   assert.throws(() => httpsTransport.localHttpsServerOptions({ pfx: Uint8Array.from([1]), passphrase: '', dnsNames: ['localhost'], ipAddresses: ['127.0.0.1'] }), /key material is invalid/);
 });
 
+test('C14 OAuth continuation accepts browser GET headers without Origin and rejects cross-origin referers', () => {
+  const authority = 'https://127.0.0.1:39458';
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: `${authority}/oauth/authorize?client_id=test` }, authority), true);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', origin: authority }, authority), true);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: 'https://example.invalid/oauth/authorize' }, authority), false);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'cross-site', origin: authority }, authority), false);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin' }, authority), false);
+});
+
 test('C14 configured direct HTTPS lifecycle verifies the CNG handle and starts Node TLS with an encrypted PFX', { skip: process.platform !== 'win32' }, async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-c14-pfx-'));
   const passphrase = 'test-only-passphrase-that-is-long-enough';
