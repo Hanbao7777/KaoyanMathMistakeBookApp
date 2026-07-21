@@ -193,12 +193,14 @@ Do not change C13 global operation behavior while implementing OAuth transport.
 - Root CA install is an R4-level local trust change. It requires explicit
   user approval and must be reversible through disable, uninstall, and emergency
   stop paths that remove the exact thumbprint and verify no stale root remains.
-- The Root CA private key is held only in current-user OS key storage through
-  `currentUserKeyStore.ts`, preferably as a non-exportable Windows CNG key. Raw
-  private-key material must not be written to the database, discovery files,
-  logs, temp traces, or project config. If the key is missing, corrupt, or
-  export-only, direct HTTPS OAuth fails closed and the UI offers audited
-  rotation/removal instead of minting a silent replacement.
+- The Root CA private key is held only as a persisted, non-exportable
+  CurrentUser Windows CNG key through `currentUserKeyStore.ts`. Direct HTTPS
+  OAuth remains disabled unless the key can be created or reopened and verified
+  as CurrentUser-scoped, CNG-backed, and non-exportable. Raw private-key material
+  must not be written to the database, discovery files, logs, temp traces, or
+  project config. A missing, corrupt, non-CNG, or exportable key fails closed;
+  there is no silent replacement or provider fallback, and the UI offers only
+  audited rotation/removal recovery.
 
 ## Client-registration decision
 
@@ -217,7 +219,7 @@ registration route:
   loopback redirect pattern `http://127.0.0.1:<ephemeral>/callback/<nonce>`.
   C14 therefore registers a Codex-specific RFC 8252 loopback rule rather than
   a wildcard URI: scheme `http`; host exactly `127.0.0.1`; numeric port
-  `1024..65535`; path exactly `/callback/<nonce>` where `<nonce>` is one
+  `1..65535`; path exactly `/callback/<nonce>` where `<nonce>` is one
   non-empty URL-safe path segment; no userinfo, query, fragment, encoded slash,
   host alias, IPv6, or trailing path segment. The authorization code stores
   the exact requested redirect URI, and the token request must match that exact
@@ -298,11 +300,12 @@ Implementation must not start until the reviewer reports `completed` or
   MCP sessions fail because the instance changed; a valid refresh family may
   mint exactly one new access token for the persistent resource/issuer and the
   new App instance.
-- Gate: key-custody tests prove no raw private-key material enters the database,
-  logs, discovery, project config, or temporary traces; LocalMachine writes are
-  denied; missing or corrupt key handles fail closed; rotation rollback leaves
-  exactly one accepted active root or disables direct HTTPS OAuth with stale
-  roots removed.
+- Gate: key-custody tests prove a persisted non-exportable CurrentUser CNG key
+  can be created, reopened, and verified; non-CNG or exportable handles are
+  rejected without silent replacement/provider fallback; no raw private-key
+  material enters database, logs, discovery, project config, or temporary
+  traces; LocalMachine writes are denied; rotation rollback leaves exactly one
+  accepted active root or disables direct HTTPS OAuth with stale roots removed.
 - Gate: restart, replay, reuse, expiry, revoked client, and scope narrowing tests
   pass.
 
@@ -392,19 +395,22 @@ C14 is not accepted unless these pass:
   and token/session mixing all deny before Gateway dispatch.
 - Client registration tests prove the chosen route for both mandatory clients:
   Codex's RFC 8252 loopback rule accepts only the measured
-  `127.0.0.1:<ephemeral>/callback/<nonce>` class and rejects scheme, host,
-  path, query, fragment, port-range, encoded-slash, and token-request redirect
-  mismatches; Claude Code requires the exact registered callback URI. If
+  `127.0.0.1:<ephemeral>/callback/<nonce>` class, including boundary ports `1`
+  and `65535`, and rejects port `0`, missing/non-numeric/out-of-range ports,
+  scheme, host, path, query, fragment, encoded-slash, and token-request redirect
+  mismatches. Claude Code requires the exact registered callback URI. If
   metadata documents are required, bounded fetch/cache/redirect-denial behavior
   and exact redirect URI persistence also pass.
 - Stable-authority tests prove the persisted default/user-selected port, exact
   resource `https://127.0.0.1:<directHttpsPort>/mcp`, exact issuer
   `https://127.0.0.1:<directHttpsPort>`, no dynamic-port fallback, fail-closed
   port collision, and audited re-registration after any authority change.
-- TLS key-custody tests prove the Root CA private key stays in CurrentUser OS
-  key storage, raw key material never enters database/log/discovery/temp/config,
-  LocalMachine writes are impossible, rotation rollback is fail-closed, and
-  disable/uninstall/emergency removal leave no stale trusted root.
+- TLS key-custody tests prove the Root CA private key is a persisted,
+  non-exportable CurrentUser Windows CNG key that can be reopened and verified;
+  non-CNG/exportable handles are rejected without fallback; raw key material
+  never enters database/log/discovery/temp/config; LocalMachine writes are
+  impossible; rotation rollback is fail-closed; and disable/uninstall/emergency
+  removal leave no stale trusted root.
 - Restart tests prove the persistent issuer/resource identity, post-restart
   discovery, stale access-token/session denial, and refresh-to-new-instance
   sequence for Codex CLI and Claude Code.
@@ -436,7 +442,8 @@ C14 is not accepted unless these pass:
   fail closed on collision, and require audited re-registration for authority
   changes.
 - **Root CA private-key custody:** losing or leaking the signing key would make
-  certificate rotation unsafe. Mitigation: current-user OS key storage, no raw
+  certificate rotation unsafe. Mitigation: mandatory persisted non-exportable
+  CurrentUser Windows CNG storage, no provider/exportability fallback, no raw
   key persistence, thumbprint/key-handle audits, fail-closed missing-key
   behavior, and rotation rollback/removal tests.
 - **Real-client variance:** Codex CLI and Claude Code may differ in OAuth
