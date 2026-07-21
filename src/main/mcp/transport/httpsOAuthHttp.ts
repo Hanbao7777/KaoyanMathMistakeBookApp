@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AgentGateway } from '../../../shared/agent/v1/gatewayContracts';
 import { directHttpsAuthority, directHttpsDefaultPort, oauthAuthorizationEndpointPath, oauthProtectedResourceMcpPath, oauthProtectedResourcePath, oauthRevocationEndpointPath, oauthServerMetadataPath, oauthTokenEndpointPath, type DirectHttpsAuthority } from '../../../shared/mcp/v1/oauthContracts';
 import { bearerChallenge, createOAuthMetadata, metadataForPath } from '../auth/oauthMetadata';
-import { LocalOAuthAuthorizationServer } from '../auth/oauthAuthorizationServer';
+import { LocalOAuthAuthorizationServer, oauthCapabilityFromCookie } from '../auth/oauthAuthorizationServer';
 import type { LocalHttpsCertificate } from '../tls/localHttpsCertificate';
 import { createLoopbackMcpRequestHandler, type LoopbackMcpRequestHandler, type LoopbackSessionAuthenticator } from './loopbackHttp';
 import { createMcpInitializeResult, createMcpProtocolHandler } from '../protocol';
@@ -78,6 +78,14 @@ export class DirectHttpsOAuthHost {
     const metadata = metadataForPath(pathname, this.metadata);
     if (metadata && request.method === 'GET') { jsonResponse(response, 200, metadata); return; }
     if (pathname === oauthAuthorizationEndpointPath && request.method === 'GET') { responseBody(response, await this.options.oauth.authorize(new URL(request.url ?? '/', this.authority.authority).searchParams)); return; }
+    const continuation = pathname.match(/^\/oauth\/authorize\/(status|continue)\/([0-9a-f-]{36})$/);
+    if (continuation && request.method === 'GET') {
+      const fetchSite = header(request, 'sec-fetch-site');
+      if (header(request, 'origin') !== this.authority.authority || fetchSite !== 'same-origin') { response.writeHead(403, { 'cache-control': 'no-store' }); response.end(); return; }
+      const capability = oauthCapabilityFromCookie(header(request, 'cookie'));
+      responseBody(response, continuation[1] === 'status' ? this.options.oauth.status(continuation[2], capability) : this.options.oauth.continue(continuation[2], capability));
+      return;
+    }
     if ((pathname === oauthTokenEndpointPath || pathname === oauthRevocationEndpointPath) && request.method === 'POST') {
       if (header(request, 'content-type')?.split(';')[0].trim().toLowerCase() !== 'application/x-www-form-urlencoded') { jsonResponse(response, 415, { error: 'invalid_request' }); return; }
       try { const body = await readBody(request); responseBody(response, pathname === oauthTokenEndpointPath ? await this.options.oauth.token(body) : await this.options.oauth.revoke(body)); } catch (error) { jsonResponse(response, error instanceof Error && error.message === 'request_too_large' ? 413 : 400, { error: 'invalid_request' }); }

@@ -133,7 +133,13 @@ const api: AppApi = {
     getClientConnection: (request) => invoke('agentControl:getClientConnection', request),
     repairClientConnection: (request) => invoke('agentControl:repairClientConnection', request),
     rotateClientKey: (request) => invoke('agentControl:rotateClientKey', request),
-    disconnectClientConnection: (request) => invoke('agentControl:disconnectClientConnection', request)
+    disconnectClientConnection: (request) => invoke('agentControl:disconnectClientConnection', request),
+    prepareDirectHttpsTrust: () => invoke('agentControl:prepareDirectHttpsTrust'),
+    confirmDirectHttpsTrust: (intentId, confirmed) => invoke('agentControl:confirmDirectHttpsTrust', intentId, confirmed),
+    prepareDirectHttpsRemoval: () => invoke('agentControl:prepareDirectHttpsRemoval'),
+    confirmDirectHttpsRemoval: (intentId, confirmed) => invoke('agentControl:confirmDirectHttpsRemoval', intentId, confirmed),
+    listOAuthConsent: () => invoke('agentControl:listOAuthConsent'),
+    decideOAuthConsent: (requestId, decision) => invoke('agentControl:decideOAuthConsent', requestId, decision)
   } satisfies AgentControlApi,
   knowledge: {
     listNodes: (parentNodeId?: string, subject?: string) => invoke('knowledge:listNodes', parentNodeId, subject),

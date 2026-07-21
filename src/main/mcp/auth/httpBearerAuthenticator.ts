@@ -29,12 +29,15 @@ export class HttpBearerAuthenticator implements LoopbackSessionAuthenticator {
   private readonly sessions = new Map<string, SessionBinding>();
   private readonly now: () => Date;
   private readonly uuid: () => string;
-  constructor(private readonly options: HttpBearerAuthenticatorOptions) { this.now = options.now ?? (() => new Date()); this.uuid = options.randomUUID ?? randomUUID; }
+  private authority: DirectHttpsAuthority;
+  private appInstanceId: string;
+  constructor(private readonly options: HttpBearerAuthenticatorOptions) { this.now = options.now ?? (() => new Date()); this.uuid = options.randomUUID ?? randomUUID; this.authority = options.authority; this.appInstanceId = options.appInstanceId; }
+  setAuthority(authority: DirectHttpsAuthority, appInstanceId = this.appInstanceId): void { this.authority = authority; this.appInstanceId = appInstanceId; void this.invalidateAll(); }
   async admitInitialize(request: { readonly headers: Readonly<Record<string, string | undefined>>; readonly protocolVersion: string }): Promise<McpSessionAdmission | null> {
     if (!(mcpProtocolVersions as readonly string[]).includes(request.protocolVersion)) return null;
     const raw = bearer(request.headers); if (!raw) return null;
     try {
-      const claims = this.options.tokenStore.validateAccessToken(raw, { resource: this.options.authority.resource, issuer: this.options.authority.issuer, appInstanceId: this.options.appInstanceId });
+      const claims = this.options.tokenStore.validateAccessToken(raw, { resource: this.authority.resource, issuer: this.authority.issuer, appInstanceId: this.appInstanceId });
       const client = await this.options.clients.getHttpClient(claims.clientId); if (!client || !scopeAllowed(claims.scopes, client.scopes)) return null;
       const sessionId = this.uuid(); const expiresAt = claims.expiresAt; this.sessions.set(sessionId, Object.freeze({ tokenId: claims.tokenId, clientId: claims.clientId, protocolVersion: request.protocolVersion, expiresAt })); return Object.freeze({ sessionId, protocolVersion: request.protocolVersion, expiresAt });
     } catch { return null; }
@@ -43,7 +46,7 @@ export class HttpBearerAuthenticator implements LoopbackSessionAuthenticator {
     const binding = this.sessions.get(sessionId); if (!binding || binding.protocolVersion !== protocolVersion || !canonicalFuture(binding.expiresAt, this.now())) { this.sessions.delete(sessionId); return null; }
     const raw = headers ? bearer(headers) : null; if (!raw) { this.sessions.delete(sessionId); return null; }
     try {
-      const claims = this.options.tokenStore.validateAccessToken(raw, { resource: this.options.authority.resource, issuer: this.options.authority.issuer, appInstanceId: this.options.appInstanceId, clientId: binding.clientId });
+      const claims = this.options.tokenStore.validateAccessToken(raw, { resource: this.authority.resource, issuer: this.authority.issuer, appInstanceId: this.appInstanceId, clientId: binding.clientId });
       if (claims.tokenId !== binding.tokenId) throw new Error('token_session_mismatch');
       const client = await this.options.clients.getHttpClient(claims.clientId); if (!client || !scopeAllowed(claims.scopes, client.scopes)) throw new Error('client_revoked');
       return httpPrincipalFromOAuthClaims(claims, client, sessionId, this.now().toISOString());
@@ -51,7 +54,7 @@ export class HttpBearerAuthenticator implements LoopbackSessionAuthenticator {
   }
   async invalidateAll(): Promise<void> { this.sessions.clear(); }
   sessionCount(): number { return this.sessions.size; }
-  claimsForSession(sessionId: string): OAuthTokenClaims | null { const binding = this.sessions.get(sessionId); if (!binding) return null; try { return this.options.tokenStore.validateAccessTokenId(binding.tokenId, { resource: this.options.authority.resource, issuer: this.options.authority.issuer, appInstanceId: this.options.appInstanceId, clientId: binding.clientId }); } catch { return null; } }
+  claimsForSession(sessionId: string): OAuthTokenClaims | null { const binding = this.sessions.get(sessionId); if (!binding) return null; try { return this.options.tokenStore.validateAccessTokenId(binding.tokenId, { resource: this.authority.resource, issuer: this.authority.issuer, appInstanceId: this.appInstanceId, clientId: binding.clientId }); } catch { return null; } }
 }
 
 export function createHttpBearerAuthenticator(options: HttpBearerAuthenticatorOptions): HttpBearerAuthenticator { return new HttpBearerAuthenticator(options); }

@@ -17,12 +17,18 @@ import { createInternalExecutionContext } from './application/executionContext';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
-import { configureDirectHttpsStatus, configureExternalControlLifecycle } from './ipc/adapters/agentControlCenterIpc';
+import { configureDirectHttpsStatus, configureExternalControlLifecycle, configureDirectHttpsController } from './ipc/adapters/agentControlCenterIpc';
 import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
 import { ensureDailyAutoBackup } from './services/backupService';
-import { createConfiguredDirectHttpsOAuthResourceHost, directHttpsDisabledReason, McpLoopbackHost } from './mcp/server';
+import { createConfiguredDirectHttpsOAuthResourceHost, McpLoopbackHost } from './mcp/server';
+import { LocalOAuthAuthorizationServer } from './mcp/auth/oauthAuthorizationServer';
+import { createOAuthMetadata } from './mcp/auth/oauthMetadata';
+import { DirectHttpsOAuthController } from './mcp/runtime/directHttpsOAuthController';
+import { CurrentUserKeyStore } from './mcp/tls/currentUserKeyStore';
+import { CurrentUserRootCaLifecycle } from './mcp/tls/currentUserRootCa';
+import { CurrentUserRootIssuer } from './mcp/tls/currentUserRootIssuer';
 import { createMcpProtocolHandler, mcpInitializeResult } from './mcp/protocol';
 import type {
   QuestionCategoryMigrationCommand,
@@ -40,6 +46,7 @@ let mainShutdownPromise: Promise<void> | null = null;
 let e2eResultChannelRegistered = false;
 let e2eResultSubmitted = false;
 let mcpLoopbackHost: McpLoopbackHost | null = null;
+let directHttpsController: DirectHttpsOAuthController | null = null;
 let agentStartupNotificationShown = false;
 
 export function isAgentStartupMode(argumentsList: readonly string[] = process.argv): boolean {
@@ -402,7 +409,11 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
   registerRuntimeIpc: registerIpc,
   async startMcpHost() {
     const controlPlane = await getAgentControlPlane();
-    const directHttps = createConfiguredDirectHttpsOAuthResourceHost({ controlPlane });
+    const initialAuthority = await controlPlane.registry.getHttpOAuthAuthority();
+    const oauth = new LocalOAuthAuthorizationServer({ metadata: createOAuthMetadata({ authority: initialAuthority ?? controlPlane.httpOAuthAuthority }), tokenStore: controlPlane.httpOAuthTokens, appInstanceId: controlPlane.httpOAuthAuthority.appInstanceId, clients: { getHttpClient: (id) => controlPlane.registry.getHttpClient(id), isHttpClientActive: (id) => controlPlane.registry.isHttpClientActive(id), currentScopes: (id) => controlPlane.registry.getHttpClientScopes(id) } });
+    const controller = new DirectHttpsOAuthController({ authority: () => controlPlane.registry.getHttpOAuthAuthority().then((value) => value ?? controlPlane.httpOAuthAuthority), updateAuthority: (value) => controlPlane.registry.updateHttpOAuthAuthority(value), updateAuthorityInTransaction: (database, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(database, scope, value), executeControlWrite: controlPlane.executeControlWrite, audit: controlPlane.audit, keyStore: new CurrentUserKeyStore(), issuer: new CurrentUserRootIssuer(), roots: new CurrentUserRootCaLifecycle(), oauth, oauthTokenRecovery: () => controlPlane.httpOAuthTokens.invalidateAuthorizationCodes(), refreshAuthenticator: (authority) => controlPlane.httpAuthenticator.setAuthority(authority, authority.appInstanceId), createHost: (authority) => createConfiguredDirectHttpsOAuthResourceHost({ controlPlane, authority, oauth }) });
+    directHttpsController = controller;
+    await controller.reconcile();
     const host = new McpLoopbackHost({
       discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
       externalControlEnabled: controlPlane.externalControlEnabled,
@@ -411,37 +422,21 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
       gateway: controlPlane.gateway,
       initializeResult: mcpInitializeResult,
       onAuthenticatedRequest: createMcpProtocolHandler({ gateway: controlPlane.gateway }),
-      ...(directHttps ? { directHttps } : {})
     });
     mcpLoopbackHost = host;
     configureDirectHttpsStatus(() => {
-      const status = directHttps?.status();
-      if (status) return Object.freeze({
-        port: status.authority.port,
-        authority: status.authority.authority,
-        resource: status.resource,
-        issuer: status.issuer,
-        appInstanceId: status.appInstanceId,
-        state: status.state,
-        ...(status.certificateThumbprint ? { certificateThumbprint: status.certificateThumbprint } : {}),
-        ...(controlPlane.httpOAuthAuthority.rootCaThumbprint ? { rootCaThumbprint: controlPlane.httpOAuthAuthority.rootCaThumbprint } : {}),
-        ...(status.reason ? { reason: status.reason } : {})
-      });
-      return Object.freeze({
-        port: controlPlane.httpOAuthAuthority.port,
-        authority: controlPlane.httpOAuthAuthority.authority,
-        resource: controlPlane.httpOAuthAuthority.resource,
-        issuer: controlPlane.httpOAuthAuthority.issuer,
-        appInstanceId: controlPlane.httpOAuthAuthority.appInstanceId,
-        state: 'disabled' as const,
-        reason: directHttpsDisabledReason(controlPlane.httpOAuthAuthority) ?? 'certificate_unavailable'
-      });
+      const snapshot = directHttpsController?.statusSnapshot();
+      if (!snapshot) return undefined;
+      const { enabled: _enabled, ...runtime } = snapshot as { readonly enabled?: boolean; readonly [key: string]: unknown };
+      return runtime as never;
     });
+    configureDirectHttpsController(controller);
     configureExternalControlLifecycle(async (enabled) => {
-      if (enabled) await host.start();
-      else await host.disable();
+      if (enabled) { await host.start(); await controller.startIfAuthorized(); }
+      else { await controller.disable(); await host.disable(); }
     });
     await host.start();
+    await controller.startIfAuthorized();
   },
   createWindow
 };
@@ -528,7 +523,9 @@ app.on('before-quit', (event) => {
       .then(async () => {
         const host = mcpLoopbackHost;
         mcpLoopbackHost = null;
-        await host?.stop();
+         await directHttpsController?.stop();
+         directHttpsController = null;
+         await host?.stop();
       })
       .then(() => shutdownDatabase())
       .catch((error) => console.warn('[ShutdownPersist]', error))

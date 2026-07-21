@@ -503,6 +503,41 @@ CREATE TABLE IF NOT EXISTS agent_oauth_revocations (
 CREATE INDEX IF NOT EXISTS idx_agent_http_clients_active ON agent_http_clients(revoked_at, product);
 CREATE INDEX IF NOT EXISTS idx_agent_oauth_access_active ON agent_oauth_access_tokens(client_id, expires_at, revoked_at);
 CREATE INDEX IF NOT EXISTS idx_agent_oauth_refresh_client ON agent_oauth_refresh_families(client_id, expires_at, revoked_at);
+
+CREATE TABLE IF NOT EXISTS agent_https_trust_intents (
+  intent_id TEXT PRIMARY KEY CHECK (length(intent_id) = 36),
+  kind TEXT NOT NULL CHECK (kind IN ('install', 'remove')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'install_pending', 'removal_pending', 'completed', 'failed', 'recovery_required', 'expired', 'invalidated')),
+  renderer_web_contents_id INTEGER NOT NULL,
+  navigation_generation INTEGER NOT NULL,
+  key_name TEXT,
+  certificate_der BLOB,
+  certificate_hash TEXT,
+  thumbprint TEXT,
+  certificate_not_after TEXT,
+  subject TEXT,
+  authority TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_https_trust_intents_status ON agent_https_trust_intents(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_pending_consents (
+  request_id TEXT PRIMARY KEY CHECK (length(request_id) = 36),
+  client_id TEXT NOT NULL,
+  product TEXT NOT NULL CHECK (product IN ('codex', 'claude_code')),
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  resource TEXT NOT NULL,
+  redirect_display TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'invalidated', 'consumed')),
+  renderer_web_contents_id INTEGER,
+  navigation_generation INTEGER,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_pending_consents_status ON agent_oauth_pending_consents(status, expires_at);
 `;
 
 export const schemaSql = `

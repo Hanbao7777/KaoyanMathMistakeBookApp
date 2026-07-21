@@ -147,5 +147,45 @@ client evidence.
   path. A future focused control-center authorization flow must persist the
   explicit user decision before it can create/install/rotate a CurrentUser Root
   CA and enable this lane; there is no silent trust fallback.
-- Packaged client registration, interactive consent resolution, and installer
-  distribution remain C15 evidence work.
+
+## Consent Runtime Follow-up (2026-07-22)
+
+The C14 runtime follow-up adds the main-owned `DirectHttpsOAuthController`,
+durable trust-intent and safe pending-consent projections, a CurrentUser CNG
+root issuer, trusted Electron caller binding, and explicit control-center
+commands. The browser continuation uses an opaque request ID plus an HttpOnly,
+Secure, SameSite cookie capability; neither the capability, redirect query,
+code, PKCE material, token, DER, or private key crosses IPC.
+
+Validation executed in this worktree:
+
+- `npm run typecheck` PASS.
+- `npm run build:main` PASS.
+- `npm run build` PASS.
+- Focused C14 OAuth, controller, CNG lifecycle, transport, registry,
+  persistence, and IPC tests PASS.
+- `node --test tests/mcp/spikes/*.test.cjs` PASS: 8 passed, 1 opt-in CNG
+  association spike skipped by default.
+- `npm test` PASS: 679 passed, 0 failed, 2 skipped. The other skipped test is
+  the existing win-unpacked launcher gate.
+- `git diff --check` PASS.
+- Static scans found no production `Cert:\\LocalMachine\\Root` path and no
+  raw OAuth code, bearer, refresh token, PKCE verifier, or private-key
+  persistence/logging path.
+
+The new controller test uses the real control database and audit transaction
+boundary with disposable injected key/certificate-store ports. It proves exact
+issued DER, subject, and expiry persistence, finalization before host start,
+atomic consent code projection, stale navigation denial, exact-root removal,
+and zero-root cleanup. The opt-in Windows CNG association spike was attempted
+with a random disposable key; issuer association and leaf-signing verification
+reached the CurrentUser Root installation step, where this host's noninteractive
+certificate-store import prompt timed out. Its `finally` block removes the exact
+My certificate and CNG key. Issuer association verification passed; leaf
+issuance was not reached because the root import did not complete. A supported
+interactive packaged Electron consent
+and tool matrix remains unrun, as does final C15 installer evidence.
+
+The repository graph database is present and refreshed to 2,917 nodes and
+23,945 edges. The code-review-graph MCP detect/affected-flow calls were not
+available in this worker interface, so no unsupported risk score is recorded.

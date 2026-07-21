@@ -32,6 +32,7 @@ import { PairingService, loadPackagedLauncherArtifact } from '../../mcp/pairing/
 import { validatePairingRequest, validatePairingStatus, validatePairingTargetRequest, type PairingRequest, type PairingStatus, type PairingTargetRequest } from '../../../shared/mcp/v1/pairingContracts';
 import path from 'node:path';
 import { app } from 'electron';
+import type { DirectHttpsOAuthController, RendererTrustContext } from '../../mcp/runtime/directHttpsOAuthController';
 
 const MAX_PAGE_SIZE = 100;
 const SAFE_REDACTION = Object.freeze({
@@ -44,6 +45,13 @@ const SAFE_REDACTION = Object.freeze({
 });
 
 type ControlPlane = Awaited<ReturnType<typeof getAgentControlPlane>>;
+export type AgentControlCenterRuntimeApi = Omit<AgentControlApi, 'prepareDirectHttpsTrust' | 'confirmDirectHttpsTrust' | 'prepareDirectHttpsRemoval' | 'confirmDirectHttpsRemoval' | 'decideOAuthConsent'> & {
+  prepareDirectHttpsTrust(context: RendererTrustContext): Promise<Readonly<Record<string, string>>>;
+  confirmDirectHttpsTrust(intentId: string, confirmed: boolean, context: RendererTrustContext): Promise<void>;
+  prepareDirectHttpsRemoval(context: RendererTrustContext): Promise<Readonly<Record<string, string>>>;
+  confirmDirectHttpsRemoval(intentId: string, confirmed: boolean, context: RendererTrustContext): Promise<void>;
+  decideOAuthConsent(requestId: string, decision: 'approve' | 'deny', context: RendererTrustContext): Promise<void>;
+};
 type PageValue<T> = { readonly items: readonly T[]; readonly page: AgentControlPage<T>['page'] };
 type AuditVerificationValue = { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string };
 type ControlSettings = { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number };
@@ -51,6 +59,7 @@ type DirectHttpsStatus = { readonly port: number; readonly authority: string; re
 
 let externalControlLifecycle: ((enabled: boolean) => Promise<void> | void) | undefined;
 let directHttpsStatus: (() => Omit<DirectHttpsStatus, 'enabled'> | undefined) | undefined;
+let directHttpsController: DirectHttpsOAuthController | undefined;
 
 export function configureExternalControlLifecycle(handler?: (enabled: boolean) => Promise<void> | void): void {
   externalControlLifecycle = handler;
@@ -59,6 +68,7 @@ export function configureExternalControlLifecycle(handler?: (enabled: boolean) =
 export function configureDirectHttpsStatus(handler?: () => Omit<DirectHttpsStatus, 'enabled'> | undefined): void {
   directHttpsStatus = handler;
 }
+export function configureDirectHttpsController(controller?: DirectHttpsOAuthController): void { directHttpsController = controller; }
 
 function pageSize(value: number | undefined): number {
   if (value === undefined) return 50;
@@ -163,7 +173,7 @@ function mapVerification(value: AuditVerificationValue): AgentControlVerificatio
   return Object.freeze({ ...value });
 }
 
-export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane, loadPairingService?: () => Promise<PairingService>): AgentControlApi {
+export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane, loadPairingService?: () => Promise<PairingService>): AgentControlCenterRuntimeApi {
   let pairingService: Promise<PairingService> | undefined;
   const pairing = () => pairingService ??= (loadPairingService ? loadPairingService() : (async () => {
     const controlPlane = await loadControlPlane();
@@ -238,8 +248,17 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     async getClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'getClientConnection'); return pairingResult((await pairing()).health(request)); },
     async repairClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'repairClientConnection'); return pairingResult((await pairing()).repair(request)); },
     async rotateClientKey(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'rotateClientKey'); return pairingResult((await pairing()).rotate(request)); },
-    async disconnectClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'disconnectClientConnection'); return pairingResult((await pairing()).disconnect(request)); }
+    async disconnectClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'disconnectClientConnection'); return pairingResult((await pairing()).disconnect(request)); },
+    async prepareDirectHttpsTrust(context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); return directHttpsController.prepareTrustInstall(context); },
+    async confirmDirectHttpsTrust(intentId: string, confirmed: boolean, context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.confirmTrustInstall(intentId, confirmed, context); },
+    async prepareDirectHttpsRemoval(context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); return directHttpsController.prepareTrustRemoval(context); },
+    async confirmDirectHttpsRemoval(intentId: string, confirmed: boolean, context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.confirmTrustRemoval(intentId, confirmed, context); },
+    async listOAuthConsent() { if (!directHttpsController) return Object.freeze([]); return directHttpsController.listPendingConsent(); },
+    async decideOAuthConsent(requestId: string, decision: 'approve' | 'deny', context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.decideConsent(requestId, decision, context); }
+  } as AgentControlCenterRuntimeApi);
+/*
   } satisfies AgentControlApi);
+*/
 }
 
 export const agentControlCenterIpc = createAgentControlCenterIpc();

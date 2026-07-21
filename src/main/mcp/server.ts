@@ -39,14 +39,16 @@ export interface McpLoopbackHostOptions {
 export interface DirectHttpsOAuthCompositionOptions {
   readonly controlPlane: AgentGatewayComposition;
   readonly certificate: LocalHttpsCertificate | (() => Promise<LocalHttpsCertificate>);
-  readonly consent?: (request: import('../../shared/mcp/v1/oauthContracts').OAuthAuthorizationRequest, client: import('../../shared/mcp/v1/oauthContracts').HttpOAuthClientRegistration) => Promise<boolean> | boolean;
+  readonly authority?: AgentGatewayComposition['httpOAuthAuthority'];
+  readonly oauth?: LocalOAuthAuthorizationServer;
 }
 
 export interface ConfiguredDirectHttpsOAuthCompositionOptions {
   readonly controlPlane: AgentGatewayComposition;
-  readonly consent?: DirectHttpsOAuthCompositionOptions['consent'];
   readonly keyStore?: Pick<CurrentUserKeyStore, 'verify'>;
   readonly issueCertificate?: typeof issueLocalHttpsCertificate;
+  readonly authority?: AgentGatewayComposition['httpOAuthAuthority'];
+  readonly oauth?: LocalOAuthAuthorizationServer;
 }
 
 export function directHttpsDisabledReason(authority: AgentGatewayComposition['httpOAuthAuthority']): 'not_enabled' | 'trust_not_authorized' | undefined {
@@ -56,9 +58,9 @@ export function directHttpsDisabledReason(authority: AgentGatewayComposition['ht
 }
 
 export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthCompositionOptions): DirectHttpsOAuthHost {
-  const authority = options.controlPlane.httpOAuthAuthority;
+  const authority = options.authority ?? options.controlPlane.httpOAuthAuthority;
   const metadata = createOAuthMetadata({ authority });
-  const oauth = new LocalOAuthAuthorizationServer({
+  const oauth = options.oauth ?? new LocalOAuthAuthorizationServer({
     metadata,
     tokenStore: options.controlPlane.httpOAuthTokens,
     appInstanceId: authority.appInstanceId,
@@ -67,7 +69,6 @@ export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthComp
       isHttpClientActive: (clientId) => options.controlPlane.registry.isHttpClientActive(clientId),
       currentScopes: (clientId) => options.controlPlane.registry.getHttpClientScopes(clientId)
     },
-    consent: options.consent
   });
   return new DirectHttpsOAuthHostImpl({ authority, appInstanceId: authority.appInstanceId, externalControlEnabled: options.controlPlane.externalControlEnabled, authenticatedReady: () => true, authenticator: options.controlPlane.httpAuthenticator, certificate: options.certificate, oauth, gateway: options.controlPlane.gateway });
 }
@@ -75,13 +76,14 @@ export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthComp
 // Root installation is deliberately outside this runtime path. An enabled authority
 // must already carry the user-approved CurrentUser root identity and CNG key handle.
 export function createConfiguredDirectHttpsOAuthResourceHost(options: ConfiguredDirectHttpsOAuthCompositionOptions): DirectHttpsOAuthHost | undefined {
-  const authority = options.controlPlane.httpOAuthAuthority;
+  const authority = options.authority ?? options.controlPlane.httpOAuthAuthority;
   if (directHttpsDisabledReason(authority)) return undefined;
   const keyStore = options.keyStore ?? new CurrentUserKeyStore();
   const issueCertificate = options.issueCertificate ?? issueLocalHttpsCertificate;
   return createDirectHttpsOAuthResourceHost({
     controlPlane: options.controlPlane,
-    consent: options.consent,
+    authority,
+    ...(options.oauth ? { oauth: options.oauth } : {}),
     certificate: async () => {
       const handle: CurrentUserCngKeyHandle = await keyStore.verify(authority.currentUserKeyHandle!);
       if (handle.keyName !== authority.currentUserKeyHandle || handle.scope !== 'CurrentUser' || handle.exportable !== false) {

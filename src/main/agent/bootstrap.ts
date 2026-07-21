@@ -75,7 +75,7 @@ import {
 } from '../persistence/databaseCoordinator';
 import type { OperationManifestStore } from '../persistence/operationJournal';
 import { AgentGateway, type GatewayCommandPlan, type GatewayResolvedState, type GatewayWorkflowBinding } from './agentGateway';
-import { AuditLedger } from './auditLedger';
+import { AuditLedger, type AgentControlWriteExecutor } from './auditLedger';
 import {
   assertIssuedAgentPrincipal,
   createAuthenticationAdapters,
@@ -156,6 +156,8 @@ export interface AgentGatewayComposition {
   readonly httpOAuthAuthority: import('./clientRegistry').HttpOAuthAuthorityState;
   readonly jobs: JobStore;
   readonly jobExecutor: JobExecutor;
+  readonly audit: AuditLedger;
+  readonly executeControlWrite: AgentControlWriteExecutor;
 }
 
 function normalizedAffectedEntities(payload: JsonObject): readonly EntityRef[] {
@@ -1024,7 +1026,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   const persistedHttpAuthority = await registry.getHttpOAuthAuthority();
   const httpOAuthAuthority = Object.freeze({ ...(persistedHttpAuthority ?? directHttpsAuthority(directHttpsDefaultPort)), appInstanceId: options.appInstanceId, enabled: persistedHttpAuthority?.enabled ?? false });
   const httpOAuthSnapshot = await registry.loadOAuthTokenSnapshot();
-  const httpOAuthTokens = new OAuthTokenStore({ now: () => new Date(now()), load: () => httpOAuthSnapshot, persist: (snapshot) => registry.persistOAuthTokenSnapshot(snapshot) });
+  const httpOAuthTokens = new OAuthTokenStore({ now: () => new Date(now()), load: () => httpOAuthSnapshot, persist: (snapshot) => registry.persistOAuthTokenSnapshot(snapshot), persistAuthorizationCode: (code) => registry.persistOAuthAuthorizationCode(code), deleteAuthorizationCode: (codeHash) => registry.deleteOAuthAuthorizationCode(codeHash) });
   const httpAuthenticator = new HttpBearerAuthenticator({
     tokenStore: httpOAuthTokens,
     authority: httpOAuthAuthority,
@@ -1033,5 +1035,5 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     now: () => new Date(now()), randomUUID: uuid
   });
   registry.setHttpOAuthRevocationHook((clientId) => httpOAuthTokens.revokeClient(clientId));
-  return Object.freeze({ registry, gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, jobs, jobExecutor, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled, httpOAuthTokens, httpAuthenticator, httpOAuthAuthority });
+  return Object.freeze({ registry, gateway, authenticator, renderer: authentication.renderer, stdioAuthenticator, jobs, jobExecutor, audit, executeControlWrite, externalControlEnabled: async () => (await registry.getSettings()).externalControlEnabled, httpOAuthTokens, httpAuthenticator, httpOAuthAuthority });
 }

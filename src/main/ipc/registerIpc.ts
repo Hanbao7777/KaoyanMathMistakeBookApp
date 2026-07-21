@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
 import type { Database } from 'sql.js';
@@ -185,6 +186,18 @@ import type {
 import type { AgentScope, TrustProfile } from '../../shared/agent/v1/gatewayContracts';
 import type { AgentControlCreateR4GrantRequest, AgentControlPageRequest } from '../../shared/api';
 import { validatePairingRequest, validatePairingTargetRequest, type PairingRequest, type PairingTargetRequest } from '../../shared/mcp/v1/pairingContracts';
+
+const rendererGenerations = new Map<number, number>();
+function trustedRendererContext(event: Electron.IpcMainInvokeEvent): { readonly webContentsId: number; readonly navigationGeneration: number } {
+  const frame = event.senderFrame;
+  if (!frame || frame !== event.sender.mainFrame) throw new Error('Untrusted renderer frame');
+  const url = frame.url;
+  const packagedUrl = pathToFileURL(path.resolve(__dirname, '../../../renderer/index.html')).href;
+  const allowed = app.isPackaged ? url === packagedUrl : url.startsWith('http://127.0.0.1:5173/');
+  if (!allowed) throw new Error('Untrusted renderer origin');
+  const id = event.sender.id;
+  return Object.freeze({ webContentsId: id, navigationGeneration: rendererGenerations.get(id) ?? 0 });
+}
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
   ipcMain.handle(channel, async (_event, ...args: TArgs) => {
@@ -402,6 +415,13 @@ function focusMainWindow() {
 }
 
 export function registerIpc() {
+  if (typeof app.on === 'function') app.on('web-contents-created', (_event, contents) => {
+    rendererGenerations.set(contents.id, 0);
+    contents.on('did-frame-navigate', (_event, _url, _httpResponseCode, _httpStatusText, isMainFrame) => { if (isMainFrame) rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1); });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1); });
+    contents.on('render-process-gone', () => rendererGenerations.set(contents.id, (rendererGenerations.get(contents.id) ?? 0) + 1));
+    contents.once('destroyed', () => rendererGenerations.delete(contents.id));
+  });
   handle('agentControl:getStatus', () => agentControlCenterIpc.getStatus());
   handle('agentControl:setExternalControlEnabled', (enabled: boolean) => agentControlCenterIpc.setExternalControlEnabled(enabled));
   handle('agentControl:listClients', (request?: AgentControlPageRequest) => agentControlCenterIpc.listClients(request));
@@ -425,6 +445,12 @@ export function registerIpc() {
   handle('agentControl:getPolicy', () => agentControlCenterIpc.getPolicy());
   handle('agentControl:getCatalog', () => agentControlCenterIpc.getCatalog());
   handle('agentControl:getPrivacyDisclosure', () => agentControlCenterIpc.getPrivacyDisclosure());
+  ipcMain.handle('agentControl:prepareDirectHttpsTrust', async (event) => { try { return { ok: true, data: await agentControlCenterIpc.prepareDirectHttpsTrust(trustedRendererContext(event)) }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:confirmDirectHttpsTrust', async (event, intentId: string, confirmed: boolean) => { try { await agentControlCenterIpc.confirmDirectHttpsTrust(intentId, confirmed, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:prepareDirectHttpsRemoval', async (event) => { try { return { ok: true, data: await agentControlCenterIpc.prepareDirectHttpsRemoval(trustedRendererContext(event)) }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:confirmDirectHttpsRemoval', async (event, intentId: string, confirmed: boolean) => { try { await agentControlCenterIpc.confirmDirectHttpsRemoval(intentId, confirmed, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:listOAuthConsent', async (event) => { try { trustedRendererContext(event); return { ok: true, data: await agentControlCenterIpc.listOAuthConsent() }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:decideOAuthConsent', async (event, requestId: string, decision: 'approve' | 'deny') => { try { await agentControlCenterIpc.decideOAuthConsent(requestId, decision, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
   const knowledge = async () => {
     const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
     return createKnowledgeRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });

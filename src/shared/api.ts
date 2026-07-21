@@ -124,6 +124,8 @@ export interface AgentControlAuditSummary { readonly sequence: number; readonly 
 export interface AgentControlStatus { readonly settings: { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number }; readonly runtimeState: string; readonly directHttps?: { readonly port: number; readonly authority: string; readonly resource: string; readonly issuer: string; readonly appInstanceId: string; readonly enabled: boolean; readonly state?: 'disabled' | 'ready' | 'stopped'; readonly reason?: string; readonly certificateThumbprint?: string; readonly rootCaThumbprint?: string }; }
 export interface AgentControlPrivacyDisclosure { readonly revision: number; readonly externalModelDataDisclosureRequired: boolean; }
 export interface AgentControlVerification { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string; }
+export interface AgentControlTrustIntent { readonly intentId: string; readonly thumbprint: string; readonly expiresAt: string; readonly authority: string; readonly resource?: string; readonly subject?: string; }
+export interface AgentControlOAuthConsent { readonly requestId: string; readonly clientId: string; readonly product: 'codex' | 'claude_code'; readonly clientDisplayName: string; readonly scopes: readonly string[]; readonly resource: string; readonly redirectDisplay: string; readonly createdAt: string; readonly expiresAt: string; }
 
 export interface AgentControlApi {
   getStatus: () => Promise<AgentControlStatus>;
@@ -154,6 +156,12 @@ export interface AgentControlApi {
   repairClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
   rotateClientKey: (request: PairingTargetRequest) => Promise<PairingStatus>;
   disconnectClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  prepareDirectHttpsTrust: () => Promise<AgentControlTrustIntent>;
+  confirmDirectHttpsTrust: (intentId: string, confirmed: boolean) => Promise<void>;
+  prepareDirectHttpsRemoval: () => Promise<AgentControlTrustIntent>;
+  confirmDirectHttpsRemoval: (intentId: string, confirmed: boolean) => Promise<void>;
+  listOAuthConsent: () => Promise<readonly AgentControlOAuthConsent[]>;
+  decideOAuthConsent: (requestId: string, decision: 'approve' | 'deny') => Promise<void>;
 }
 
 export interface AppApi {

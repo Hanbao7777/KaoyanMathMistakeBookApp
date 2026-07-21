@@ -19,7 +19,7 @@ import {
 } from '../../shared/agent/v1/gatewaySchemas';
 import type { PublicKeyBindingInput, SafeClientKeyBindingResult } from '../../shared/agent/v1/gatewayContracts';
 import { directHttpsAuthority, directHttpsDefaultPort, validateHttpOAuthClientRegistration, type DirectHttpsAuthority, type HttpOAuthClientRegistration } from '../../shared/mcp/v1/oauthContracts';
-import type { OAuthTokenStoreSnapshot } from '../mcp/auth/oauthTokenStore';
+import type { OAuthStoredCode, OAuthTokenStoreSnapshot } from '../mcp/auth/oauthTokenStore';
 import { resolveOperationDescriptor } from '../../shared/agent/v1/operationCatalog';
 import {
   assertDatabaseMutationScope,
@@ -390,10 +390,35 @@ export class ClientRegistry {
   }
 
   async updateHttpOAuthAuthority(input: Partial<HttpOAuthAuthorityState> & { readonly appInstanceId: string }): Promise<HttpOAuthAuthorityState> {
-    const authority = directHttpsAuthority(input.port ?? directHttpsDefaultPort); const timestamp = this.timestamp(); const prior = await this.getHttpOAuthAuthority(); const authorityChanged = !!prior && (prior.authority !== authority.authority || prior.resource !== authority.resource || prior.issuer !== authority.issuer);
-    await this.write('agent-http-authority-update', (database) => { executeOAuthSql(database, `INSERT OR REPLACE INTO agent_http_oauth_config (id, direct_https_port, authority, resource, issuer, app_instance_id, root_ca_thumbprint, previous_root_ca_thumbprint, current_user_key_handle, certificate_thumbprint, certificate_not_after, enabled, updated_at) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [authority.port, authority.authority, authority.resource, authority.issuer, input.appInstanceId, input.rootCaThumbprint ?? null, input.previousRootCaThumbprint ?? null, input.currentUserKeyHandle ?? null, input.certificateThumbprint ?? null, input.certificateNotAfter ?? null, input.enabled ? 1 : 0, timestamp]); if (authorityChanged) executeOAuthSql(database, 'UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id IN (SELECT client_id FROM agent_http_clients)', [timestamp, timestamp]); if (authorityChanged) executeOAuthSql(database, 'UPDATE agent_http_clients SET revoked_at = ?, updated_at = ?', [timestamp, timestamp]); return { changed: true, value: undefined }; });
+    const prior = await this.getHttpOAuthAuthority();
+    const merged = { ...(prior ?? { ...directHttpsAuthority(input.port ?? directHttpsDefaultPort), appInstanceId: input.appInstanceId, enabled: false }), ...input };
+    const authority = directHttpsAuthority(merged.port ?? directHttpsDefaultPort);
+    const authorityChanged = !!prior && (prior.authority !== authority.authority || prior.resource !== authority.resource || prior.issuer !== authority.issuer);
+    await this.write('agent-http-authority-update', (database, scope) => this.updateHttpOAuthAuthorityInTransaction(database, scope, { ...merged, ...authority, appInstanceId: merged.appInstanceId, enabled: merged.enabled ?? false }));
     if (authorityChanged) { const ids = await this.read('agent-http-client-ids', (database) => all(database, 'SELECT client_id FROM agent_http_clients').map((row) => String(row.client_id))); for (const clientId of ids) await this.httpOAuthRevocationHook?.(clientId); }
     const value = await this.getHttpOAuthAuthority(); if (!value) throw new AgentError('RECOVERY_FENCE'); return value;
+  }
+
+  updateHttpOAuthAuthorityInTransaction(
+    database: Database,
+    scope: DatabaseMutationScope,
+    input: Partial<HttpOAuthAuthorityState> & { readonly appInstanceId: string }
+  ): DatabaseMutationResult<void> {
+    assertDatabaseMutationScope(scope, database);
+    const current = one(database, 'SELECT * FROM agent_http_oauth_config WHERE id = 1');
+    const port = input.port ?? Number(current?.direct_https_port ?? directHttpsDefaultPort);
+    const authority = directHttpsAuthority(port);
+    const timestamp = this.timestamp();
+    const previousAuthority = current ? String(current.authority) : authority.authority;
+    const authorityChanged = previousAuthority !== authority.authority || String(current?.resource ?? authority.resource) !== authority.resource || String(current?.issuer ?? authority.issuer) !== authority.issuer;
+    executeOAuthSql(database, `INSERT OR REPLACE INTO agent_http_oauth_config
+      (id, direct_https_port, authority, resource, issuer, app_instance_id, root_ca_thumbprint, previous_root_ca_thumbprint, current_user_key_handle, certificate_thumbprint, certificate_not_after, enabled, updated_at)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [authority.port, authority.authority, authority.resource, authority.issuer, input.appInstanceId, input.rootCaThumbprint !== undefined ? input.rootCaThumbprint : (typeof current?.root_ca_thumbprint === 'string' ? current.root_ca_thumbprint : null), input.previousRootCaThumbprint !== undefined ? input.previousRootCaThumbprint : (typeof current?.previous_root_ca_thumbprint === 'string' ? current.previous_root_ca_thumbprint : null), input.currentUserKeyHandle !== undefined ? input.currentUserKeyHandle : (typeof current?.current_user_key_handle === 'string' ? current.current_user_key_handle : null), input.certificateThumbprint !== undefined ? input.certificateThumbprint : (typeof current?.certificate_thumbprint === 'string' ? current.certificate_thumbprint : null), input.certificateNotAfter !== undefined ? input.certificateNotAfter : (typeof current?.certificate_not_after === 'string' ? current.certificate_not_after : null), input.enabled !== undefined ? (input.enabled ? 1 : 0) : (typeof current?.enabled === 'number' ? current.enabled : 0), timestamp]);
+    if (authorityChanged) {
+      executeOAuthSql(database, 'UPDATE agent_clients SET revoked_at = ?, updated_at = ? WHERE client_id IN (SELECT client_id FROM agent_http_clients)', [timestamp, timestamp]);
+      executeOAuthSql(database, 'UPDATE agent_http_clients SET revoked_at = ?, updated_at = ?', [timestamp, timestamp]);
+    }
+    return { changed: true, value: undefined };
   }
 
   async loadOAuthTokenSnapshot(): Promise<OAuthTokenStoreSnapshot | undefined> {
@@ -416,6 +441,22 @@ export class ClientRegistry {
       for (const value of snapshot.refreshFamilies) executeOAuthSql(database, 'INSERT INTO agent_oauth_refresh_families (family_id, client_id, resource, issuer, app_instance_id, scopes_json, current_token_hash, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [value.familyId, value.clientId, value.resource, value.issuer, value.appInstanceId, canonicalizeJson(value.scopes), value.currentTokenHash, value.expiresAt, value.revoked ? this.timestamp() : null]);
       for (const value of snapshot.refreshTokens) executeOAuthSql(database, 'INSERT INTO agent_oauth_refresh_tokens (token_hash, family_id, used_at) VALUES (?, ?, ?)', [value.tokenHash, value.familyId, value.used ? this.timestamp() : null]);
       for (const tokenId of snapshot.revokedTokenIds) executeOAuthSql(database, 'INSERT INTO agent_oauth_revocations (token_id, client_id, reason, revoked_at) SELECT ?, client_id, ?, ? FROM agent_oauth_access_tokens WHERE token_id = ?', [tokenId, 'oauth-revoked', this.timestamp(), tokenId]);
+      return { changed: true, value: undefined };
+    });
+  }
+
+  async persistOAuthAuthorizationCode(code: OAuthStoredCode): Promise<void> {
+    await this.write(`agent-oauth-code-${code.codeHash.replace(':', '-')}`, (database) => {
+      executeOAuthSql(database, `INSERT OR REPLACE INTO agent_oauth_authorization_codes
+        (code_hash, client_id, redirect_uri, resource, issuer, scopes_json, code_challenge, nonce_hash, app_instance_id, expires_at, used_at, refresh_tokens_allowed)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`, [code.codeHash, code.clientId, code.redirectUri, code.resource, code.issuer, canonicalizeJson(code.scopes), code.codeChallenge, code.nonceHash ?? null, code.appInstanceId, code.expiresAt, code.refreshTokensAllowed ? 1 : 0]);
+      return { changed: true, value: undefined };
+    });
+  }
+
+  async deleteOAuthAuthorizationCode(codeHash: string): Promise<void> {
+    await this.write(`agent-oauth-code-delete-${codeHash.replace(':', '-')}`, (database) => {
+      executeOAuthSql(database, 'DELETE FROM agent_oauth_authorization_codes WHERE code_hash = ?', [codeHash]);
       return { changed: true, value: undefined };
     });
   }

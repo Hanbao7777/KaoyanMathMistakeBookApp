@@ -10,6 +10,8 @@ export interface OAuthTokenStoreOptions {
   readonly refreshTokenTtlMs?: number;
   readonly codeTtlMs?: number;
   readonly persist?: (snapshot: OAuthTokenStoreSnapshot) => Promise<void> | void;
+  readonly persistAuthorizationCode?: (code: OAuthStoredCode) => Promise<void> | void;
+  readonly deleteAuthorizationCode?: (codeHash: string) => Promise<void> | void;
   readonly load?: () => Promise<OAuthTokenStoreSnapshot | undefined> | OAuthTokenStoreSnapshot | undefined;
 }
 
@@ -27,7 +29,9 @@ export interface OAuthAuthorizationCodeInput {
 
 export interface OAuthAuthorizationCodeResult {
   readonly code: string;
+  readonly codeHash: string;
   readonly expiresAt: string;
+  readonly record: OAuthStoredCode;
 }
 
 export interface OAuthIssuedTokens {
@@ -44,7 +48,7 @@ export interface OAuthTokenStoreSnapshot {
   readonly revokedTokenIds: readonly string[];
 }
 
-interface OAuthStoredCode {
+export interface OAuthStoredCode {
   readonly codeHash: string;
   readonly clientId: string;
   readonly redirectUri: string;
@@ -108,6 +112,8 @@ export class OAuthTokenStore {
   private readonly refreshTokenTtlMs: number;
   private readonly codeTtlMs: number;
   private readonly persist?: OAuthTokenStoreOptions['persist'];
+  private readonly persistAuthorizationCode?: OAuthTokenStoreOptions['persistAuthorizationCode'];
+  private readonly deleteAuthorizationCode?: OAuthTokenStoreOptions['deleteAuthorizationCode'];
   private readonly codes = new Map<string, OAuthStoredCode>();
   private readonly accessTokens = new Map<string, OAuthStoredAccessToken>();
   private readonly accessTokenIds = new Map<string, string>();
@@ -117,18 +123,26 @@ export class OAuthTokenStore {
 
   constructor(options: OAuthTokenStoreOptions = {}) {
     this.now = options.now ?? (() => new Date()); this.bytes = options.randomBytes ?? randomBytes; this.uuid = options.randomUUID ?? randomUUID;
-    this.accessTokenTtlMs = options.accessTokenTtlMs ?? 5 * 60_000; this.refreshTokenTtlMs = options.refreshTokenTtlMs ?? 30 * 24 * 60 * 60_000; this.codeTtlMs = options.codeTtlMs ?? 60_000; this.persist = options.persist;
+    this.accessTokenTtlMs = options.accessTokenTtlMs ?? 5 * 60_000; this.refreshTokenTtlMs = options.refreshTokenTtlMs ?? 30 * 24 * 60 * 60_000; this.codeTtlMs = options.codeTtlMs ?? 60_000; this.persist = options.persist; this.persistAuthorizationCode = options.persistAuthorizationCode; this.deleteAuthorizationCode = options.deleteAuthorizationCode;
     if (![this.accessTokenTtlMs, this.refreshTokenTtlMs, this.codeTtlMs].every((value) => Number.isSafeInteger(value) && value > 0)) throw new TypeError('Invalid OAuth token TTL');
     const loaded = options.load?.();
     if (loaded && !(loaded instanceof Promise)) this.restore(loaded);
     else if (loaded instanceof Promise) void loaded.then((snapshot) => { if (snapshot) this.restore(snapshot); });
   }
 
-  async createAuthorizationCode(input: OAuthAuthorizationCodeInput): Promise<OAuthAuthorizationCodeResult> {
+  async createAuthorizationCode(input: OAuthAuthorizationCodeInput, options: { readonly persist?: boolean } = {}): Promise<OAuthAuthorizationCodeResult> {
     const now = this.now(); const code = this.bytes(32).toString('base64url'); const expiresAt = canonicalTimestamp(new Date(now.getTime() + this.codeTtlMs));
     const record: OAuthStoredCode = Object.freeze({ codeHash: tokenHash(code), clientId: input.clientId, redirectUri: input.redirectUri, resource: input.resource, issuer: input.issuer, scopes: Object.freeze([...input.scopes]), codeChallenge: input.codeChallenge, ...(input.nonce ? { nonceHash: nonceHash(input.nonce) } : {}), appInstanceId: input.appInstanceId, expiresAt, used: false, refreshTokensAllowed: input.refreshTokensAllowed });
-    this.codes.set(record.codeHash, record); await this.flush(); return Object.freeze({ code, expiresAt });
+    this.codes.set(record.codeHash, record);
+    if (options.persist !== false) {
+      try { if (this.persistAuthorizationCode) await this.persistAuthorizationCode(record); else await this.flush(); }
+      catch (error) { this.codes.delete(record.codeHash); throw error; }
+    }
+    return Object.freeze({ code, codeHash: record.codeHash, expiresAt, record });
   }
+
+  async discardAuthorizationCode(code: string): Promise<void> { const hash = tokenHash(code); const record = this.codes.get(hash); this.codes.delete(hash); try { if (record && this.deleteAuthorizationCode) await this.deleteAuthorizationCode(hash); else await this.flush(); } catch (error) { if (record) this.codes.set(hash, record); throw error; } }
+  async invalidateAuthorizationCodes(): Promise<void> { const hashes = [...this.codes.entries()].filter(([, code]) => !code.used).map(([hash]) => hash); for (const hash of hashes) this.codes.delete(hash); if (this.deleteAuthorizationCode) { for (const hash of hashes) await this.deleteAuthorizationCode(hash); } else await this.flush(); }
 
   async redeemAuthorizationCode(input: OAuthAuthorizationCodeRequest): Promise<OAuthIssuedTokens> {
     const hash = tokenHash(input.code); const record = this.codes.get(hash); const now = this.now();
