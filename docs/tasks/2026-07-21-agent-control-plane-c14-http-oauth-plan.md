@@ -36,7 +36,7 @@ and two-client evidence. C14 must never write to `Cert:\\LocalMachine\\Root`.
 
 Planning was checked against the Phase C baseline MCP `2025-11-25`
 authorization and transport references, RFC 9728 protected-resource metadata,
-and RFC 8707 resource indicators:
+RFC 8707 resource indicators, and RFC 8252 native-app loopback redirects:
 
 - MCP Authorization `2025-11-25`: protected resources publish OAuth protected
   resource metadata and advertise authorization-server locations.
@@ -46,6 +46,9 @@ and RFC 8707 resource indicators:
   authorization servers that can issue access tokens for them.
 - RFC 8707: authorization and token requests carry a `resource` indicator so
   access tokens are audience-bound to the intended MCP protected resource.
+- RFC 8252 section 7.3: a native-app loopback redirect may use a dynamically
+  assigned port, but the authorization server still constrains the registered
+  loopback host and path and records the exact redirect used for the code flow.
 
 Before implementation starts, the Worker must re-check the exact installed MCP
 client behavior for Codex CLI and Claude Code. If a newer MCP release candidate
@@ -66,8 +69,9 @@ as non-authoritative compatibility information only.
   - refresh-token rotation;
   - revoke / deny / emergency-stop invalidation.
 - Authorization Code + PKCE S256.
-- Exact redirect URI, `state`, `nonce`, client identity, requested scopes,
-  and RFC 8707 `resource` validation.
+- Exact redirect URI validation, including the RFC 8252 native-loopback port
+  exception only where explicitly registered; `state`, `nonce`, client
+  identity, requested scopes, and RFC 8707 `resource` validation.
 - Short-lived access tokens bound to client, scopes, resource audience, token
   ID, App instance, negotiated MCP protocol, and current external-control state.
 - Refresh-token family storage with one-use rotation and reuse detection.
@@ -101,12 +105,13 @@ credential files unless a test proves a shared contract must move:
 - Existing `src/main/mcp/transport/loopbackHttp.ts` only if the HTTPS host needs
   a shared, extracted request parser; any extraction must keep stdio and
   loopback behavior covered by existing tests.
-- New `src/main/mcp/tls/currentUserRootCa.ts` and
+- New `src/main/mcp/tls/currentUserRootCa.ts`,
+  `src/main/mcp/tls/currentUserKeyStore.ts`, and
   `src/main/mcp/tls/localHttpsCertificate.ts` for the C0-E6 current-user Root
-  CA lifecycle and localhost server certificate issuance, and only for direct
-  HTTPS binding or certificate identity reuse. These modules may touch
-  `Cert:\\CurrentUser\\Root` only after explicit user approval and must never
-  write to `Cert:\\LocalMachine\\Root`.
+  CA lifecycle, current-user private-key custody, and localhost/IP SAN server
+  certificate issuance, and only for direct HTTPS binding or certificate
+  identity reuse. These modules may touch `Cert:\\CurrentUser\\Root` only after
+  explicit user approval and must never write to `Cert:\\LocalMachine\\Root`.
 - New `src/main/mcp/auth/oauthMetadata.ts`,
   `src/main/mcp/auth/oauthAuthorizationServer.ts`,
   `src/main/mcp/auth/oauthTokenStore.ts`, and
@@ -160,17 +165,40 @@ Do not change C13 global operation behavior while implementing OAuth transport.
   are not payload fields.
 - C14 cannot silently widen an existing client's scopes. Scope increase requires
   a fresh user-visible consent and audited management write.
-- The direct HTTPS resource identifier and issuer are persistent product
+- The selected direct HTTPS authority is the fixed, persisted loopback origin
+  `https://127.0.0.1:<directHttpsPort>`, with product default port `39458`
+  unless the user explicitly chooses another port before client registration.
+  C14 must not fall back to an ephemeral port. If the persisted port is
+  occupied or cannot bind, direct HTTPS OAuth stays disabled, no discovery file
+  is published for HTTP OAuth, and the control center requires an explicit
+  authority-change flow.
+- The protected resource identifier is exactly
+  `https://127.0.0.1:<directHttpsPort>/mcp`. The OAuth issuer is exactly
+  `https://127.0.0.1:<directHttpsPort>`, with authorization-server metadata at
+  `/.well-known/oauth-authorization-server` and protected-resource metadata at
+  both the RFC 9728 resource-derived path and the client-observed base/path
+  variants required by the C0 probe. These values are persistent product
   authorities from the C0-E6 current-user Root CA lifecycle, not per-port
   secrets.
-  They remain stable across App restart, while individual access tokens and MCP
-  sessions remain bound to the current App instance. After restart, discovery
-  publishes the new endpoint/instance, existing access tokens fail, and an
-  unrevoked rotated refresh family may obtain a new instance-bound access token
-  for the same persistent resource audience.
+  They remain stable across App restart while the port is unchanged. Individual
+  access tokens and MCP sessions remain bound to the current App instance.
+  After restart, discovery republishes the same resource/issuer plus the new
+  App instance, existing access tokens fail, and an unrevoked rotated refresh
+  family may obtain a new instance-bound access token for the same persistent
+  resource audience.
+- Changing `directHttpsPort`, resource, or issuer after registration is a new
+  authority. It revokes existing direct-HTTP sessions/token families, requires
+  audited user approval, and requires Codex CLI and Claude Code re-registration;
+  refresh must not bridge across an authority change.
 - Root CA install is an R4-level local trust change. It requires explicit
   user approval and must be reversible through disable, uninstall, and emergency
   stop paths that remove the exact thumbprint and verify no stale root remains.
+- The Root CA private key is held only in current-user OS key storage through
+  `currentUserKeyStore.ts`, preferably as a non-exportable Windows CNG key. Raw
+  private-key material must not be written to the database, discovery files,
+  logs, temp traces, or project config. If the key is missing, corrupt, or
+  export-only, direct HTTPS OAuth fails closed and the UI offers audited
+  rotation/removal instead of minting a silent replacement.
 
 ## Client-registration decision
 
@@ -183,13 +211,24 @@ registration route:
   trust profile, resource audience, and whether refresh tokens are permitted.
   Authorization requests from unknown client IDs fail before consent.
 - **Measured Codex CLI binding:** client ID `kaoyan-codex-local`; resource
-  value is the exact MCP URL supplied by `codex mcp add --oauth-resource`;
-  redirect URI pattern observed in C0-E6 is
-  `http://127.0.0.1:<ephemeral>/callback/<nonce>`.
+  value is the exact stable MCP URL supplied by
+  `codex mcp add --oauth-resource`, which must equal
+  `https://127.0.0.1:<directHttpsPort>/mcp`. C0-E6 observed the native
+  loopback redirect pattern `http://127.0.0.1:<ephemeral>/callback/<nonce>`.
+  C14 therefore registers a Codex-specific RFC 8252 loopback rule rather than
+  a wildcard URI: scheme `http`; host exactly `127.0.0.1`; numeric port
+  `1024..65535`; path exactly `/callback/<nonce>` where `<nonce>` is one
+  non-empty URL-safe path segment; no userinfo, query, fragment, encoded slash,
+  host alias, IPv6, or trailing path segment. The authorization code stores
+  the exact requested redirect URI, and the token request must match that exact
+  URI when a redirect URI is supplied.
 - **Measured Claude Code binding:** client ID `kaoyan-claude-local`; resource
-  value is the exact configured MCP server URL discovered during login;
-  callback URI pattern observed in C0-E6 is
-  `http://localhost:<configured-port>/callback`.
+  value is the exact configured MCP server URL discovered during login and must
+  equal `https://127.0.0.1:<directHttpsPort>/mcp`. Callback URI pattern
+  observed in C0-E6 is `http://localhost:<configured-port>/callback`; C14
+  records the exact configured callback URI at registration and rejects any
+  authorization request that differs in scheme, host, port, path, query, or
+  fragment.
 - **Conditional route:** Client ID Metadata Documents are allowed only if a real
   mandatory client requires them. If used, metadata fetches must be localhost or
   file-system safe according to an explicit allowlist, bounded by size/time,
@@ -205,6 +244,9 @@ registration route:
 The Worker must preserve these measured bindings unless fresh client evidence
 shows a narrower or safer binding is required. Any route beyond
 pre-registration is out of scope unless a focused reviewer accepts it first.
+Fresh evidence that changes the Codex redirect host/path, Claude callback path,
+or either client's resource handling blocks implementation until the plan is
+updated and re-reviewed.
 
 ## Execution sequence
 
@@ -215,8 +257,8 @@ The reviewer should check:
 
 - whether file ownership is narrow enough;
 - whether OAuth material is kept out of Gateway and ordinary logs;
-- whether the plan matches MCP `2025-11-25`, RFC 9728, RFC 8707, and Phase C
-  C14 gates;
+- whether the plan matches MCP `2025-11-25`, RFC 9728, RFC 8707, RFC 8252,
+  and Phase C C14 gates;
 - whether Codex CLI and Claude Code real-client evidence is explicitly required;
 - whether the plan leaves C15 packaging and release completion out of scope.
 
@@ -237,7 +279,7 @@ Implementation must not start until the reviewer reports `completed` or
 - Gate: contract tests pass and static scans show no generic OAuth payload
   forwarding.
 
-### C14.2 Token and authorization storage
+### C14.2 Token, authorization, and TLS key storage
 
 - Add registry-backed durable state for authorization codes, access token IDs,
   refresh token families, token revocation, reuse detection, and App-instance
@@ -248,10 +290,19 @@ Implementation must not start until the reviewer reports `completed` or
 - Persist client-registration bindings: client ID, product, version evidence,
   redirect URI allowlist, metadata hash if used, scope grants, trust profile,
   resource audience, issuer, and refresh-token eligibility.
+- Persist the fixed `directHttpsPort`, resource identifier, issuer, active Root
+  CA thumbprint, pending/previous rotation thumbprints, public certificate
+  metadata, and non-secret current-user key handle. Do not persist raw private
+  keys, raw tokens, authorization codes, PKCE verifiers, or bearer strings.
 - Persist the refresh sequence needed after App restart: old access tokens and
   MCP sessions fail because the instance changed; a valid refresh family may
   mint exactly one new access token for the persistent resource/issuer and the
   new App instance.
+- Gate: key-custody tests prove no raw private-key material enters the database,
+  logs, discovery, project config, or temporary traces; LocalMachine writes are
+  denied; missing or corrupt key handles fail closed; rotation rollback leaves
+  exactly one accepted active root or disables direct HTTPS OAuth with stale
+  roots removed.
 - Gate: restart, replay, reuse, expiry, revoked client, and scope narrowing tests
   pass.
 
@@ -260,8 +311,11 @@ Implementation must not start until the reviewer reports `completed` or
 - Serve protected-resource metadata, issuer metadata, authorization endpoint,
   token endpoint, revocation/status endpoints if required, and the direct MCP
   Streamable HTTP endpoint over the C0-E6 current-user Root CA lifecycle.
-- Bind to `127.0.0.1` only and reject wrong Origin, wrong Host, unsafe content
-  type, oversized bodies, and unauthenticated MCP requests.
+- Bind only to `127.0.0.1:<directHttpsPort>` and reject wrong Origin, wrong
+  Host, unsafe content type, oversized bodies, and unauthenticated MCP
+  requests. Port collision, certificate/key load failure, or metadata/resource
+  mismatch must fail closed with direct HTTPS OAuth disabled and no dynamic-port
+  fallback.
 - Implement Streamable HTTP interoperability explicitly: `Accept` negotiation,
   JSON response and event-stream response handling, POST notification/response
   `202`, unsupported or terminated GET/DELETE behavior as `405` or the
@@ -279,10 +333,11 @@ Implementation must not start until the reviewer reports `completed` or
   audience, and App instance on every request.
 - Reuse existing operation catalog, policy, idempotency, receipt, and audit
   paths.
-- Prove resource/issuer restart behavior: discovery after restart points clients
-  to the new endpoint/instance while retaining the persistent resource audience;
-  refresh succeeds only for an unrevoked family and never for stale access-token
-  replay.
+- Prove resource/issuer restart behavior: discovery after restart republishes
+  the same fixed authority/resource/issuer and the new App instance; refresh
+  succeeds only for an unrevoked family and never for stale access-token replay.
+  A configured-port change is treated as a new authority requiring
+  re-registration, not refresh continuity.
 - Gate: direct HTTP query/write parity with stdio for representative C6/C9-C13
   operations, including replay/conflict/revocation behavior.
 
@@ -336,8 +391,20 @@ C14 is not accepted unless these pass:
   revoked client, narrowed scopes, disabled external control, emergency stop,
   and token/session mixing all deny before Gateway dispatch.
 - Client registration tests prove the chosen route for both mandatory clients:
-  pre-registration bindings, or if metadata documents are required, bounded
-  fetch/cache/redirect-denial behavior and exact redirect URI persistence.
+  Codex's RFC 8252 loopback rule accepts only the measured
+  `127.0.0.1:<ephemeral>/callback/<nonce>` class and rejects scheme, host,
+  path, query, fragment, port-range, encoded-slash, and token-request redirect
+  mismatches; Claude Code requires the exact registered callback URI. If
+  metadata documents are required, bounded fetch/cache/redirect-denial behavior
+  and exact redirect URI persistence also pass.
+- Stable-authority tests prove the persisted default/user-selected port, exact
+  resource `https://127.0.0.1:<directHttpsPort>/mcp`, exact issuer
+  `https://127.0.0.1:<directHttpsPort>`, no dynamic-port fallback, fail-closed
+  port collision, and audited re-registration after any authority change.
+- TLS key-custody tests prove the Root CA private key stays in CurrentUser OS
+  key storage, raw key material never enters database/log/discovery/temp/config,
+  LocalMachine writes are impossible, rotation rollback is fail-closed, and
+  disable/uninstall/emergency removal leave no stale trusted root.
 - Restart tests prove the persistent issuer/resource identity, post-restart
   discovery, stale access-token/session denial, and refresh-to-new-instance
   sequence for Codex CLI and Claude Code.
@@ -364,6 +431,14 @@ C14 is not accepted unless these pass:
 - **Session confusion:** bearer token and MCP session could be mixed across
   clients. Mitigation: bind client, token ID, session ID, protocol, and App
   instance on every request.
+- **Authority drift:** changing the loopback port would silently change issuer
+  and audience. Mitigation: persist `directHttpsPort`, forbid ephemeral fallback,
+  fail closed on collision, and require audited re-registration for authority
+  changes.
+- **Root CA private-key custody:** losing or leaking the signing key would make
+  certificate rotation unsafe. Mitigation: current-user OS key storage, no raw
+  key persistence, thumbprint/key-handle audits, fail-closed missing-key
+  behavior, and rotation rollback/removal tests.
 - **Real-client variance:** Codex CLI and Claude Code may differ in OAuth
   metadata handling. Mitigation: test both mandatory clients before acceptance
   and document unsupported behavior instead of substituting products.
