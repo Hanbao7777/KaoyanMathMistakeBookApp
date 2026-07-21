@@ -186,6 +186,8 @@ issuance was not reached because the root import did not complete. A supported
 interactive packaged Electron consent
 and tool matrix remains unrun, as does final C15 installer evidence.
 
-The repository graph database is present and refreshed to 2,917 nodes and
-23,945 edges. The code-review-graph MCP detect/affected-flow calls were not
-available in this worker interface, so no unsupported risk score is recorded.
+The repository graph database is present and refreshed to 2,967 nodes and
+24,321 edges. The commit hook analyzed 23 changed files, 111 changed
+functions/classes, 0 affected flows, and risk score 0.60. The graph reported
+111 broad test gaps in existing bootstrap/registry helpers; the focused C14
+controller, OAuth, TLS, IPC, and persistence tests cover the new runtime paths.
