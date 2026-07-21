@@ -1,11 +1,17 @@
 # C0 HTTPS OAuth Renewal Evidence for C14
 
-**Decision revision:** C0-E4 (2026-07-21)
+**Decision revision:** C0-E5 (2026-07-21)
 
-**Decision:** **NO-GO for C14 implementation dispatch.** The currently installed
-Codex CLI and Claude Code expose candidate HTTP/OAuth registration inputs, but a
-no-admin certificate-trust route is not proven for either mandatory client. The
-direct HTTPS OAuth flow must not be implemented against an assumed trust exception.
+**Decision:** **NO-GO for production C14 implementation dispatch; GO for an
+environment-CA development spike.** The currently installed Codex CLI and Claude
+Code expose candidate HTTP/OAuth registration inputs. A per-process CA bundle
+via environment variables is proven enough for both client processes to reach the
+local HTTPS mock, and Codex completes the mock authorization-code/token flow.
+However, Claude Code's no-browser path still requires the user/browser to open
+the authorization URL, and browser trust does not inherit CLI environment
+variables. Production C14 still needs a user-facing trust route such as an
+explicitly approved current-user Root CA lifecycle or another supported
+certificate deployment path.
 
 ## Scope and isolation
 
@@ -66,21 +72,53 @@ The earlier C0 Node TLS fixture remains relevant: Node rejects this class of tem
 self-signed certificate unless an explicit PEM CA is supplied. No equivalent,
 supported per-client explicit-CA configuration was measured for either required CLI.
 
+## E5 environment-CA follow-up
+
+After C0-E4, the mock was expanded to answer the actual well-known paths requested
+by the clients, including protected-resource metadata, authorization-server
+metadata, authorize, and token routes.
+
+A disposable local Root CA and localhost server certificate were generated under
+a temporary kaoyan-c0 root. The CA was not imported into Windows trust. The
+client processes received the PEM through NODE_EXTRA_CA_CERTS, SSL_CERT_FILE,
+CURL_CA_BUNDLE, and REQUESTS_CA_BUNDLE.
+
+| Client | Disposable command shape | Result | Trace evidence |
+| --- | --- | --- | --- |
+| Codex CLI | Disposable CODEX_HOME; codex mcp add with --url, --oauth-client-id kaoyan-codex-local, and --oauth-resource equal to the MCP URL; then codex mcp login. | PASS for client-process trust and mock OAuth. Codex printed an authorization URL, followed it, exchanged a token, and reported successful login. | GET /mcp, GET /.well-known/oauth-protected-resource, GET /.well-known/oauth-authorization-server, GET /authorize, POST /token. |
+| Claude Code | Disposable CLAUDE_CONFIG_DIR; claude mcp add --transport http with --callback-port 39617 and --client-id kaoyan-claude-local; then claude mcp login --no-browser. | PASS for client-process trust and authorization URL generation; incomplete for browser/callback. Claude printed an authorization URL and waited for the user to open it and complete the redirect. | GET /.well-known/oauth-protected-resource/mcp, GET /.well-known/oauth-authorization-server. |
+
+E5 changes the trust diagnosis: the clients can trust a per-process CA bundle.
+It does not complete the production C14 gate because a normal user authorization
+step still needs a browser or equivalent UX that trusts the same localhost HTTPS
+authority. The environment variables are useful for development and automated
+client-process probes, but they are not by themselves a durable product trust
+mechanism for a user clicking an authorization URL.
+
 ## C14 decision and unblock condition
 
-C14 remains **NO-GO**. Do not select a certificate lifecycle module, client IDs,
-redirect URI allowlist, callback URI, persistent resource authority, or config reload
-workflow as accepted C14 implementation decisions from these probes.
+C14 remains **NO-GO for production implementation dispatch**. The development
+registration inputs below are now measured, but the production certificate/UX
+route is not accepted:
+
+- Codex client ID: kaoyan-codex-local
+- Codex redirect URI pattern observed: http://127.0.0.1:<ephemeral>/callback/<nonce>
+- Codex resource value: exact MCP URL supplied through --oauth-resource
+- Claude client ID: kaoyan-claude-local
+- Claude callback URI pattern observed: http://localhost:<configured-port>/callback
+- Claude resource value: exact MCP URL discovered from the configured server URL
 
 The external change required to unblock C14 is one of the following, followed by a
 fresh disposable-profile matrix for both clients:
 
 1. Vendor-documented, per-client no-admin trust configuration that accepts a
-   temporary local CA/certificate and demonstrably reaches protected-resource metadata,
-   authorization, token, and MCP endpoints.
+   temporary local CA/certificate, plus an authorization UX that reaches
+   protected-resource metadata, authorization, token, and MCP endpoints for both
+   clients.
 2. A repository-approved, no-admin certificate issuance/trust mechanism that both
-   installed clients validate without disabling TLS verification or changing the OS
-   trust store.
+   installed clients and the user authorization surface validate without disabling
+   TLS verification. The leading candidate is a current-user Root CA lifecycle
+   with explicit user consent, install verification, rotation, and removal tests.
 3. Explicit authorization to use a trusted certificate deployment path, with its
    installation/removal/revocation behavior measured for both clients.
 

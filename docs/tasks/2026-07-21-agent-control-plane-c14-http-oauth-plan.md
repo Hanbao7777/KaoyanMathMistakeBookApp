@@ -15,16 +15,21 @@ This plan is not dispatchable until an independent reviewer accepts it.
 
 ## C0 Renewal Gate
 
-**C0-E4 (2026-07-21): NO-GO.** See
+**C0-E5 (2026-07-21): NO-GO for production dispatch; development env-CA
+route proven.** See
 `docs/tasks/2026-07-21-agent-control-plane-c0-http-oauth-renewal.md`.
-Codex CLI `0.144.3` and Claude Code `2.1.216` expose candidate HTTP/OAuth
-registration inputs, but neither has a measured no-admin certificate-trust route to
-the local HTTPS OAuth mock. Codex's bounded login probe made no HTTP request and
-Claude's disposable health check failed before any request reached the mock.
+Codex CLI 0.144.3 and Claude Code 2.1.216 expose candidate HTTP/OAuth
+registration inputs. With NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, CURL_CA_BUNDLE,
+and REQUESTS_CA_BUNDLE pointed at a temporary local CA, both client processes
+reach the HTTPS mock. Codex completes the mock authorization-code/token flow;
+Claude Code reaches metadata and prints an authorization URL, then waits for
+browser/user redirect completion.
 
-Do not dispatch C14 or select a TLS lifecycle/client registration strategy until a
-fresh C0 acceptance proves a supported no-admin trust path, protected-resource
-metadata discovery, authorization, token, and MCP access for both mandatory clients.
+Do not dispatch production C14 or select a final TLS lifecycle until a fresh C0
+acceptance proves a user authorization surface that trusts the same local HTTPS
+authority. The leading candidate is an explicitly user-approved current-user
+Root CA lifecycle with install verification, rotation, removal, and two-client
+OAuth evidence.
 
 ## Primary-source checkpoint
 
