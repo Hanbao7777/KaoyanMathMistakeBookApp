@@ -47,12 +47,17 @@ type ControlPlane = Awaited<ReturnType<typeof getAgentControlPlane>>;
 type PageValue<T> = { readonly items: readonly T[]; readonly page: AgentControlPage<T>['page'] };
 type AuditVerificationValue = { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string };
 type ControlSettings = { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number };
-type DirectHttpsStatus = { readonly port: number; readonly authority: string; readonly resource: string; readonly issuer: string; readonly appInstanceId: string; readonly enabled: boolean; readonly certificateThumbprint?: string; readonly rootCaThumbprint?: string };
+type DirectHttpsStatus = { readonly port: number; readonly authority: string; readonly resource: string; readonly issuer: string; readonly appInstanceId: string; readonly enabled: boolean; readonly state?: 'disabled' | 'ready' | 'stopped'; readonly reason?: string; readonly certificateThumbprint?: string; readonly rootCaThumbprint?: string };
 
 let externalControlLifecycle: ((enabled: boolean) => Promise<void> | void) | undefined;
+let directHttpsStatus: (() => Omit<DirectHttpsStatus, 'enabled'> | undefined) | undefined;
 
 export function configureExternalControlLifecycle(handler?: (enabled: boolean) => Promise<void> | void): void {
   externalControlLifecycle = handler;
+}
+
+export function configureDirectHttpsStatus(handler?: () => Omit<DirectHttpsStatus, 'enabled'> | undefined): void {
+  directHttpsStatus = handler;
 }
 
 function pageSize(value: number | undefined): number {
@@ -128,6 +133,8 @@ function mapAudit(value: AuditRecord): AgentControlAuditSummary {
 }
 
 function mapStatus(value: { readonly settings: ControlSettings; readonly runtimeState: string; readonly directHttps?: DirectHttpsStatus | null }): AgentControlStatus {
+  const runtimeDirectHttps = directHttpsStatus?.();
+  const directHttps = value.directHttps ? Object.freeze({ ...value.directHttps, ...(runtimeDirectHttps ?? {}) }) : undefined;
   return Object.freeze({
     settings: Object.freeze({
       externalControlEnabled: value.settings.externalControlEnabled,
@@ -135,7 +142,7 @@ function mapStatus(value: { readonly settings: ControlSettings; readonly runtime
       privacyRevision: value.settings.privacyRevision
     }),
     runtimeState: value.runtimeState,
-    ...(value.directHttps ? { directHttps: Object.freeze({ ...value.directHttps }) } : {})
+    ...(directHttps ? { directHttps } : {})
   }) as AgentControlStatus;
 }
 

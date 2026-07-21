@@ -16,7 +16,8 @@ import type { DirectHttpsOAuthHost } from './transport/httpsOAuthHttp';
 import { DirectHttpsOAuthHost as DirectHttpsOAuthHostImpl } from './transport/httpsOAuthHttp';
 import { createOAuthMetadata } from './auth/oauthMetadata';
 import { LocalOAuthAuthorizationServer } from './auth/oauthAuthorizationServer';
-import type { LocalHttpsCertificate } from './tls/localHttpsCertificate';
+import { CurrentUserKeyStore, type CurrentUserCngKeyHandle } from './tls/currentUserKeyStore';
+import { issueLocalHttpsCertificate, type LocalHttpsCertificate } from './tls/localHttpsCertificate';
 import type { AgentGatewayComposition } from '../agent/bootstrap';
 
 export interface McpLoopbackHostOptions {
@@ -41,6 +42,19 @@ export interface DirectHttpsOAuthCompositionOptions {
   readonly consent?: (request: import('../../shared/mcp/v1/oauthContracts').OAuthAuthorizationRequest, client: import('../../shared/mcp/v1/oauthContracts').HttpOAuthClientRegistration) => Promise<boolean> | boolean;
 }
 
+export interface ConfiguredDirectHttpsOAuthCompositionOptions {
+  readonly controlPlane: AgentGatewayComposition;
+  readonly consent?: DirectHttpsOAuthCompositionOptions['consent'];
+  readonly keyStore?: Pick<CurrentUserKeyStore, 'verify'>;
+  readonly issueCertificate?: typeof issueLocalHttpsCertificate;
+}
+
+export function directHttpsDisabledReason(authority: AgentGatewayComposition['httpOAuthAuthority']): 'not_enabled' | 'trust_not_authorized' | undefined {
+  if (!authority.enabled) return 'not_enabled';
+  if (!authority.rootCaThumbprint || !authority.currentUserKeyHandle) return 'trust_not_authorized';
+  return undefined;
+}
+
 export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthCompositionOptions): DirectHttpsOAuthHost {
   const authority = options.controlPlane.httpOAuthAuthority;
   const metadata = createOAuthMetadata({ authority });
@@ -56,6 +70,26 @@ export function createDirectHttpsOAuthResourceHost(options: DirectHttpsOAuthComp
     consent: options.consent
   });
   return new DirectHttpsOAuthHostImpl({ authority, appInstanceId: authority.appInstanceId, externalControlEnabled: options.controlPlane.externalControlEnabled, authenticatedReady: () => true, authenticator: options.controlPlane.httpAuthenticator, certificate: options.certificate, oauth, gateway: options.controlPlane.gateway });
+}
+
+// Root installation is deliberately outside this runtime path. An enabled authority
+// must already carry the user-approved CurrentUser root identity and CNG key handle.
+export function createConfiguredDirectHttpsOAuthResourceHost(options: ConfiguredDirectHttpsOAuthCompositionOptions): DirectHttpsOAuthHost | undefined {
+  const authority = options.controlPlane.httpOAuthAuthority;
+  if (directHttpsDisabledReason(authority)) return undefined;
+  const keyStore = options.keyStore ?? new CurrentUserKeyStore();
+  const issueCertificate = options.issueCertificate ?? issueLocalHttpsCertificate;
+  return createDirectHttpsOAuthResourceHost({
+    controlPlane: options.controlPlane,
+    consent: options.consent,
+    certificate: async () => {
+      const handle: CurrentUserCngKeyHandle = await keyStore.verify(authority.currentUserKeyHandle!);
+      if (handle.keyName !== authority.currentUserKeyHandle || handle.scope !== 'CurrentUser' || handle.exportable !== false) {
+        throw new Error('CurrentUser CNG key failed closed verification');
+      }
+      return issueCertificate({ authority, rootThumbprint: authority.rootCaThumbprint!, rootKeyName: authority.currentUserKeyHandle! });
+    }
+  });
 }
 
 export interface McpLoopbackHostStatus {

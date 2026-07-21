@@ -33,6 +33,11 @@ export interface DirectHttpsOAuthHostStatus {
   readonly reason?: string;
 }
 
+export function localHttpsServerOptions(certificate: LocalHttpsCertificate): https.ServerOptions {
+  if (!certificate.pfx.length || typeof certificate.passphrase !== 'string' || certificate.passphrase.length < 32) throw new Error('Local HTTPS certificate key material is invalid');
+  return { pfx: Buffer.from(certificate.pfx), passphrase: certificate.passphrase };
+}
+
 function header(request: IncomingMessage, name: string): string | undefined { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? undefined : value; }
 function jsonResponse(response: ServerResponse, status: number, body: unknown, headers: Readonly<Record<string, string>> = {}): void { const encoded = JSON.stringify(body); response.writeHead(status, { ...headers, 'content-type': 'application/json; charset=utf-8', 'content-length': String(Buffer.byteLength(encoded)), 'cache-control': 'no-store', connection: 'close' }); response.end(encoded); }
 function plainResponse(response: ServerResponse, status: number, body: string, headers: Readonly<Record<string, string>> = {}): void { response.writeHead(status, { ...headers, ...(body ? { 'content-type': 'text/html; charset=utf-8', 'content-length': String(Buffer.byteLength(body)) } : {}), 'cache-control': 'no-store', connection: 'close' }); response.end(body); }
@@ -60,10 +65,10 @@ export class DirectHttpsOAuthHost {
     if (!await this.options.externalControlEnabled() || !await this.options.authenticatedReady()) { this.state = 'disabled'; return this.status(); }
     if (this.options.oauth.metadata.authority.authority !== this.authority.authority || this.options.oauth.metadata.authority.resource !== this.authority.resource || this.options.oauth.metadata.authority.issuer !== this.authority.issuer) { this.state = 'disabled'; this.reason = 'metadata_mismatch'; throw new Error('Direct HTTPS OAuth metadata does not match the fixed authority'); }
     let certificate: LocalHttpsCertificate;
-    try { certificate = typeof this.options.certificate === 'function' ? await this.options.certificate() : this.options.certificate; if (!certificate?.pfx || certificate.dnsNames[0] !== 'localhost' || certificate.ipAddresses[0] !== '127.0.0.1') throw new Error('Local HTTPS certificate SAN is invalid'); this.certificateThumbprint = certificate.thumbprint; }
+    try { certificate = typeof this.options.certificate === 'function' ? await this.options.certificate() : this.options.certificate; if (!certificate?.pfx || typeof certificate.passphrase !== 'string' || certificate.passphrase.length < 32 || certificate.dnsNames[0] !== 'localhost' || certificate.ipAddresses[0] !== '127.0.0.1') throw new Error('Local HTTPS certificate is invalid'); this.certificateThumbprint = certificate.thumbprint; }
     catch (error) { this.state = 'disabled'; this.reason = 'certificate_unavailable'; throw error; }
     const handler = createLoopbackMcpRequestHandler({ getPort: () => this.authority.port, instanceId: this.instanceId, authenticator: this.options.authenticator, externalControlEnabled: this.options.externalControlEnabled, onExternalControlDisabled: () => this.stop(), onAuthenticatedRequest: this.options.onAuthenticatedRequest ?? (this.options.gateway ? createMcpProtocolHandler({ gateway: this.options.gateway }) : undefined), initializeResult: this.options.gateway ? createMcpInitializeResult : undefined, allowedOrigins: [this.authority.authority], allowDefaultOrigin: false, requireOrigin: true, requireAccept: true, unauthorizedHeaders: { 'www-authenticate': bearerChallenge(this.metadata) }, now: this.options.now });
-    const server = https.createServer({ pfx: Buffer.from(certificate.pfx) }, (request, response) => { void this.route(request, response, handler); }); this.server = server; this.handler = handler;
+    const server = https.createServer(localHttpsServerOptions(certificate), (request, response) => { void this.route(request, response, handler); }); this.server = server; this.handler = handler;
     try { await new Promise<void>((resolve, reject) => { const onError = (error: Error) => { server.off('listening', onListening); reject(error); }; const onListening = () => { server.off('error', onError); resolve(); }; server.once('error', onError); server.once('listening', onListening); server.listen({ host: '127.0.0.1', port: this.authority.port, exclusive: true }); }); const address = server.address(); if (!address || typeof address === 'string' || address.address !== '127.0.0.1' || address.port !== this.authority.port) throw new Error('Direct HTTPS authority did not bind the fixed port'); this.state = 'ready'; this.reason = undefined; return this.status(); }
     catch (error) { this.state = 'disabled'; this.reason = 'bind_failed'; this.server = null; this.handler = null; await new Promise<void>((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } }); throw error; }
   }

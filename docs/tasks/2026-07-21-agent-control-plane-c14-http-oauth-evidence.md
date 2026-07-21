@@ -39,8 +39,21 @@ authentication boundary or transient client process memory.
   escaped at the TypeScript boundary, and LocalMachine Root is not used.
 - `schema.ts` and `clientRegistry.ts` add durable authority, registration,
   authorization-code, access-token, refresh-family, and revocation projections.
-- `server.ts` exposes the composition factory that joins the direct host beside
-  the existing loopback host without changing the Gateway business path.
+- `server.ts` composes the direct host into the Electron main-process loopback
+  lifecycle. It is absent unless the persisted direct authority is explicitly
+  enabled and includes both the approved CurrentUser Root thumbprint and the
+  non-exportable CurrentUser CNG key handle. Startup verifies that handle before
+  issuing the leaf certificate; missing metadata, CNG verification failure,
+  certificate issuance failure, and fixed-port bind failure leave the direct
+  lane disabled. This path never installs or changes a root certificate.
+- `localHttpsCertificate.ts` creates a fresh in-memory PFX passphrase, passes it
+  only to the issuance child process and `https.createServer`, and returns it
+  only with the in-memory PFX object. It is not emitted in metadata, discovery,
+  database records, ordinary logs, or the temporary PFX file.
+- The control-center status now reports the public direct-host runtime state and
+  fail-closed reason (`not_enabled`, `trust_not_authorized`,
+  `certificate_unavailable`, or `bind_failed`) without exposing key material or
+  OAuth secrets.
 
 ## Denial matrix
 
@@ -56,13 +69,18 @@ CurrentUser Root stale-thumbprint cleanup.
 Passed:
 
 - `npm run build`
-- `npm test` (673 tests: 672 passed, 0 failed, 1 skipped)
+- `npm test` (676 tests: 675 passed, 0 failed, 1 skipped)
 - `npm run typecheck`
 - `npm run build:main`
 - `node --check tools/mcp-spikes/httpsOAuthProbeServer.cjs`
 - `node --test tests/mcp/spikes/*.test.cjs` (8 passed)
+- `node --test tests/mcp/c14HttpsTransport.test.cjs` (4 passed): generated a
+  disposable encrypted PFX outside certificate stores, started the configured
+  direct host through the CNG-verification composition path, and received HTTPS
+  authorization-server metadata. The host could start only because Node TLS
+  received the matching transient passphrase.
 - C14 focused OAuth, HTTPS transport, CNG Root, authenticator, registry,
-  persistence, control-center, and disposable real-client tests (12 passed)
+  persistence, control-center, and disposable real-client tests (20 passed)
 - Existing MCP contracts, loopback host, CNG key lifecycle, authenticator,
   registry, and database writer-gate tests (34 passed)
 - `git diff --check`
@@ -78,6 +96,11 @@ only hashes, UUIDs, certificate thumbprints, public certificate metadata, and
 explicit test fixtures are present in durable/test evidence; no raw OAuth value
 or private-key material is logged or persisted. Static scans also found no
 `Cert:\\LocalMachine\\Root` implementation path.
+
+The requested code-review-graph build/update and change detection could not run:
+the graph MCP tools were not available in this worker session. Direct source
+caller inspection and focused runtime tests were used instead; this is not a
+substitute for the coordinator's graph review.
 
 CurrentUser Root cleanup verification used one disposable short-lived
 certificate and the exact thumbprint `49668E6546D5526CBE3220A850B415F20AB8614F`:
@@ -115,10 +138,13 @@ client evidence.
 ## Remaining risks
 
 - A packaged Electron run with a freshly issued certificate and an interactive
-  control-center consent callback remains the final end-to-end evidence step;
-  this is the exact external blocker for the full live-client matrix.
-- Root CA installation is intentionally disabled until a caller supplies the
-  explicit consent decision and certificate material; there is no silent trust
-  fallback.
-- The direct host composition is injectable from `server.ts`; release packaging
-  and installer distribution remain C15 work.
+  control-center consent callback remains the final end-to-end evidence step.
+  The current OAuth server is intentionally fail-closed by queuing authorization
+  requests until a control-center consent callback is composed; no existing IPC
+  API safely authorizes trust installation or resolves those requests.
+- Root CA installation remains intentionally absent from the Electron startup
+  path. A future focused control-center authorization flow must persist the
+  explicit user decision before it can create/install/rotate a CurrentUser Root
+  CA and enable this lane; there is no silent trust fallback.
+- Packaged client registration, interactive consent resolution, and installer
+  distribution remain C15 evidence work.

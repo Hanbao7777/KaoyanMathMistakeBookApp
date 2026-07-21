@@ -17,12 +17,12 @@ import { createInternalExecutionContext } from './application/executionContext';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
-import { configureExternalControlLifecycle } from './ipc/adapters/agentControlCenterIpc';
+import { configureDirectHttpsStatus, configureExternalControlLifecycle } from './ipc/adapters/agentControlCenterIpc';
 import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
 import { ensureDailyAutoBackup } from './services/backupService';
-import { McpLoopbackHost } from './mcp/server';
+import { createConfiguredDirectHttpsOAuthResourceHost, directHttpsDisabledReason, McpLoopbackHost } from './mcp/server';
 import { createMcpProtocolHandler, mcpInitializeResult } from './mcp/protocol';
 import type {
   QuestionCategoryMigrationCommand,
@@ -402,6 +402,7 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
   registerRuntimeIpc: registerIpc,
   async startMcpHost() {
     const controlPlane = await getAgentControlPlane();
+    const directHttps = createConfiguredDirectHttpsOAuthResourceHost({ controlPlane });
     const host = new McpLoopbackHost({
       discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
       externalControlEnabled: controlPlane.externalControlEnabled,
@@ -409,9 +410,33 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
       authenticator: controlPlane.stdioAuthenticator,
       gateway: controlPlane.gateway,
       initializeResult: mcpInitializeResult,
-      onAuthenticatedRequest: createMcpProtocolHandler({ gateway: controlPlane.gateway })
+      onAuthenticatedRequest: createMcpProtocolHandler({ gateway: controlPlane.gateway }),
+      ...(directHttps ? { directHttps } : {})
     });
     mcpLoopbackHost = host;
+    configureDirectHttpsStatus(() => {
+      const status = directHttps?.status();
+      if (status) return Object.freeze({
+        port: status.authority.port,
+        authority: status.authority.authority,
+        resource: status.resource,
+        issuer: status.issuer,
+        appInstanceId: status.appInstanceId,
+        state: status.state,
+        ...(status.certificateThumbprint ? { certificateThumbprint: status.certificateThumbprint } : {}),
+        ...(controlPlane.httpOAuthAuthority.rootCaThumbprint ? { rootCaThumbprint: controlPlane.httpOAuthAuthority.rootCaThumbprint } : {}),
+        ...(status.reason ? { reason: status.reason } : {})
+      });
+      return Object.freeze({
+        port: controlPlane.httpOAuthAuthority.port,
+        authority: controlPlane.httpOAuthAuthority.authority,
+        resource: controlPlane.httpOAuthAuthority.resource,
+        issuer: controlPlane.httpOAuthAuthority.issuer,
+        appInstanceId: controlPlane.httpOAuthAuthority.appInstanceId,
+        state: 'disabled' as const,
+        reason: directHttpsDisabledReason(controlPlane.httpOAuthAuthority) ?? 'certificate_unavailable'
+      });
+    });
     configureExternalControlLifecycle(async (enabled) => {
       if (enabled) await host.start();
       else await host.disable();

@@ -156,6 +156,7 @@ async function createChangeSet(current, clientId) {
 
 test.beforeEach(() => {
   adapterModule.configureExternalControlLifecycle(undefined);
+  adapterModule.configureDirectHttpsStatus(undefined);
   return environment.resetControlPlaneEnvironment();
 });
 test.after(() => environment.cleanupControlPlaneRoot());
