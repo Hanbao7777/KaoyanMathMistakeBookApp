@@ -1,17 +1,17 @@
 # C0 HTTPS OAuth Renewal Evidence for C14
 
-**Decision revision:** C0-E5 (2026-07-21)
+**Decision revision:** C0-E6 (2026-07-21)
 
-**Decision:** **NO-GO for production C14 implementation dispatch; GO for an
-environment-CA development spike.** The currently installed Codex CLI and Claude
-Code expose candidate HTTP/OAuth registration inputs. A per-process CA bundle
-via environment variables is proven enough for both client processes to reach the
-local HTTPS mock, and Codex completes the mock authorization-code/token flow.
-However, Claude Code's no-browser path still requires the user/browser to open
-the authorization URL, and browser trust does not inherit CLI environment
-variables. Production C14 still needs a user-facing trust route such as an
-explicitly approved current-user Root CA lifecycle or another supported
-certificate deployment path.
+**Decision:** **GO for C14 implementation planning with an explicitly approved
+current-user Root CA lifecycle.** The currently installed Codex CLI and Claude
+Code expose usable HTTP/OAuth registration inputs. A temporary Root CA installed
+only into Windows CurrentUser Root allowed Windows HTTPS clients and both hard
+MCP clients to trust the local HTTPS mock without admin rights or Machine trust
+changes. Codex completed authorization-code/token login. Claude Code generated
+the authorization URL, accepted a simulated browser callback, posted to the token
+endpoint, and exited successfully. The production implementation must add user
+consent, install verification, rotation, revocation/removal, and audit around the
+same CurrentUser Root CA pattern.
 
 ## Scope and isolation
 
@@ -60,7 +60,7 @@ non-secret endpoints over `https://localhost:<ephemeral-port>`:
 
 It returns protected-resource and authorization-server metadata sufficient to observe
 discovery only. All other routes return an RFC-style bearer challenge. The certificate
-is supplied as a temporary PFX to Node; no trust-store mutation occurs.
+is supplied as a temporary PFX to Node; no trust-store mutation occurs in E4/E5.
 
 | Client | Contained attempt | Result | Trace evidence |
 | --- | --- | --- | --- |
@@ -95,11 +95,41 @@ authority. The environment variables are useful for development and automated
 client-process probes, but they are not by themselves a durable product trust
 mechanism for a user clicking an authorization URL.
 
+## E6 current-user Root CA follow-up
+
+With explicit user authorization, a one-day local Root CA was temporarily
+installed into the Windows CurrentUser Root store, never LocalMachine Root. The
+server certificate was signed for localhost and 127.0.0.1. The spike verified
+the Root CA thumbprint before and after installation, then removed the exact
+thumbprint through the current-user X509 store and verified zero remaining
+certificates after cleanup.
+
+- Windows/browser-equivalent trust: PASS. Invoke-WebRequest against
+  protected-resource metadata returned HTTP 200 using CurrentUser Root trust.
+- Codex CLI root-only OAuth: PASS. With no CA environment variables, disposable
+  CODEX_HOME, client ID kaoyan-codex-local, and resource equal to the MCP URL,
+  codex mcp login exited 0 and reported successful login. Trace: GET /mcp,
+  protected-resource metadata, authorization-server metadata, GET /authorize,
+  POST /token.
+- Claude Code root-only OAuth: PASS. With no CA environment variables,
+  disposable CLAUDE_CONFIG_DIR, client ID kaoyan-claude-local, and a fixed
+  callback port, claude mcp login --no-browser printed an authorization URL. A
+  browser-equivalent CurrentUser-trusted request completed the callback. Claude
+  exited 0. Trace: protected-resource metadata, authorization-server metadata,
+  GET /authorize, callback HTTP 200, and two POST /token requests.
+- Cleanup: PASS. The installed Root CA thumbprints were removed and verified
+  with post_remove_count=0.
+
+E6 changes the production diagnosis: C14 no longer needs an external vendor CA
+feature to proceed. It may implement a current-user Root CA lifecycle, provided
+the implementation includes explicit user consent, thumbprint-scoped install and
+removal, short validity, rotation, emergency removal, audit, and tests proving no
+Machine-store writes and no stale trusted root remains after disable/uninstall.
+
 ## C14 decision and unblock condition
 
-C14 remains **NO-GO for production implementation dispatch**. The development
-registration inputs below are now measured, but the production certificate/UX
-route is not accepted:
+C14 is **GO for implementation planning** with the E6 current-user Root CA
+lifecycle as the selected trust route. The measured registration inputs are:
 
 - Codex client ID: kaoyan-codex-local
 - Codex redirect URI pattern observed: http://127.0.0.1:<ephemeral>/callback/<nonce>
@@ -108,21 +138,10 @@ route is not accepted:
 - Claude callback URI pattern observed: http://localhost:<configured-port>/callback
 - Claude resource value: exact MCP URL discovered from the configured server URL
 
-The external change required to unblock C14 is one of the following, followed by a
-fresh disposable-profile matrix for both clients:
-
-1. Vendor-documented, per-client no-admin trust configuration that accepts a
-   temporary local CA/certificate, plus an authorization UX that reaches
-   protected-resource metadata, authorization, token, and MCP endpoints for both
-   clients.
-2. A repository-approved, no-admin certificate issuance/trust mechanism that both
-   installed clients and the user authorization surface validate without disabling
-   TLS verification. The leading candidate is a current-user Root CA lifecycle
-   with explicit user consent, install verification, rotation, and removal tests.
-3. Explicit authorization to use a trusted certificate deployment path, with its
-   installation/removal/revocation behavior measured for both clients.
-
-Until then, stdio remains the accepted local transport and C14 must not be dispatched.
+C14 implementation must not skip the trust lifecycle: a direct HTTPS OAuth worker
+must implement and test current-user Root CA consent, install verification,
+rotation, disable/emergency removal, uninstall cleanup, and stale-thumbprint
+denial before accepting the transport as production-ready.
 
 ## Reproduction and validation
 

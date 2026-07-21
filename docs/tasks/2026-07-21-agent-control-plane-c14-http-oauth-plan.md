@@ -15,21 +15,22 @@ This plan is not dispatchable until an independent reviewer accepts it.
 
 ## C0 Renewal Gate
 
-**C0-E5 (2026-07-21): NO-GO for production dispatch; development env-CA
-route proven.** See
+**C0-E6 (2026-07-21): GO for implementation planning with an explicitly
+approved current-user Root CA lifecycle.** See
 `docs/tasks/2026-07-21-agent-control-plane-c0-http-oauth-renewal.md`.
-Codex CLI 0.144.3 and Claude Code 2.1.216 expose candidate HTTP/OAuth
-registration inputs. With NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, CURL_CA_BUNDLE,
-and REQUESTS_CA_BUNDLE pointed at a temporary local CA, both client processes
-reach the HTTPS mock. Codex completes the mock authorization-code/token flow;
-Claude Code reaches metadata and prints an authorization URL, then waits for
-browser/user redirect completion.
+Codex CLI 0.144.3 and Claude Code 2.1.216 expose usable HTTP/OAuth
+registration inputs. A temporary Root CA installed only into Windows
+CurrentUser Root made the local HTTPS mock trusted by Windows HTTPS clients and
+both mandatory MCP clients without admin rights or LocalMachine trust changes.
+Codex completed the mock authorization-code/token login. Claude Code generated
+the authorization URL, accepted a browser-equivalent CurrentUser-trusted
+callback, posted to the token endpoint, and exited successfully.
 
-Do not dispatch production C14 or select a final TLS lifecycle until a fresh C0
-acceptance proves a user authorization surface that trusts the same local HTTPS
-authority. The leading candidate is an explicitly user-approved current-user
-Root CA lifecycle with install verification, rotation, removal, and two-client
-OAuth evidence.
+C14 may proceed only on this selected trust route. The implementation must make
+the CurrentUser Root CA lifecycle explicit and user-approved: consent before
+install, thumbprint-scoped install verification, short validity, rotation,
+disable/emergency removal, uninstall cleanup, stale-thumbprint denial, audit,
+and two-client evidence. C14 must never write to `Cert:\\LocalMachine\\Root`.
 
 ## Primary-source checkpoint
 
@@ -100,10 +101,12 @@ credential files unless a test proves a shared contract must move:
 - Existing `src/main/mcp/transport/loopbackHttp.ts` only if the HTTPS host needs
   a shared, extracted request parser; any extraction must keep stdio and
   loopback behavior covered by existing tests.
-- Future C0-accepted certificate/TLS lifecycle modules selected by the renewed
-  HTTPS/OAuth gate, and only for direct HTTPS binding or certificate identity
-  reuse. The Worker must not edit TLS files until that gate identifies concrete
-  owned files.
+- New `src/main/mcp/tls/currentUserRootCa.ts` and
+  `src/main/mcp/tls/localHttpsCertificate.ts` for the C0-E6 current-user Root
+  CA lifecycle and localhost server certificate issuance, and only for direct
+  HTTPS binding or certificate identity reuse. These modules may touch
+  `Cert:\\CurrentUser\\Root` only after explicit user approval and must never
+  write to `Cert:\\LocalMachine\\Root`.
 - New `src/main/mcp/auth/oauthMetadata.ts`,
   `src/main/mcp/auth/oauthAuthorizationServer.ts`,
   `src/main/mcp/auth/oauthTokenStore.ts`, and
@@ -158,24 +161,35 @@ Do not change C13 global operation behavior while implementing OAuth transport.
 - C14 cannot silently widen an existing client's scopes. Scope increase requires
   a fresh user-visible consent and audited management write.
 - The direct HTTPS resource identifier and issuer are persistent product
-  authorities from a future accepted C0 certificate lifecycle, not per-port
+  authorities from the C0-E6 current-user Root CA lifecycle, not per-port
   secrets.
   They remain stable across App restart, while individual access tokens and MCP
   sessions remain bound to the current App instance. After restart, discovery
   publishes the new endpoint/instance, existing access tokens fail, and an
   unrevoked rotated refresh family may obtain a new instance-bound access token
   for the same persistent resource audience.
+- Root CA install is an R4-level local trust change. It requires explicit
+  user approval and must be reversible through disable, uninstall, and emergency
+  stop paths that remove the exact thumbprint and verify no stale root remains.
 
 ## Client-registration decision
 
-C14 must choose and prove one registration route before OAuth endpoint
-implementation:
+C14 uses local pre-registration through the App control center as the initial
+registration route:
 
-- **Preferred route:** local pre-registration through the App control center for
+- **Selected route:** local pre-registration through the App control center for
   Codex CLI and Claude Code. The App records client name, product, installed
   version evidence, redirect URI allowlist, supported grant type, allowed scopes,
-  and whether refresh tokens are permitted. Authorization requests from unknown
-  client IDs fail before consent.
+  trust profile, resource audience, and whether refresh tokens are permitted.
+  Authorization requests from unknown client IDs fail before consent.
+- **Measured Codex CLI binding:** client ID `kaoyan-codex-local`; resource
+  value is the exact MCP URL supplied by `codex mcp add --oauth-resource`;
+  redirect URI pattern observed in C0-E6 is
+  `http://127.0.0.1:<ephemeral>/callback/<nonce>`.
+- **Measured Claude Code binding:** client ID `kaoyan-claude-local`; resource
+  value is the exact configured MCP server URL discovered during login;
+  callback URI pattern observed in C0-E6 is
+  `http://localhost:<configured-port>/callback`.
 - **Conditional route:** Client ID Metadata Documents are allowed only if a real
   mandatory client requires them. If used, metadata fetches must be localhost or
   file-system safe according to an explicit allowlist, bounded by size/time,
@@ -188,8 +202,9 @@ implementation:
   C14 implementation unless both mandatory clients require it. If added, it must
   be a separate reviewed subtask with its own storage, replay, and denial tests.
 
-The Worker must record the measured Codex CLI and Claude Code registration
-behavior before choosing anything beyond pre-registration.
+The Worker must preserve these measured bindings unless fresh client evidence
+shows a narrower or safer binding is required. Any route beyond
+pre-registration is out of scope unless a focused reviewer accepts it first.
 
 ## Execution sequence
 
@@ -244,8 +259,7 @@ Implementation must not start until the reviewer reports `completed` or
 
 - Serve protected-resource metadata, issuer metadata, authorization endpoint,
   token endpoint, revocation/status endpoints if required, and the direct MCP
-  Streamable HTTP endpoint over the future accepted local HTTPS certificate
-  lifecycle.
+  Streamable HTTP endpoint over the C0-E6 current-user Root CA lifecycle.
 - Bind to `127.0.0.1` only and reject wrong Origin, wrong Host, unsafe content
   type, oversized bodies, and unauthenticated MCP requests.
 - Implement Streamable HTTP interoperability explicitly: `Accept` negotiation,
