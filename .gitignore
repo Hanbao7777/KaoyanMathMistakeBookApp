@@ -46,3 +46,5 @@ Thumbs.db
 .ccb/runtime-root-ref.json
 .ccb/ccb_memory.md
 .superpowers/
+# Added by code-review-graph
+.code-review-graph/

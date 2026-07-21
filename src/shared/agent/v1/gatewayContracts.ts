@@ -46,6 +46,7 @@ export const agentScopes = [
   'focus.control',
   'files.images.read'
   , 'imports.read', 'imports.write', 'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
+  , 'backups.read', 'backups.create', 'backups.delete', 'exports.create', 'exports.read', 'database.restore', 'database.replace', 'database.clear', 'imports.delete', 'data_root.migrate'
 ] as const;
 
 export type AgentScope = (typeof agentScopes)[number];
@@ -376,9 +377,9 @@ export const approvalRequirements = ['never', 'policy', 'always', 'r4_grant'] as
 export type ApprovalRequirement = (typeof approvalRequirements)[number];
 export const operationKinds = ['command', 'query'] as const;
 export type OperationKind = (typeof operationKinds)[number];
-export const operationDomains = ['management', 'questions', 'tasks', 'focus', 'knowledge', 'textbooks', 'analytics', 'study', 'imports', 'ticktick'] as const;
+export const operationDomains = ['management', 'questions', 'tasks', 'focus', 'knowledge', 'textbooks', 'analytics', 'study', 'imports', 'ticktick', 'global'] as const;
 export type OperationDomain = (typeof operationDomains)[number];
-export const riskResolvers = ['static', 'question_delete', 'image_delete', 'bounded_batch', 'task_delete'] as const;
+export const riskResolvers = ['static', 'question_delete', 'image_delete', 'bounded_batch', 'task_delete', 'global_resolved'] as const;
 export type RiskResolver = (typeof riskResolvers)[number];
 
 export interface DescriptorPolicyBounds {
@@ -503,6 +504,7 @@ export const gatewayBusinessCommandTypes = [
   , 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress'
   , 'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.apply_draft', 'imports.cancel'
   , 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.create', 'ticktick.habits.update', 'ticktick.bridges.update'
+  , 'backups.create', 'exports.create', 'backups.delete', 'database.restore', 'database.replace_from_import', 'database.clear_all', 'imports.delete_batch', 'data_root.migrate'
 ] as const;
 
 export const gatewayBusinessQueryTypes = [
@@ -522,7 +524,12 @@ export const gatewayBusinessQueryTypes = [
   , 'study.get_today', 'study.get_week_summary'
   , 'imports.preview_draft', 'imports.get'
   , 'ticktick.lists.list', 'ticktick.habits.list', 'ticktick.calendar.list_events', 'ticktick.bridges.get'
+  , 'backups.list', 'exports.get'
 ] as const;
+
+/** Durable executor-only commands. They are catalogued for JobStore validation,
+ * but deliberately absent from MCP and ordinary business-operation registries. */
+export const gatewayInternalJobCommandTypes = ['backups.materialize', 'exports.materialize'] as const;
 
 export const operationNames = [
   ...gatewayWorkflowCommandTypes,
@@ -530,7 +537,8 @@ export const operationNames = [
   ...gatewayWorkflowQueryTypes,
   ...gatewayManagementQueryTypes,
   ...gatewayBusinessCommandTypes,
-  ...gatewayBusinessQueryTypes
+  ...gatewayBusinessQueryTypes,
+  ...gatewayInternalJobCommandTypes
 ] as const;
 export type OperationName = (typeof operationNames)[number];
 

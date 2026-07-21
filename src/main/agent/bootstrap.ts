@@ -6,6 +6,7 @@ import type { AppCommand, AppQuery, CommandResult, EntityRef, QueryResult, Trust
 import {
   agentScopes,
   gatewayBusinessCommandTypes,
+  gatewayInternalJobCommandTypes,
   gatewayBusinessQueryTypes,
   gatewayManagementCommandTypes,
   gatewayManagementQueryTypes,
@@ -65,6 +66,7 @@ import {
 } from '../application/knowledge';
 import { isStudyCommandOperation, isStudyQueryOperation, type StudyApplication, type StudyCommand, type StudyQuery, validateStudyCommand, validateStudyQuery } from '../application/study';
 import { isImportsCommandOperation, isImportsQueryOperation, type ImportsApplication, type ImportsCommand, type ImportsQuery, validateImportsCommand, validateImportsQuery } from '../application/imports';
+import { isGlobalCommandOperation, isGlobalQueryOperation, type GlobalApplication, type GlobalCommand, type GlobalQuery, validateGlobalCommand, validateGlobalQuery } from '../application/global';
 import {
   createDatabaseCoordinatorControlCapability,
   type DatabaseMutationResult,
@@ -79,6 +81,7 @@ import {
   createAuthenticationAdapters,
   createRegistryPrincipalAuthenticator,
   createDurableJobPrincipal,
+  isDurableJobPrincipal,
   type RawCredentialVerifier,
   type VerifiedCredentialBindings
 } from './clientAuthenticator';
@@ -91,7 +94,7 @@ import type { RendererIdentityAdapter } from './rendererAdapter';
 import { StdioPublicKeyAuthenticator } from '../mcp/auth/stdioAuthenticator';
 import { WorkflowStore, type ChangeSetApplyBinding, type WorkflowBinding } from './workflows';
 import { JobStore } from './jobStore';
-import { JobExecutor } from './jobExecutor';
+import { JobExecutor, type JobExecutorDependencies } from './jobExecutor';
 import { JobRecovery, type VerifiedJobJournalEvidence } from './jobRecovery';
 
 export interface AgentB3BootstrapOptions {
@@ -134,6 +137,8 @@ export interface AgentGatewayBootstrapOptions extends AgentB3BootstrapOptions {
   readonly knowledgeApplication?: KnowledgeApplication;
   readonly studyApplication?: StudyApplication;
   readonly importsApplication?: ImportsApplication;
+  readonly globalApplication?: GlobalApplication;
+  readonly jobExecutorOnTerminalized?: JobExecutorDependencies['onTerminalized'];
 }
 
 export interface AgentGatewayComposition {
@@ -261,7 +266,8 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         'agent-catalog-v1@2': 'sha256-v1:6a6dd3a4dc1ebdacd3c37e1e4017f9677659e631959b0cf91620a06a9a4af049',
         'agent-catalog-v1@3': 'sha256-v1:45bfae255adb870e931ff677c039d813cc9f123b49960e2aa2a49145ed6553f5'
         , 'agent-catalog-v1@4': 'sha256-v1:61893de455c7ce347923307c6fe95d4d7fd58564dc5d3ddf72548375b1502514'
-        , 'agent-catalog-v1@5': 'sha256-v1:a57b576a972c4c57c8e182591914a3de3c00ca9279db2a521f1dc0493fc19f98'
+         , 'agent-catalog-v1@5': 'sha256-v1:a57b576a972c4c57c8e182591914a3de3c00ca9279db2a521f1dc0493fc19f98'
+         , 'agent-catalog-v1@6': 'sha256-v1:ec9827b2471af9c90b591aec6077cd3b864bb510e29bba91fc38e10a883edb91'
       });
       if (acceptedPredecessorHashes[String(catalogVersion)] !== catalogHash) throw new AgentError('RECOVERY_FENCE');
       let policy: unknown;
@@ -377,7 +383,12 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     descriptor: OperationDescriptor,
     principal: AgentPrincipal
   ) => {
-    if (descriptor.domain === 'management' || !options.resolveState) return fallbackResolveState(envelope);
+    if (descriptor.domain === 'management') return fallbackResolveState(envelope);
+    if (descriptor.domain === 'global') {
+      if (!options.globalApplication) throw new AgentError('HANDLER_NOT_FOUND');
+      return options.globalApplication.resolveState(envelope, descriptor, principal);
+    }
+    if (!options.resolveState) return fallbackResolveState(envelope);
     if (envelope.kind === 'agent-query') return options.resolveState(envelope, descriptor, principal);
     const key = `${principal.clientId}\0${envelope.requestId}`;
     const payloadHash = hashCanonicalJson(envelope.payload);
@@ -397,7 +408,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   };
 
   const validateBusinessCommand = (envelope: AgentCommandEnvelope) => {
-    if (!(gatewayBusinessCommandTypes as readonly string[]).includes(envelope.operation)) throw new AgentError('VALIDATION_ERROR');
+    if (!(gatewayBusinessCommandTypes as readonly string[]).includes(envelope.operation) && !(gatewayInternalJobCommandTypes as readonly string[]).includes(envelope.operation)) throw new AgentError('VALIDATION_ERROR');
     if (isTickTickCommandOperation(envelope.operation)) {
       if (!options.tickTickApplication) throw new AgentError('HANDLER_NOT_FOUND');
       validateTickTickCommand({ type: envelope.operation, payload: envelope.payload });
@@ -409,6 +420,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       return;
     }
     if (isStudyCommandOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateStudyCommand({ type: envelope.operation, payload: envelope.payload }); return; }
+    if (isGlobalCommandOperation(envelope.operation)) { if (!options.globalApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateGlobalCommand({ type: envelope.operation, payload: envelope.payload }); return; }
     if (isImportsCommandOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateImportsCommand({ type: envelope.operation, payload: envelope.payload }); return; }
     validateCommandEnvelope({
       apiVersion: agentApiVersion,
@@ -434,6 +446,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       return;
     }
     if (isStudyQueryOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateStudyQuery({ type: envelope.operation, payload: envelope.payload }); return; }
+    if (isGlobalQueryOperation(envelope.operation)) { if (!options.globalApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateGlobalQuery({ type: envelope.operation, payload: envelope.payload }); return; }
     if (isImportsQueryOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); validateImportsQuery({ type: envelope.operation, payload: envelope.payload }); return; }
     validateQueryEnvelope({
       apiVersion: agentApiVersion,
@@ -454,7 +467,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   ): Promise<GatewayCommandPlan> => {
     if (envelope.operation !== 'agent.changesets.apply') {
       const state = await resolveState(envelope, descriptor, principal);
-      const expectedVersion = envelope.expectedVersion ?? (descriptor.policyBounds.maximumRisk === 'R4' ? state.dataVersion : undefined);
+       const expectedVersion = envelope.expectedVersion ?? (descriptor.domain === 'global' || descriptor.policyBounds.maximumRisk === 'R4' ? state.dataVersion : undefined);
       return Object.freeze({
         descriptor,
         payload: envelope.payload,
@@ -554,6 +567,9 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       case 'agent.clients.revoke': return controlValue(registry.revokeClientInTransaction(database, scope, command.payload.clientId), { clientId: command.payload.clientId, revoked: true });
       case 'agent.sessions.terminate': return controlValue(registry.terminateSessionInTransaction(database, scope, command.payload.sessionId), { sessionId: command.payload.sessionId, terminated: true });
       case 'agent.r4_grants.create': {
+        // An external client may request an R4 operation, but only the local UI
+        // may mint the one-use authority that permits it.
+        if (!principal.renderer) throw new AgentError('SCOPE_DENIED');
         const request = command.payload.grant;
         if (!principal.renderer && request.clientId !== principal.clientId) throw new AgentError('SCOPE_DENIED');
         const targetDescriptor = resolveOperationDescriptor(request.operation);
@@ -585,11 +601,13 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       }
       case 'agent.r4_grants.revoke': return controlValue(workflows.revokeR4GrantInTransaction(database, scope, command.payload.grantId, principal.clientId, principal.renderer), { grantId: command.payload.grantId, revoked: true });
       case 'agent.approvals.approve': {
+        if (!principal.renderer) throw new AgentError('SCOPE_DENIED');
         const result = workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'approved', principal.renderer ? 'user' : 'policy');
         jobs.resolveWaitingWorkflowInTransaction(database, scope, 'approval', command.payload.approvalId, 'approved');
         return result;
       }
       case 'agent.approvals.reject': {
+        if (!principal.renderer) throw new AgentError('SCOPE_DENIED');
         const result = workflows.decideApprovalInTransaction(database, scope, command.payload.approvalId, 'rejected', principal.renderer ? 'user' : 'policy');
         jobs.resolveWaitingWorkflowInTransaction(database, scope, 'approval', command.payload.approvalId, 'rejected');
         return result;
@@ -653,6 +671,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       r4Grant: input.r4Grant,
       localApprovedChangeSet: input.localApprovedChangeSet,
       workflowResume: input.workflowResume
+      , ...(isDurableJobPrincipal(input.principal) ? { internalJob: true as const } : {})
     }),
     validateCommand(envelope, descriptor) {
       if (descriptor.domain === 'management') {
@@ -671,7 +690,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       else validateBusinessQuery(envelope);
     },
     admit: (request) => idempotency.admit(request),
-    dispatchCommand(plan, context, prepared, approval, changeSet) {
+    dispatchCommand(plan, context, prepared, approval, changeSet, principal) {
       const terminalHook = receipts.createTerminalHook(prepared, {
         ...(approval ? { approval } : {}),
         ...(plan.changeSetApply || changeSet ? { changeSet: plan.changeSetApply ?? changeSet } : {})
@@ -693,6 +712,15 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         );
       }
       if (isStudyCommandOperation(plan.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); return options.studyApplication.execute({ type: plan.operation, payload: plan.payload } as StudyCommand, context, terminalHook); }
+       if (isGlobalCommandOperation(plan.operation)) {
+       if (!options.globalApplication) throw new AgentError('HANDLER_NOT_FOUND');
+        const globalApplication = options.globalApplication;
+        return globalApplication.execute({ type: plan.operation, payload: plan.payload } as GlobalCommand, context, terminalHook, principal)
+          .then((result) => {
+            if ((plan.operation === 'backups.create' || plan.operation === 'exports.create') && globalApplication.shouldKickJobs) jobExecutor.kick();
+            return result;
+          });
+       }
       if (isImportsCommandOperation(plan.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); return options.importsApplication.execute({ type: plan.operation, payload: plan.payload } as ImportsCommand, context, terminalHook); }
       const command = { type: plan.operation, payload: plan.payload } as AppCommand;
       const dispatch = () => options.commandBus.executeWithExecutionReceipt(
@@ -731,6 +759,7 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
         ));
       }
       if (isStudyQueryOperation(envelope.operation)) { if (!options.studyApplication) throw new AgentError('HANDLER_NOT_FOUND'); return Promise.resolve(options.studyApplication.query({ type: envelope.operation, payload: envelope.payload } as StudyQuery, context)); }
+      if (isGlobalQueryOperation(envelope.operation)) { if (!options.globalApplication) throw new AgentError('HANDLER_NOT_FOUND'); return Promise.resolve(options.globalApplication.query({ type: envelope.operation, payload: envelope.payload } as GlobalQuery, context)); }
       if (isImportsQueryOperation(envelope.operation)) { if (!options.importsApplication) throw new AgentError('HANDLER_NOT_FOUND'); return Promise.resolve(options.importsApplication.query({ type: envelope.operation, payload: envelope.payload } as ImportsQuery, context)); }
       return Promise.resolve(options.queryBus.execute({
         apiVersion: agentApiVersion,
@@ -944,6 +973,8 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
     receipt: (candidate) => idempotency.get(candidate.job.ownerClientId, candidate.job.gatewayRequestId),
     journal: (candidate) => journalEvidence(candidate.job.gatewayRequestId)
   });
+  // C13 materialization has a file journal that can safely return only verified running jobs to queued.
+  await options.globalApplication?.recoverMaterializations();
   await recovery.recover();
   await jobs.purgeExpired();
   options.onRecoveryStage?.('jobs_reconciled');
@@ -960,7 +991,19 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
       const journal = await journalEvidence(lease.job.gatewayRequestId);
       return Object.freeze({ ...(receipt ? { receiptId: receipt.receipt.receiptId } : {}), ...(journal ? { operationJournalId: journal.operationId } : {}) });
     },
-    onError: options.jobExecutorOnError
+    onTerminalized: async (lease, status) => {
+      await options.globalApplication?.noteMaterializationJobTerminal(lease.job.jobId, status);
+      await options.jobExecutorOnTerminalized?.(lease, status);
+    },
+    onError: options.jobExecutorOnError,
+    isMaintenanceActive: () => options.coordinator.state !== 'writable',
+    pendingWrites: () => options.coordinator.pendingWrites,
+    writeActivityVersion: () => options.coordinator.writeActivityVersion,
+    waitForTransientFence: async () => {
+      do {
+        await options.coordinator.whenWritesIdle();
+      } while (options.coordinator.state === 'writable' && options.coordinator.pendingWrites > 0);
+    }
   });
   if (await jobs.hasQueued()) jobExecutor.start();
 

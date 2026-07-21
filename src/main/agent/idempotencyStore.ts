@@ -41,7 +41,7 @@ export interface IdempotencyAdmissionRequest {
   readonly catalog: CatalogIdentity;
   readonly risk: RiskLevel;
   readonly policyVersion?: string;
-  readonly r4?: Omit<R4ReservationRequest, 'clientId' | 'requestId' | 'operation' | 'payloadHash' | 'affectedSetHash' | 'baseVersion' | 'catalog'>;
+  readonly r4?: Omit<R4ReservationRequest, 'clientId' | 'requestId' | 'affectedSetHash' | 'baseVersion' | 'catalog'>;
 }
 
 export interface PreparedExecutionReceipt {
@@ -216,8 +216,10 @@ export class IdempotencyStore {
         let reservation: R4Reservation | undefined;
         if (request.r4) {
           reservation = this.workflows.reserveR4GrantInTransaction(database, scope, {
-            ...request.r4, clientId: request.clientId, requestId: request.requestId, operation: request.operation,
-            payloadHash, affectedSetHash: affectedSetHash!, baseVersion: request.baseVersion!, catalog: request.catalog
+            ...request.r4, clientId: request.clientId, requestId: request.requestId,
+            operation: request.r4.operation,
+            payloadHash: request.r4.payloadHash,
+            affectedSetHash: affectedSetHash!, baseVersion: request.baseVersion!, catalog: request.catalog
           });
           database.run(`UPDATE agent_idempotency SET reservation_id = ?, grant_id = ?, r4_target_hash = ?, r4_recovery = ?,
             r4_max_affected_entities = ?, r4_reservation_expires_at = ? WHERE receipt_id = ?`, [

@@ -252,6 +252,53 @@ test('capability modes reject table-family violations and nested writes', async 
   assert.deepEqual(diskRows('SELECT id, status FROM agent_receipts'), [['control-only', 'completed']]);
 });
 
+test('stable mutation trackers are reused and rebuild only after tracker schema changes', async () => {
+  let database;
+  let triggerCreates = 0;
+  let triggerDrops = 0;
+  const coordinator = createCoordinator({
+    captureDatabase(value) {
+      database = value;
+      const exec = value.exec.bind(value);
+      value.exec = (sql, ...args) => {
+        const statement = String(sql);
+        if (/CREATE TEMP TRIGGER coordinator_track_/.test(statement)) triggerCreates += 1;
+        if (/DROP TRIGGER temp\."coordinator_track_/.test(statement)) triggerDrops += 1;
+        return exec(sql, ...args);
+      };
+    }
+  });
+  const control = coordinatorModule.createDatabaseCoordinatorControlCapability(coordinator);
+  const business = coordinatorModule.createDatabaseCoordinatorBusinessCapability(coordinator);
+  const noOp = (requestId) => coordinator.executeControlWrite(control, {
+    requestId,
+    execute: () => ({ changed: false, value: undefined })
+  });
+
+  await noOp('tracker-initialize');
+  const initialCreates = triggerCreates;
+  const initialTempSchema = database.exec('PRAGMA temp.schema_version')[0].values[0][0];
+  await noOp('tracker-reuse-1');
+  await noOp('tracker-reuse-2');
+  assert.equal(triggerCreates, initialCreates);
+  assert.equal(triggerDrops, 0);
+  assert.equal(database.exec('PRAGMA temp.schema_version')[0].values[0][0], initialTempSchema);
+
+  database.exec('DROP TRIGGER temp.coordinator_track_0_insert');
+  const createsBeforeRepair = triggerCreates;
+  await noOp('tracker-repair');
+  assert.ok(triggerCreates > createsBeforeRepair);
+  assert.equal(database.exec("SELECT COUNT(*) FROM sqlite_temp_master WHERE type='trigger' AND name LIKE 'coordinator_track_%'")[0].values[0][0], 9);
+
+  await assert.rejects(coordinator.executeBusinessWrite(business, {
+    requestId: 'tracker-policy-violation', concurrency: 'none',
+    execute(connection) {
+      connection.run("INSERT INTO agent_receipts (id, status) VALUES ('tracker-forbidden', 'completed')");
+      return { changed: true, value: undefined };
+    }
+  }), /Business handlers may mutate only domain tables/);
+});
+
 test('reconciles tracker triggers after an authorized table-set change', async () => {
   let database;
   let activeDatabase;

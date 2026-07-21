@@ -21,6 +21,7 @@ import {
 } from '../../shared/agent/v1/gatewayContracts';
 import {
   assertCatalogIdentity,
+  hashCanonicalJson,
   validateAgentCommandEnvelope,
   validateAgentQueryEnvelope
 } from '../../shared/agent/v1/gatewaySchemas';
@@ -123,7 +124,8 @@ export interface AgentGatewayDependencies {
     context: TrustedExecutionContext,
     prepared: PreparedExecutionReceipt,
     approval?: GatewayApprovalAuthority,
-    changeSet?: ChangeSetApplyBinding
+    changeSet?: ChangeSetApplyBinding,
+    principal?: AgentPrincipal
   ): Promise<CommandResult>;
   dispatchManagement(
     envelope: AgentCommandEnvelope,
@@ -282,6 +284,12 @@ async function executeGateway(
     plan = await runtime.dependencies.resolveCommand(envelope, descriptor, principal);
     workflowReference = effectiveWorkflowReference(envelope);
     const r4Grant = await runtime.dependencies.workflows.getR4Grant(workflowReference);
+    let policyR4Grant = r4Grant;
+    if (r4Grant?.status === 'consumed') {
+      const { consumedAt, ...activeReplayGrant } = r4Grant;
+      void consumedAt;
+      policyR4Grant = Object.freeze({ ...activeReplayGrant, status: 'active' as const });
+    }
     decision = runtime.dependencies.evaluatePolicy({
       principal,
       descriptor: plan.descriptor,
@@ -290,7 +298,7 @@ async function executeGateway(
       settings: authorization.settings,
       ...(plan.localApprovedChangeSet ? { localApprovedChangeSet: true as const } : {}),
       ...(plan.workflowResume ? { workflowResume: true as const } : {}),
-      ...(r4Grant ? { r4Grant } : {})
+      ...(policyR4Grant ? { r4Grant: policyR4Grant } : {})
     });
   } catch (error) {
     return auditDenial(runtime, principal, envelope, error, descriptor);
@@ -328,6 +336,8 @@ async function executeGateway(
         ? {
             r4: {
               grantId: workflowReference.id,
+              operation: plan.operation,
+              payloadHash: hashCanonicalJson(plan.payload),
               targetHash: plan.state.targetHash!,
               recovery: plan.descriptor.recovery,
               maxAffectedEntities: plan.descriptor.policyBounds.maxAffectedEntities,
@@ -355,7 +365,7 @@ async function executeGateway(
   try {
     const result = plan.dispatch === 'management'
       ? await runtime.dependencies.dispatchManagement(envelope, principal, decision, admission.prepared)
-      : await runtime.dependencies.dispatchCommand(plan, context, admission.prepared, approval, changeSet);
+      : await runtime.dependencies.dispatchCommand(plan, context, admission.prepared, approval, changeSet, principal);
     return Object.freeze({ kind: 'completed' as const, result });
   } catch (error) {
     if (error instanceof AgentError && (error.code === 'PERSISTENCE_INDETERMINATE' || error.code === 'RECOVERY_FENCE')) {

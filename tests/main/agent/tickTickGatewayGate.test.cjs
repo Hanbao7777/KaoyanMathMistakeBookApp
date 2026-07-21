@@ -50,11 +50,11 @@ test('migrated Renderer task and focus channels have one authenticated Gateway p
   ]) assert.equal(adapter.includes(forbidden), false, `Forbidden Renderer bypass surface: ${forbidden}`);
 });
 
-test('Renderer business allowlist exactly equals accepted B6, B7, C9, C10, C11, and C12 adapter operations', () => {
+test('Renderer business allowlist exactly equals accepted B6-B7 and C9-C13 adapter operations', () => {
   const block = authentication.match(/migratedRendererBusinessOperations = Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(block);
   const allowlist = [...block[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations, ...c11Operations, ...c12Operations]);
+  assert.deepEqual(allowlist, [...b6Operations, ...b7Operations, ...c9Operations, ...c10Operations, ...c11Operations, ...c12Operations, 'backups.list', 'backups.create', 'exports.create', 'exports.get']);
   for (const operation of b7Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   for (const operation of c12Operations) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
   assert.equal(allowlist.includes('ticktick.settings.save'), false);

@@ -58,8 +58,8 @@ export async function createImportBatch(input: {
   runSql(
     database,
     `INSERT INTO import_batches (
-      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'active', ?, NULL)`,
+      id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'local-renderer-management', ?, ?, ?, ?, ?, 0, 0, 'active', ?, NULL)`,
     [
       id,
       input.type,

@@ -10,6 +10,7 @@ import {
   changeSetStatuses,
   detailLevels,
   gatewayBusinessCommandTypes,
+  gatewayInternalJobCommandTypes,
   gatewayBusinessQueryTypes,
   gatewayManagementCommandTypes,
   gatewayManagementQueryTypes,
@@ -394,13 +395,13 @@ export function validateAgentCommandEnvelope(value: unknown): asserts value is A
   required(envelope, ['apiVersion', 'kind', 'operation', 'payload', 'requestId', 'catalog'], 'envelope');
   validateApiVersion(envelope.apiVersion, 'envelope.apiVersion');
   if (envelope.kind !== 'agent-command') fail('envelope.kind');
-  oneOf(envelope.operation, [...gatewayWorkflowCommandTypes, ...gatewayManagementCommandTypes, ...gatewayBusinessCommandTypes], 'envelope.operation');
+  oneOf(envelope.operation, [...gatewayWorkflowCommandTypes, ...gatewayManagementCommandTypes, ...gatewayBusinessCommandTypes, ...gatewayInternalJobCommandTypes], 'envelope.operation');
   validateJsonObject(envelope.payload, 'envelope.payload');
   rejectCredentialMaterial(envelope.payload, 'envelope.payload');
   uuid(envelope.requestId, 'envelope.requestId');
   validateCatalogIdentity(envelope.catalog, 'envelope.catalog');
   if (envelope.expectedVersion !== undefined) validateGatewayDataVersion(envelope.expectedVersion, 'envelope.expectedVersion');
-  if ((gatewayBusinessCommandTypes as readonly string[]).includes(envelope.operation as string) && envelope.expectedVersion === undefined) {
+  if ([...gatewayBusinessCommandTypes, ...gatewayInternalJobCommandTypes].includes(envelope.operation as never) && envelope.expectedVersion === undefined) {
     fail('envelope.expectedVersion');
   }
   if (envelope.workflow !== undefined) validateWorkflowReference(envelope.workflow, 'envelope.workflow');
@@ -673,7 +674,7 @@ export function validateOperationDescriptor(value: unknown, path = 'descriptor')
   oneOf(result.idempotency, idempotencyRequirements, `${path}.idempotency`); oneOf(result.recovery, recoveryRequirements, `${path}.recovery`);
   oneOf(result.riskResolver, riskResolvers, `${path}.riskResolver`); validatePolicyBounds(result.policyBounds, `${path}.policyBounds`);
   boolean(result.rendererManagement, `${path}.rendererManagement`); boolean(result.allowedWhenExternalControlDisabled, `${path}.allowedWhenExternalControlDisabled`);
-  const isCommand = (gatewayWorkflowCommandTypes as readonly string[]).includes(result.name as string) || (gatewayManagementCommandTypes as readonly string[]).includes(result.name as string) || (gatewayBusinessCommandTypes as readonly string[]).includes(result.name as string);
+  const isCommand = (gatewayWorkflowCommandTypes as readonly string[]).includes(result.name as string) || (gatewayManagementCommandTypes as readonly string[]).includes(result.name as string) || (gatewayBusinessCommandTypes as readonly string[]).includes(result.name as string) || (gatewayInternalJobCommandTypes as readonly string[]).includes(result.name as string);
   if ((result.kind === 'command') !== isCommand) fail(`${path}.kind`);
   if (result.kind === 'command' && result.idempotency !== 'required') fail(`${path}.idempotency`);
   if (result.kind === 'query' && result.sideEffects !== undefined && (result.sideEffects as readonly unknown[]).length > 0) fail(`${path}.sideEffects`);

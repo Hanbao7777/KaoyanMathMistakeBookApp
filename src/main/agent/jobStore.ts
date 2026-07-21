@@ -47,6 +47,11 @@ export interface JobLease {
   readonly principalClaims: AgentPrincipalClaims;
 }
 
+export interface JobCreateIdentity {
+  readonly jobId: string;
+  readonly gatewayRequestId: string;
+}
+
 export interface JobRecoveryCandidate {
   readonly job: AgentJob;
   readonly target: JobCreateInput['target'];
@@ -68,6 +73,42 @@ interface PreparedJobResult {
 }
 
 const HASH = /^sha256-v1:[0-9a-f]{64}$/;
+export const localRendererJobSessionId = '00000000-0000-4000-8000-000000000013';
+const localRendererJobClientId = 'local-renderer-management';
+const localRendererJobOperations = new Set<OperationName>(['backups.materialize', 'exports.materialize']);
+const localRendererCredentialFingerprint = `sha256-v1:${createHash('sha256').update('kaoyan-local-renderer-job-client').digest('hex')}`;
+const localRendererSessionFingerprint = `sha256-v1:${createHash('sha256').update('kaoyan-local-renderer-job-session').digest('hex')}`;
+const localRendererSessionExpiresAt = '9999-12-31T23:59:59.999Z';
+
+function isLocalRendererJob(job: Pick<AgentJob, 'ownerClientId' | 'creatingSessionId' | 'operation'>): boolean {
+  return job.ownerClientId === localRendererJobClientId && job.creatingSessionId === localRendererJobSessionId && localRendererJobOperations.has(job.operation);
+}
+
+function isLocalRendererSentinel(job: Pick<AgentJob, 'ownerClientId' | 'creatingSessionId'>): boolean {
+  return job.ownerClientId === localRendererJobClientId || job.creatingSessionId === localRendererJobSessionId;
+}
+
+function isCanonicalFutureTimestamp(value: unknown, now: string): boolean {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) && new Date(value).toISOString() === value && Date.parse(value) > Date.parse(now);
+}
+
+function isVerifiedLocalRendererIdentity(row: Record<string, unknown>, now: string): boolean {
+  return row.subject_id === localRendererJobClientId && row.display_name === 'Local renderer job' && row.trust === 'full_control' && row.revoked_at === null &&
+    row.client_credential_fingerprint === localRendererCredentialFingerprint && row.session_client_id === localRendererJobClientId && row.session_app_instance_id === 'local-renderer-job' &&
+    row.session_fingerprint === localRendererSessionFingerprint && row.credential_fingerprint === localRendererCredentialFingerprint && row.terminated_at === null &&
+    row.session_expires_at === localRendererSessionExpiresAt && isCanonicalFutureTimestamp(row.session_expires_at, now);
+}
+
+function ensureLocalRendererJobIdentity(database: Database, timestamp: string): void {
+  database.run(`INSERT OR IGNORE INTO agent_clients (client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at)
+    VALUES (?, ?, ?, ?, 'full_control', ?, ?)`, [localRendererJobClientId, localRendererJobClientId, 'Local renderer job', localRendererCredentialFingerprint, timestamp, timestamp]);
+  const client = one(database, 'SELECT credential_fingerprint, trust, revoked_at FROM agent_clients WHERE client_id=?', [localRendererJobClientId]);
+  if (!client || client.credential_fingerprint !== localRendererCredentialFingerprint || client.trust !== 'full_control' || client.revoked_at !== null) throw new AgentError('RECOVERY_FENCE');
+  database.run(`INSERT OR IGNORE INTO agent_sessions (session_id, client_id, app_instance_id, session_fingerprint, credential_fingerprint, created_at, expires_at, last_active_at)
+    VALUES (?, ?, 'local-renderer-job', ?, ?, ?, ?, ?)`, [localRendererJobSessionId, localRendererJobClientId, localRendererSessionFingerprint, localRendererCredentialFingerprint, timestamp, localRendererSessionExpiresAt, timestamp]);
+  const session = one(database, 'SELECT client_id, session_fingerprint, credential_fingerprint, terminated_at FROM agent_sessions WHERE session_id=?', [localRendererJobSessionId]);
+  if (!session || session.client_id !== localRendererJobClientId || session.session_fingerprint !== localRendererSessionFingerprint || session.credential_fingerprint !== localRendererCredentialFingerprint || session.terminated_at !== null) throw new AgentError('RECOVERY_FENCE');
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const terminalStatuses = new Set<JobStatus>(['completed', 'failed', 'cancelled', 'interrupted']);
 
@@ -187,17 +228,32 @@ export class JobStore {
     this.hook = dependencies.hook;
   }
 
-  createInTransaction(database: Database, scope: DatabaseMutationScope, input: JobCreateInput, principal: AgentPrincipal): DatabaseMutationResult<AgentJob> {
+  createInTransaction(database: Database, scope: DatabaseMutationScope, input: JobCreateInput, principal: AgentPrincipal, identity?: JobCreateIdentity): DatabaseMutationResult<AgentJob> {
     assertDatabaseMutationScope(scope, database);
-    if (!principal.sessionId || principal.renderer) throw new AgentError('SCOPE_DENIED');
+    if (principal.renderer && principal.clientId !== localRendererJobClientId) throw new AgentError('SCOPE_DENIED');
+    if (principal.renderer && !localRendererJobOperations.has(input.target.operation)) throw new AgentError('SCOPE_DENIED');
+    const creatingSessionId = principal.renderer ? localRendererJobSessionId : principal.sessionId;
+    if (!creatingSessionId) throw new AgentError('SCOPE_DENIED');
     const descriptor = resolveOperationDescriptor(input.target.operation);
     if (descriptor.domain === 'management' || descriptor.kind !== input.target.kind || input.target.operation.startsWith('jobs.')) throw new AgentError('VALIDATION_ERROR', { field: 'target.operation' });
     if (input.target.kind === 'command' && !input.target.expectedVersion) throw new AgentError('VALIDATION_ERROR', { field: 'target.expectedVersion' });
     if (input.target.kind === 'query' && input.target.expectedVersion) throw new AgentError('VALIDATION_ERROR', { field: 'target.expectedVersion' });
     const createdAt = safeTimestamp(this.now());
-    const jobId = this.uuid().toLowerCase();
-    const gatewayRequestId = this.uuid().toLowerCase();
+    if (principal.renderer) ensureLocalRendererJobIdentity(database, createdAt);
+    const jobId = (identity?.jobId ?? this.uuid()).toLowerCase();
+    const gatewayRequestId = (identity?.gatewayRequestId ?? this.uuid()).toLowerCase();
+    if (!UUID.test(jobId) || !UUID.test(gatewayRequestId)) throw new AgentError('VALIDATION_ERROR', { field: 'jobIdentity' });
     const inputJson = canonicalizeJson(input.target.payload);
+    const inputHash = hashCanonicalJson(input.target.payload);
+    const existing = one(database, 'SELECT * FROM agent_jobs WHERE gateway_request_id = ?', [gatewayRequestId]);
+    if (existing) {
+      const current = jobFromRow(existing);
+      if (current.jobId !== jobId || current.ownerClientId !== principal.clientId || current.creatingSessionId !== creatingSessionId ||
+          current.operation !== input.target.operation || current.operationKind !== input.target.kind || current.inputHash !== inputHash ||
+          (input.target.expectedVersion?.dataEpoch ?? undefined) !== (existing.expected_data_epoch ?? undefined) ||
+          (input.target.expectedVersion?.dataRevision ?? undefined) !== (existing.expected_data_revision ?? undefined)) throw new AgentError('IDEMPOTENCY_CONFLICT');
+      return { changed: false, value: current };
+    }
     const retentionClass = input.retentionClass ?? 'ordinary_7d';
     const defaultRetainUntil = addDays(createdAt, retentionClass === 'protected_30d' ? 30 : 7);
     const requestedRetainUntil = input.ttlMs ? new Date(Date.parse(createdAt) + input.ttlMs).toISOString() : defaultRetainUntil;
@@ -207,7 +263,7 @@ export class JobStore {
       input_json, input_hash, expected_data_epoch, expected_data_revision, workflow_kind, workflow_id,
       gateway_request_id, status, progress, attempt, created_at, updated_at, retention_class, retain_until
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', 0, 0, ?, ?, ?, ?)`, [
-      jobId, principal.clientId, principal.sessionId, input.target.operation, input.target.kind,
+      jobId, principal.clientId, creatingSessionId, input.target.operation, input.target.kind,
       operationCatalogIdentity.version, operationCatalogIdentity.hash, inputJson, hashCanonicalJson(input.target.payload),
       input.target.expectedVersion?.dataEpoch ?? null, input.target.expectedVersion?.dataRevision ?? null,
       input.target.workflow?.kind ?? null, input.target.workflow?.id ?? null, gatewayRequestId,
@@ -284,16 +340,31 @@ export class JobStore {
       let changed = false;
       while (true) {
         const row = one(database, `SELECT j.*, c.subject_id, c.display_name, c.trust, c.revoked_at, c.credential_fingerprint AS client_credential_fingerprint,
-          s.client_id AS session_client_id, s.credential_fingerprint, s.expires_at AS session_expires_at, s.terminated_at
+          s.client_id AS session_client_id, s.app_instance_id AS session_app_instance_id, s.session_fingerprint, s.credential_fingerprint, s.expires_at AS session_expires_at, s.terminated_at
           FROM agent_jobs j LEFT JOIN agent_sessions s ON s.session_id = j.creating_session_id
           LEFT JOIN agent_clients c ON c.client_id = j.owner_client_id
           WHERE j.status = 'queued' ORDER BY j.created_at, j.job_id LIMIT 1`);
         if (!row) return { changed, value: null };
         const queuedJob = jobFromRow(row);
-        const invalidOwner = typeof row.subject_id !== 'string' || typeof row.display_name !== 'string' ||
-          !HASH.test(String(row.client_credential_fingerprint)) || row.revoked_at !== null;
-        const invalidSession = row.session_client_id !== queuedJob.ownerClientId ||
-          !HASH.test(String(row.credential_fingerprint)) || row.credential_fingerprint !== row.client_credential_fingerprint;
+        const localRendererJob = isLocalRendererJob(queuedJob);
+        if (isLocalRendererSentinel(queuedJob) && !localRendererJob) {
+          const fenced = serializeAgentError(new AgentError('RECOVERY_FENCE'));
+          database.run(`UPDATE agent_jobs SET status = 'failed', progress = 100, error_code = ?, error_message = ?, updated_at = ?, terminal_at = ?
+            WHERE job_id = ? AND status = 'queued'`, [fenced.code, fenced.message, timestamp, timestamp, queuedJob.jobId]);
+          changed = database.getRowsModified() === 1 || changed;
+          continue;
+        }
+        if (localRendererJob && !isVerifiedLocalRendererIdentity(row, timestamp)) {
+          const fenced = serializeAgentError(new AgentError('RECOVERY_FENCE'));
+          database.run(`UPDATE agent_jobs SET status = 'failed', progress = 100, error_code = ?, error_message = ?, updated_at = ?, terminal_at = ?
+            WHERE job_id = ? AND status = 'queued'`, [fenced.code, fenced.message, timestamp, timestamp, queuedJob.jobId]);
+          changed = database.getRowsModified() === 1 || changed;
+          continue;
+        }
+        const invalidOwner = !localRendererJob && (typeof row.subject_id !== 'string' || typeof row.display_name !== 'string' ||
+          !HASH.test(String(row.client_credential_fingerprint)) || row.revoked_at !== null);
+        const invalidSession = !localRendererJob && (row.session_client_id !== queuedJob.ownerClientId ||
+          !HASH.test(String(row.credential_fingerprint)) || row.credential_fingerprint !== row.client_credential_fingerprint);
         if (invalidOwner || invalidSession) {
           const denied = serializeAgentError(new AgentError('CLIENT_REVOKED'));
           database.run(`UPDATE agent_jobs SET status = 'failed', progress = 100, error_code = ?, error_message = ?, updated_at = ?, terminal_at = ?
@@ -301,7 +372,9 @@ export class JobStore {
           changed = database.getRowsModified() === 1 || changed;
           continue;
         }
-        const scopes = all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [queuedJob.ownerClientId]).map((entry) => entry.scope as AgentScope);
+        const scopes = localRendererJob
+          ? resolveOperationDescriptor(queuedJob.operation).requiredScopes
+          : all(database, 'SELECT scope FROM agent_client_scopes WHERE client_id = ? ORDER BY scope', [queuedJob.ownerClientId]).map((entry) => entry.scope as AgentScope);
         if (scopes.some((scope) => !(agentScopes as readonly string[]).includes(scope)) || !(trustProfiles as readonly unknown[]).includes(row.trust)) throw new AgentError('RECOVERY_FENCE');
         database.run(`UPDATE agent_jobs SET status = 'running', progress = 5, lease_token = ?, lease_expires_at = ?, attempt = attempt + 1,
           started_at = COALESCE(started_at, ?), updated_at = ? WHERE job_id = ? AND status = 'queued'`, [leaseToken, expiresAt, timestamp, timestamp, queuedJob.jobId]);
@@ -309,8 +382,8 @@ export class JobStore {
         const leasedRow = one(database, 'SELECT * FROM agent_jobs WHERE job_id = ?', [queuedJob.jobId])!;
         return { changed: true, value: Object.freeze({ job: jobFromRow(leasedRow), leaseToken, target: targetFromRow(leasedRow),
           principalClaims: Object.freeze({ apiVersion: agentApiVersion, kind: 'agent-principal' as const, clientId: queuedJob.ownerClientId,
-            subjectId: String(row.subject_id), displayName: String(row.display_name), scopes: Object.freeze(scopes), trust: row.trust as TrustProfile,
-            credentialBinding: String(row.credential_fingerprint), sessionId: queuedJob.creatingSessionId, authenticatedAt: timestamp, renderer: false }) }) };
+            subjectId: localRendererJob ? localRendererJobClientId : String(row.subject_id), displayName: localRendererJob ? 'Local renderer job' : String(row.display_name), scopes: Object.freeze(scopes), trust: localRendererJob ? 'full_control' : row.trust as TrustProfile,
+            credentialBinding: localRendererJob ? 'local-first-party-job' : String(row.credential_fingerprint), sessionId: queuedJob.creatingSessionId, authenticatedAt: timestamp, renderer: false }) }) };
       }
     }});
     return result.value;
@@ -385,6 +458,21 @@ export class JobStore {
       if (database.getRowsModified() !== 1) throw new AgentError('RECOVERY_FENCE');
       return { changed: true, value: undefined };
     }});
+  }
+
+  /** C13 recovery may resume only its catalog-private materialization targets. */
+  async requeueRecoveredMaterialization(jobId: string): Promise<'queued' | 'completed'> {
+    return (await this.executeControlWrite({ requestId: `agent-job-materialization-recover-${jobId}`, execute: (database) => {
+      const row = one(database, 'SELECT operation, status FROM agent_jobs WHERE job_id = ?', [jobId]);
+      if (!row || !['backups.materialize', 'exports.materialize'].includes(String(row.operation))) throw new AgentError('RECOVERY_FENCE');
+      if (row.status === 'queued') return { changed: false, value: 'queued' as const };
+      if (row.status === 'completed') return { changed: false, value: 'completed' as const };
+      if (row.status !== 'running') throw new AgentError('RECOVERY_FENCE');
+      database.run(`UPDATE agent_jobs SET status = 'queued', progress = 0, lease_token = NULL, lease_expires_at = NULL,
+        updated_at = ? WHERE job_id = ? AND status = 'running'`, [safeTimestamp(this.now()), jobId]);
+      if (database.getRowsModified() !== 1) throw new AgentError('RECOVERY_FENCE');
+      return { changed: true, value: 'queued' as const };
+    }})).value;
   }
 
   async bindEvidence(jobId: string, leaseToken: string, receiptId?: string, operationJournalId?: string): Promise<void> {

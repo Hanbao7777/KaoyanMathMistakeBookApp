@@ -346,8 +346,8 @@ function createKnowledgeImportBatch(database: Database, scope: DatabaseMutationS
     database,
     scope,
     `INSERT INTO import_batches (
-      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-    ) VALUES (?, 'knowledge_map', ?, ?, ?, ?, 0, 0, 'active', ?, NULL)`,
+      id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'local-renderer-management', 'knowledge_map', ?, ?, ?, ?, 0, 0, 'active', ?, NULL)`,
     [input.id, input.name, input.sourceFileName, input.source, nowIso(), JSON.stringify(input.metadata)]
   );
 }

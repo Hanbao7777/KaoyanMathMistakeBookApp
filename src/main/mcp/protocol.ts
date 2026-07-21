@@ -108,6 +108,7 @@ function readResourceUri(uri: string): { readonly descriptor: McpRegistryDescrip
   if (uri === 'kaoyan://study/week') return { descriptor: mcpV1RegistryByName['study.week.view'], payload: {} };
   if (uri === 'kaoyan://ticktick/lists') return { descriptor: mcpV1RegistryByName['ticktick.lists.view'], payload: {} };
   if (uri === 'kaoyan://ticktick/habits') return { descriptor: mcpV1RegistryByName['ticktick.habits.view'], payload: {} };
+  if (uri === 'kaoyan://backups') return { descriptor: mcpV1RegistryByName['backups.view'], payload: { pageSize: 50 } };
   const calendar = uri.match(/^kaoyan:\/\/ticktick\/calendar\/(\d{4})\/(\d{1,2})$/);
   if (calendar) return { descriptor: mcpV1RegistryByName['ticktick.calendar.view'], payload: { year: Number(calendar[1]), month: Number(calendar[2]) } };
   const bridges = uri.match(/^kaoyan:\/\/ticktick\/bridges\/([^/]+)$/);
@@ -122,6 +123,8 @@ function readResourceUri(uri: string): { readonly descriptor: McpRegistryDescrip
   if (task && task[1] !== 'today') return { descriptor: mcpV1RegistryByName['tasks.view'], payload: { taskId: decodeURIComponent(task[1]) } };
   const draft = uri.match(/^kaoyan:\/\/imports\/([A-Za-z0-9_-]+)$/);
   if (draft) return { descriptor: mcpV1RegistryByName['imports.view'], payload: { draftId: draft[1] } };
+  const exported = uri.match(/^kaoyan:\/\/exports\/([A-Za-z][A-Za-z0-9_-]{0,199})$/);
+  if (exported) return { descriptor: mcpV1RegistryByName['exports.view'], payload: { exportId: exported[1] } };
   throw new AgentError('HANDLER_NOT_FOUND');
 }
 

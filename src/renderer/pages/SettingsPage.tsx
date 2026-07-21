@@ -1,6 +1,7 @@
 ﻿import { Bot, Database, Download, FileSpreadsheet, FolderCog, FolderOpen, HardDriveDownload, Info, RotateCcw, ShieldCheck, Trash2, Upload } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { AppPaths, DatabaseBackupInfo, DeepSeekSettings, ImportBatch, ImportBatchDetail, LegacyExternalQuestionGroup, StudySettings } from '../../shared/types';
+import type { ManagedBackup } from '../../shared/api';
 import { useModal } from '../components/Modal';
 import { useToast } from '../components/Toast';
 
@@ -39,14 +40,14 @@ const T = {
   migrateConfirm: '\u662f\u5426\u8fc1\u79fb\u5df2\u6709\u6570\u636e\u5e93\u3001\u56fe\u7247\u3001\u5bfc\u51fa\u548c\u5907\u4efd\u6587\u4ef6\u5230\u65b0\u4f4d\u7f6e\uff1f'
 };
 
-function backupTypeLabel(type: DatabaseBackupInfo['type']) {
+function backupTypeLabel(type: string | undefined) {
   if (type === 'auto') return T.auto;
   if (type === 'before_restore') return T.beforeRestore;
   if (type === 'before_delete_import') return T.beforeDeleteImport;
   return T.manual;
 }
 
-function backupTypeClass(type: DatabaseBackupInfo['type']) {
+function backupTypeClass(type: string | undefined) {
   if (type === 'auto') return 'type-auto';
   if (type === 'before_restore') return 'type-before-restore';
   if (type === 'before_delete_import') return 'type-before-restore';
@@ -61,7 +62,8 @@ export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () =>
   const { toast } = useToast();
   const modal = useModal();
   const [paths, setPaths] = useState<AppPaths | null>(null);
-  const [backups, setBackups] = useState<DatabaseBackupInfo[]>([]);
+  const [backups, setBackups] = useState<readonly ManagedBackup[]>([]);
+  const [legacyBackups, setLegacyBackups] = useState<DatabaseBackupInfo[]>([]);
   const [batches, setBatches] = useState<ImportBatch[]>([]);
   const [legacyGroups, setLegacyGroups] = useState<LegacyExternalQuestionGroup[]>([]);
   const [selectedBatch, setSelectedBatch] = useState<ImportBatchDetail | null>(null);
@@ -75,9 +77,10 @@ export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () =>
   const [pythonStatus, setPythonStatus] = useState<'unknown' | 'checking' | 'ok' | 'error'>('unknown');
 
   async function load() {
-    const [nextPaths, nextBackups, nextBatches, nextLegacyGroups, nextStudySettings, nextDeepSeek] = await Promise.all([
+    const [nextPaths, nextBackups, nextLegacyBackups, nextBatches, nextLegacyGroups, nextStudySettings, nextDeepSeek] = await Promise.all([
       window.api.getPaths(),
       window.api.listDatabaseBackups(),
+      window.api.listLegacyDatabaseBackups(),
       window.api.listImportBatches(),
       window.api.listLegacyExternalQuestionGroups(),
       window.api.getStudySettings(),
@@ -85,6 +88,7 @@ export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () =>
     ]);
     setPaths(nextPaths);
     setBackups(nextBackups);
+    setLegacyBackups(nextLegacyBackups);
     setBatches(nextBatches);
     setLegacyGroups(nextLegacyGroups);
     setStudySettings(nextStudySettings);
@@ -135,8 +139,8 @@ export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () =>
   }
 
   async function createBackup() {
-    const result = await window.api.createDatabaseBackup('manual');
-    setMessage(`备份成功：${result.filePath}`);
+    const result = await window.api.createDatabaseBackup();
+    setMessage(`备份任务已创建：${result.assetId}`);
     await load();
   }
 
@@ -400,26 +404,33 @@ export function SettingsPage({ onOpenAgentControl }: { onOpenAgentControl: () =>
         <div className="backup-risk-note">
           恢复备份会覆盖当前数据库。恢复完成后建议重启 App，以确保所有页面重新加载最新数据。
         </div>
-        <h3>{T.backupList}</h3>
+        <h3>受管备份</h3>
         {backups.length ? (
           <div className="backup-list">
             {backups.map((backup) => (
-              <article className="backup-item" key={backup.fileName}>
+              <article className="backup-item" key={backup.assetId}>
                 <div>
-                  <strong>{backup.fileName}</strong>
+                  <strong>受管备份 {backup.assetId}</strong>
                   <span>
-                    <em className={`backup-type-badge ${backupTypeClass(backup.type)}`}>{backupTypeLabel(backup.type)}</em>
-                    {formatTime(backup.createdAt)} · {backup.sizeText}
+                    <em className={`backup-type-badge ${backupTypeClass(backup.metadata.backupKind)}`}>{backupTypeLabel(backup.metadata.backupKind)}</em>
+                    {formatTime(backup.createdAt)} · {backup.status}
                   </span>
-                </div>
-                <div className="backup-actions">
-                  <button className="secondary-button warning compact-button" type="button" onClick={() => restoreBackup(backup.fileName)}><RotateCcw size={14} />{T.restore}</button>
-                  <button className="secondary-button danger compact-button" type="button" onClick={() => deleteBackup(backup.fileName)}><Trash2 size={14} />{T.delete}</button>
                 </div>
               </article>
             ))}
           </div>
-        ) : <div className="settings-empty-state">{T.noBackups}</div>}
+        ) : <div className="settings-empty-state">暂无受管备份</div>}
+        <h3>本地旧版备份</h3>
+        {legacyBackups.length ? (
+          <div className="backup-list">
+            {legacyBackups.map((backup) => (
+              <article className="backup-item" key={backup.fileName}>
+                <div><strong>{backup.fileName}</strong><span><em className={`backup-type-badge ${backupTypeClass(backup.type)}`}>{backupTypeLabel(backup.type)}</em>{formatTime(backup.createdAt)} · {backup.sizeText}</span></div>
+                <div className="backup-actions"><button className="secondary-button warning compact-button" type="button" onClick={() => restoreBackup(backup.fileName)}><RotateCcw size={14} />{T.restore}</button><button className="secondary-button danger compact-button" type="button" onClick={() => deleteBackup(backup.fileName)}><Trash2 size={14} />{T.delete}</button></div>
+              </article>
+            ))}
+          </div>
+        ) : <div className="settings-empty-state">暂无本地旧版备份</div>}
       </section>
 
       <section className="settings-section import-history-panel">

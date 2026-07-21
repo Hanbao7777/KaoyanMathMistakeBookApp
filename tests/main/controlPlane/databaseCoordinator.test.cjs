@@ -141,6 +141,70 @@ test('serializes admitted writes in strict FIFO order', async () => {
   disk.close();
 });
 
+test('whenWritesIdle resolves after every currently admitted write settles', async () => {
+  const coordinator = createCoordinator();
+  const activityBefore = coordinator.writeActivityVersion;
+  const entered = deferred();
+  const release = deferred();
+  const first = coordinator.executeWrite(write('idle-1', async () => {
+    entered.resolve();
+    await release.promise;
+    return { changed: false, value: 1 };
+  }));
+  await entered.promise;
+  const second = coordinator.executeWrite(write('idle-2', async () => ({ changed: false, value: 2 })));
+  let idleSettled = false;
+  const idle = coordinator.whenWritesIdle().then(() => { idleSettled = true; });
+  await Promise.resolve();
+  assert.equal(idleSettled, false);
+  assert.equal(coordinator.pendingWrites, 2);
+  assert.equal(coordinator.writeActivityVersion, activityBefore + 2);
+
+  release.resolve();
+  await Promise.all([first, second, idle]);
+  assert.equal(idleSettled, true);
+  assert.equal(coordinator.pendingWrites, 0);
+});
+
+test('stable coordinator writes reuse the existing TEMP mutation tracker without trigger DDL', async () => {
+  const coordinator = createCoordinator();
+  const control = coordinatorModule.createDatabaseCoordinatorControlCapability(coordinator);
+  let database;
+  let triggerCreates = 0;
+  let triggerDrops = 0;
+  const noOp = (requestId) => coordinator.executeControlWrite(control, {
+    requestId,
+    execute(connection) {
+      if (!database) {
+        database = connection;
+        const exec = connection.exec.bind(connection);
+        connection.exec = (sql, ...args) => {
+          const statement = String(sql);
+          if (/CREATE TEMP TRIGGER coordinator_track_/.test(statement)) triggerCreates += 1;
+          if (/DROP TRIGGER temp\."coordinator_track_/.test(statement)) triggerDrops += 1;
+          return exec(sql, ...args);
+        };
+      }
+      return { changed: false, value: undefined };
+    }
+  });
+
+  await noOp('tracker-initialize');
+  const triggerDefinitions = database.exec(
+    "SELECT name, tbl_name, sql FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE 'coordinator_track_%' ORDER BY name"
+  )[0].values;
+  assert.equal(triggerDefinitions.length, 12);
+
+  await noOp('tracker-reuse-1');
+  await noOp('tracker-reuse-2');
+
+  assert.equal(triggerCreates, 0);
+  assert.equal(triggerDrops, 0);
+  assert.deepEqual(database.exec(
+    "SELECT name, tbl_name, sql FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE 'coordinator_track_%' ORDER BY name"
+  )[0].values, triggerDefinitions);
+});
+
 test('reopened coordinator connections preserve foreign-key cascades', async () => {
   const coordinator = createCoordinator();
   await coordinator.executeWrite(write('foreign-key-seed', (db) => {

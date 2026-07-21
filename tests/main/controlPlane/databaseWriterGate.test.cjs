@@ -183,6 +183,7 @@ function scanTransactionsAndMutators() {
       : [];
     const replacementRanges = name === 'src/main/services/databaseService.ts'
       ? [
+          functionRange(source, 'function insertSnapshotRow(', 'async function prepareReplacementManifest('),
           functionRange(source, 'async function replaceDatabaseIdentity', 'export async function exportData('),
           functionRange(source, 'export async function importData(', 'export async function createVerifiedDatabaseSnapshot('),
           functionRange(source, 'export async function restoreDatabaseFromFile(', 'export interface DataRootSwitchDependencies'),
@@ -205,7 +206,12 @@ function scanTransactionsAndMutators() {
       'src/main/agent/idempotencyStore.ts',
       'src/main/agent/jobStore.ts',
       'src/main/agent/sqlRows.ts',
-      'src/main/agent/workflows.ts'
+      'src/main/agent/workflows.ts',
+      'src/main/application/global/assetStore.ts',
+      'src/main/application/global/databaseImportJournal.ts',
+      'src/main/application/global/databaseRestoreJournal.ts',
+      'src/main/application/global/databaseClearJournal.ts',
+      'src/main/application/global/registerGlobal.ts'
     ]);
     for (const match of source.matchAll(/\.(run|exec|prepare)\s*\(|\b(?:BEGIN(?:\s+TRANSACTION)?|COMMIT|ROLLBACK)\b/g)) {
       const token = match[0];
@@ -214,6 +220,15 @@ function scanTransactionsAndMutators() {
       else if (inRanges(match.index, agentRegistryControlRanges)) classification = 'coordinator control invocation scope';
       else if (bootstrapRanges.some((range) => inRange(match.index, range))) classification = 'database bootstrap/migration';
       else if (replacementRanges.some((range) => inRange(match.index, range))) classification = 'coordinator-fenced identity replacement';
+      else if (name === 'src/main/services/databaseService.ts' && [
+        'copyRestorableTablesFromBackup', 'createDatabaseImportPackageDatabase', 'restoreSemanticLiveEvidence',
+        'databaseImportLiveSemanticEvidence', 'databaseClearLiveSemanticEvidence', 'terminalizeRecoveredDatabaseRestore',
+        'terminalizeRecoveredDatabaseImport', 'terminalizeRecoveredDatabaseClear', 'replaceManagedDatabaseClear',
+        'importBatchDeletionLiveSemanticEvidence', 'terminalizeRecoveredImportBatchDeletion', 'replaceManagedImportBatchDeletion',
+        'terminalizeRecoveredDataRootMigration'
+      ].includes(scopeName(source, match.index))) classification = 'coordinator-fenced identity replacement';
+      else if (name === 'src/main/application/global/importBatchDeletion.ts' && match.index < source.indexOf('function run')) classification = 'verified read-only database SQL call';
+      else if (name === 'src/main/application/global/importBatchDeletion.ts') classification = 'coordinator-fenced identity replacement';
       else if (repositoryScoped) classification = 'capability-scoped question repository';
       else if (name === 'src/main/application/knowledge/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped knowledge application';
       else if (name === 'src/main/application/study/commands.ts' && /assertDatabaseMutationScope\(scope, database\)/.test(source)) classification = 'capability-scoped study application';
@@ -224,10 +239,12 @@ function scanTransactionsAndMutators() {
       else if (name === 'src/main/database/schema.ts') classification = 'database bootstrap/migration schema';
       else if (agentDurabilityFiles.has(name) && scopeName(source, match.index) === 'one') classification = 'control ledger read helper';
       else if (agentDurabilityFiles.has(name) && scopeName(source, match.index) === 'all') classification = 'control ledger read helper';
+      else if (name === 'src/main/application/global/assetStore.ts' && scopeName(source, match.index) === 'rows') classification = 'control ledger read helper';
+      else if (name === 'src/main/application/global/registerGlobal.ts' && scopeName(source, match.index) === 'readRows') classification = 'control ledger read helper';
       else if (
         agentDurabilityFiles.has(name) &&
         /assertDatabaseMutationScope\(/.test(source) &&
-        (name === 'src/main/agent/executionReceipts.ts' || /executeControlWrite/.test(source))
+        (name === 'src/main/agent/executionReceipts.ts' || /executeControlWrite/.test(source) || name === 'src/main/application/global/assetStore.ts' || name === 'src/main/application/global/databaseRestoreJournal.ts')
       ) classification = 'coordinator-scoped agent durability collaborator';
       else if (name === 'src/main/services/bridgeService.ts' && scopeName(source, match.index) === 'getOrCreateDefaultList') classification = 'coordinator-only bridge helper';
       else if (name === 'src/main/services/studySupervisorService.ts' && scopeName(source, match.index) === 'ensureColumn') classification = 'coordinator-only study bootstrap helper';
@@ -281,7 +298,7 @@ test('raw persistence has only its separately classified compatibility definitio
   const occurrences = scanPersistence();
   assert.deepEqual(occurrences, [{
     file: 'src/main/services/databaseService.ts',
-    line: 244,
+     line: 269,
     classification: 'unused compatibility export definition'
   }]);
 });
@@ -290,7 +307,7 @@ test('mutable database acquisition is confined to evidence-backed reads', () => 
   const findings = scanMutableAcquisitions();
   const unclassified = findings.filter((entry) => !entry.classification);
   assert.deepEqual(unclassified, [], `Mutable getDatabase acquisition outside a read-only scope:\n${JSON.stringify(unclassified, null, 2)}`);
-  assert.equal(findings.length, 17);
+   assert.equal(findings.length, 17);
 });
 
 test('transactions and direct database mutators are bootstrap, replacement, or coordinator-contained', () => {
@@ -306,22 +323,22 @@ test('transactions and direct database mutators are bootstrap, replacement, or c
     'capability-scoped question repository': 2,
       'capability-scoped knowledge application': 2,
       'capability-scoped study application': 2,
-    'control ledger read helper': 2,
+     'control ledger read helper': 3,
     'coordinator-only bridge helper': 2,
     'coordinator-only study bootstrap helper': 1,
     'coordinator control invocation scope': 7,
     'coordinator invocation scope': 44,
-    'coordinator transaction/revision primitive': 24,
-    'coordinator-scoped agent durability collaborator': 42,
+    'coordinator transaction/revision primitive': 28,
+    'coordinator-scoped agent durability collaborator': 52,
     'coordinator-scoped registry mutation seam': 14,
-    'coordinator-fenced identity replacement': 16,
-    'database bootstrap/migration': 39,
+    'coordinator-fenced identity replacement': 56,
+    'database bootstrap/migration': 51,
     'database bootstrap/migration schema': 4,
     'imports read helper': 1,
     'imports journal coordinator': 1,
     'scope-asserting mutation helper': 3,
     'validated read-only query facade': 1,
-    'verified read-only database SQL call': 11
+      'verified read-only database SQL call': 13
   });
 });
 

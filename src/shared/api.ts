@@ -99,6 +99,10 @@ import type {
 } from './agent/v1/gatewayContracts';
 import type { PairingRequest, PairingStatus, PairingTargetRequest } from './mcp/v1/pairingContracts';
 
+export interface ManagedGlobalJob { readonly assetId: string; readonly jobId: string; readonly status: 'intent'; }
+export interface ManagedBackup { readonly assetId: string; readonly kind: 'backup'; readonly status: 'intent' | 'staged' | 'published' | 'quarantined' | 'failed' | 'needs_recovery'; readonly metadata: Readonly<{ readonly backupKind?: 'manual' }>; readonly createdAt: string; readonly updatedAt: string; }
+export interface ManagedExport { readonly assetId: string; readonly kind: 'export'; readonly status: 'intent' | 'staged' | 'published' | 'quarantined' | 'failed' | 'needs_recovery'; readonly metadata: Readonly<Record<string, unknown>>; readonly createdAt: string; readonly updatedAt: string; }
+
 export interface AgentControlPageRequest {
   readonly cursor?: string;
   readonly pageSize?: number;
@@ -190,13 +194,15 @@ export interface AppApi {
   clearAllData: (deleteImages: boolean) => Promise<boolean>;
   chooseRoot: () => Promise<string | null>;
   setRoot: (root: string, migrate: boolean) => Promise<AppPaths>;
-  createDatabaseBackup: (type?: DatabaseBackupKind) => Promise<DatabaseBackupResult>;
+  createDatabaseBackup: () => Promise<ManagedGlobalJob>;
   ensureDailyAutoBackup: () => Promise<DatabaseBackupResult | null>;
-  listDatabaseBackups: () => Promise<DatabaseBackupInfo[]>;
+  listDatabaseBackups: () => Promise<readonly ManagedBackup[]>;
+  listLegacyDatabaseBackups: () => Promise<DatabaseBackupInfo[]>;
   restoreDatabaseBackup: (fileName: string) => Promise<RestoreDatabaseBackupResult>;
   deleteDatabaseBackup: (fileName: string) => Promise<boolean>;
   openBackupsFolder: () => Promise<boolean>;
-  exportQuestionsToPdf: (options: PdfExportOptions) => Promise<PdfExportResult>;
+  exportQuestionsToPdf: (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => Promise<ManagedGlobalJob>;
+  getManagedExport: (assetId: string) => Promise<ManagedExport>;
   openExportedPdf: (filePath: string) => Promise<boolean>;
   openExportsFolder: () => Promise<boolean>;
   createImportTemplate: () => Promise<string>;

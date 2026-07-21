@@ -12,6 +12,7 @@ import type { ClientRegistry } from './clientRegistry';
 import type { RendererIdentityAdapter } from './rendererAdapter';
 
 const issuedPrincipals = new WeakSet<object>();
+const durableJobPrincipals = new WeakSet<object>();
 
 function issuePrincipal(claims: AgentPrincipalClaims): AgentPrincipal {
   const principal = Object.freeze({ ...claims, scopes: Object.freeze([...claims.scopes]) }) as AgentPrincipal;
@@ -21,7 +22,13 @@ function issuePrincipal(claims: AgentPrincipalClaims): AgentPrincipal {
 
 export function createDurableJobPrincipal(claims: AgentPrincipalClaims): AgentPrincipal {
   if (claims.renderer || !claims.sessionId) throw new AgentError('POLICY_DENIED');
-  return issuePrincipal(claims);
+  const principal = issuePrincipal(claims);
+  durableJobPrincipals.add(principal);
+  return principal;
+}
+
+export function isDurableJobPrincipal(principal: AgentPrincipal): boolean {
+  return durableJobPrincipals.has(principal as object);
 }
 
 export function assertIssuedAgentPrincipal(principal: AgentPrincipal): void {
@@ -85,7 +92,8 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
   'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel',
   'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
-  'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
+  'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update',
+  'backups.list', 'backups.create', 'exports.create', 'exports.get'
 ] as const);
 
 const migratedRendererBusinessOperationSet = new Set<string>(migratedRendererBusinessOperations);
@@ -105,6 +113,7 @@ const fixedRendererScopes: readonly AgentScope[] = Object.freeze([
   'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
   'sessions.manage', 'sessions.read', 'system.read',
   'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
+  , 'backups.read', 'backups.create', 'exports.create', 'exports.read'
 ]);
 
 export interface AuthenticationAdapters {

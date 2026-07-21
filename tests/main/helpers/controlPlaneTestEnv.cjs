@@ -122,7 +122,7 @@ function getControlPlanePaths() {
 }
 
 async function resetControlPlaneEnvironment() {
-  databaseService.resetDatabaseConnection();
+  await databaseService.resetDatabaseConnectionAsync();
   fs.rmSync(assertOwnedPath(dataRoot), { recursive: true, force: true });
   fs.rmSync(assertOwnedPath(userDataRoot), { recursive: true, force: true });
   fs.mkdirSync(assertOwnedPath(recoveryRoot), { recursive: true });

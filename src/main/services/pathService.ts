@@ -9,6 +9,17 @@ const CONFIG_FILE = 'data-root.json';
 
 interface PathConfig {
   root?: string;
+  schemaVersion?: 1;
+  migrationOperationId?: string;
+  previousRootBinding?: string;
+  nextRootBinding?: string;
+  publishedAt?: string;
+}
+
+export interface DataRootAuthoritySnapshot {
+  readonly bytesHash: string;
+  readonly root: string;
+  readonly config: Readonly<PathConfig>;
 }
 
 export const rootSwitchStages = [
@@ -48,6 +59,18 @@ function readConfig(): PathConfig {
   } catch {
     return {};
   }
+}
+
+function configBytes(): Buffer {
+  try { return fs.readFileSync(configPath()); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return Buffer.from('{}\n'); throw error; }
+}
+
+export function readDataRootAuthoritySnapshot(): DataRootAuthoritySnapshot {
+  const bytes = configBytes();
+  let config: PathConfig;
+  try { config = JSON.parse(bytes.toString('utf8')) as PathConfig; } catch { throw new Error('Data-root configuration is invalid'); }
+  const root = path.normalize(path.resolve(config.root || DEFAULT_ROOT));
+  return Object.freeze({ bytesHash: `sha256-v1:${crypto.createHash('sha256').update(bytes).digest('hex')}`, root, config: Object.freeze({ ...config }) });
 }
 
 function writeFileDurably(filePath: string, bytes: Buffer) {
@@ -168,7 +191,8 @@ function hashFile(filePath: string) {
 }
 
 function listManagedFiles(paths: AppPaths) {
-  const roots = [paths.data, paths.images, paths.exports, paths.backups, paths.temp, paths.textbooks];
+  const roots = [paths.data, paths.images, paths.exports, paths.backups, paths.temp, paths.textbooks,
+    path.join(paths.root, 'assets', 'question_bank'), path.join(paths.root, 'trash')];
   const files: Array<{ absolutePath: string; relativePath: string; size: number; sha256: string }> = [];
   const visit = (directory: string) => {
     if (!fs.existsSync(directory)) return;
@@ -240,6 +264,36 @@ export async function publishDataRootSwitch(plan: RootSwitchPlan, dependencies: 
   currentPaths = plan.newPaths;
   await dependencies.hook?.('after_config_publish');
   return plan.newPaths;
+}
+
+export async function publishDataRootMigrationAuthority(input: {
+  readonly expected: DataRootAuthoritySnapshot;
+  readonly operationId: string;
+  readonly nextRoot: string;
+  readonly previousRootBinding: string;
+  readonly nextRootBinding: string;
+  readonly publishedAt: string;
+}, dependencies: RootSwitchDependencies = {}): Promise<{ readonly paths: AppPaths; readonly snapshot: DataRootAuthoritySnapshot }> {
+  const before = readDataRootAuthoritySnapshot();
+  if (before.bytesHash !== input.expected.bytesHash || before.root !== input.expected.root) throw new Error('Data-root authority changed before publication');
+  await dependencies.hook?.('before_config_publish');
+  publishConfig({ root: path.normalize(input.nextRoot), schemaVersion: 1, migrationOperationId: input.operationId,
+    previousRootBinding: input.previousRootBinding, nextRootBinding: input.nextRootBinding, publishedAt: input.publishedAt }, dependencies.randomId);
+  const after = readDataRootAuthoritySnapshot();
+  if (after.root !== path.normalize(input.nextRoot) || after.config.migrationOperationId !== input.operationId ||
+      after.config.previousRootBinding !== input.previousRootBinding || after.config.nextRootBinding !== input.nextRootBinding) {
+    throw new Error('Data-root authority publication is ambiguous');
+  }
+  currentPaths = buildPaths(after.root, false, null);
+  await dependencies.hook?.('after_config_publish');
+  return Object.freeze({ paths: currentPaths, snapshot: after });
+}
+
+export function adoptDataRootMigrationAuthority(snapshot: DataRootAuthoritySnapshot): AppPaths {
+  const current = readDataRootAuthoritySnapshot();
+  if (current.bytesHash !== snapshot.bytesHash || current.root !== snapshot.root) throw new Error('Data-root authority changed during adoption');
+  currentPaths = buildPaths(snapshot.root, false, null);
+  return currentPaths;
 }
 
 export function restoreDataRootAuthority(paths: AppPaths, randomId?: () => string) {

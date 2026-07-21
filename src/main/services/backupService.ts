@@ -116,6 +116,17 @@ export async function createDatabaseBackupMaintained(
   return target;
 }
 
+/** Internal C13 seam: caller supplies only an App-owned staging location. */
+export async function createDatabaseBackupAt(filePath: string, dependencies: MaintenanceOperationDependencies = {}): Promise<void> {
+  const paths = ensureBackupsDir();
+  const normalized = path.normalize(filePath);
+  const allowedRoot = path.normalize(paths.temp);
+  const relative = path.relative(allowedRoot, normalized);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Backup staging path is not App-owned');
+  fs.mkdirSync(path.dirname(normalized), { recursive: true });
+  await createVerifiedDatabaseSnapshot(normalized, dependencies);
+}
+
 async function ensureDailyAutoBackupOnce(): Promise<DatabaseBackupResult | null> {
   const paths = ensureBackupsDir();
   const today = datePrefix();

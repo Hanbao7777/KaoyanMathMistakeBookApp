@@ -12,11 +12,16 @@ import { registerTickTick, type TickTickApplication } from '../application/tickt
 import { registerKnowledge, type KnowledgeApplication } from '../application/knowledge';
 import { registerStudy, type StudyApplication } from '../application/study';
 import { registerImports, type ImportsApplication } from '../application/imports';
+import { DataRootMigrationJournalStore, DatabaseClearJournalStore, DatabaseImportJournalStore, DatabaseRestoreJournalStore, ImportBatchDeletionJournalStore, applyImportBatchDeletion, getInternalGlobalAsset, importBatchDeletionManagedRoot, planDataRootSelection, registerGlobalApplication, resolveImportBatchDeletion, resolveStoredDataRootSelection, transitionGlobalAsset, verifyImportBatchDeletionManagedFile, verifyManagedDatabaseImport, type DataRootMigrationManifest, type DataRootMigrationPhase, type DataRootSelectionPlan, type DatabaseClearFileEvidence, type DatabaseClearManagedFile, type DatabaseClearManifest, type DatabaseClearResolution, type DatabaseImportManifest, type DatabaseImportSemanticEvidence, type DatabaseRestoreFileEvidence, type DatabaseRestoreManifest, type GlobalApplication, type GlobalMaterializer, type ImportBatchDeletionFileEvidence, type ImportBatchDeletionManifest, type ImportBatchDeletionManagedFile, type ImportBatchDeletionResolution, type StoredDataRootSelection } from '../application/global';
+import { managedImportInboxRoot } from '../application/imports/managedInbox';
 import type { QuestionCommand } from '../../shared/agent/v1/contracts';
 import { bootstrapAgentGateway, type AgentGatewayBootstrapOptions, type AgentGatewayComposition } from '../agent/bootstrap';
+import { AuditLedger } from '../agent/auditLedger';
+import { ExecutionReceipts } from '../agent/executionReceipts';
+import { WorkflowStore } from '../agent/workflows';
 import {
   atomicPersist, bootstrapControlMetadata,
-  createSqlJsCandidateOpener, DatabaseCoordinator,
+  createSqlJsCandidateOpener, createDatabaseCoordinatorControlCapability, DatabaseCoordinator,
   EpochTransitionStore, createEpochTransitionEvidence,
   defaultAtomicFileDependencies, createRevisionMutationCapability,
   inspectDatabaseBytes, scanDatabaseCandidates,
@@ -38,6 +43,8 @@ import {
 import {
   getPaths,
   publishDataRootSwitch,
+  publishDataRootMigrationAuthority,
+  readDataRootAuthoritySnapshot,
   restoreDataRootAuthority,
   stageDataRootSwitch,
   type RootSwitchDependencies
@@ -60,6 +67,9 @@ import type {
   ReviewSubmitResult,
   StatsData
 } from '../../shared/types';
+import { AgentError } from '../../shared/agent/errors';
+import { canonicalizeJson, hashCanonicalJson } from '../../shared/agent/v1/gatewaySchemas';
+import { operationCatalogIdentity } from '../../shared/agent/v1/operationCatalog';
 
 let db: Database | null = null;
 let databaseCoordinator: DatabaseCoordinator | null = null;
@@ -69,6 +79,7 @@ let tickTickApplication: TickTickApplication | null = null;
 let knowledgeApplication: KnowledgeApplication | null = null;
 let studyApplication: StudyApplication | null = null;
 let importsApplication: ImportsApplication | null = null;
+let globalApplication: GlobalApplication | null = null;
 let agentControlPlane: AgentGatewayComposition | null = null;
 const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
@@ -108,8 +119,11 @@ export interface DatabaseInitializationDependencies {
     readonly jobResultRoot?: string;
     readonly jobStoreHook?: AgentGatewayBootstrapOptions['jobStoreHook'];
     readonly jobExecutorOnError?: AgentGatewayBootstrapOptions['jobExecutorOnError'];
+    readonly jobExecutorOnTerminalized?: AgentGatewayBootstrapOptions['jobExecutorOnTerminalized'];
   };
   onStage?: (stage: DatabaseLifecycleStage) => void;
+  databaseClearRecoveryHook?: (stage: 'before_terminalization' | 'after_terminalization') => void | Promise<void>;
+  importBatchDeletionRecoveryHook?: (stage: 'before_terminalization' | 'after_terminalization') => void | Promise<void>;
 }
 
 export interface DatabaseInitializationResult {
@@ -121,7 +135,9 @@ export interface DatabaseInitializationResult {
 
 export const maintenanceOperationStages = [
   'maintenance_entered',
+  'source_validated',
   'recovery_package_staged',
+  'files_quarantined',
   'candidate_validated',
   'database_published',
   'files_committed',
@@ -136,7 +152,16 @@ export interface MaintenanceOperationDependencies {
   now?: () => string;
   atomicHook?: import('../persistence').AtomicPersistHook;
   journal?: OperationJournalDependencies;
-  onStage?: (stage: MaintenanceOperationStage) => void | Promise<void>;
+  onStage?: (stage: MaintenanceOperationStage, evidence?: {
+    readonly versionAfter?: import('../../shared/agent').DataVersion;
+    readonly recoveryDatabasePath?: string;
+    readonly recoveryDatabaseEvidence?: DatabaseRestoreFileEvidence;
+    readonly recoveryInventoryPath?: string;
+    readonly recoveryInventoryEvidence?: DatabaseRestoreFileEvidence;
+    readonly liveDatabaseEvidence?: DatabaseRestoreFileEvidence;
+  }) => void | Promise<void>;
+  databaseClearRecoveryHook?: DatabaseInitializationDependencies['databaseClearRecoveryHook'];
+  importBatchDeletionRecoveryHook?: DatabaseInitializationDependencies['importBatchDeletionRecoveryHook'];
 }
 
 export class MaintenanceOperationError extends Error {
@@ -299,6 +324,12 @@ export async function getImportsApplication(): Promise<ImportsApplication> {
   return importsApplication;
 }
 
+export async function getGlobalApplication(): Promise<GlobalApplication> {
+  if (!globalApplication) await initializeDatabase();
+  if (!globalApplication) throw new Error('Global application is unavailable');
+  return globalApplication;
+}
+
 export async function getAgentControlPlane(): Promise<AgentGatewayComposition> {
   if (!agentControlPlane) throw new Error('Agent Gateway is unavailable pending database recovery');
   return agentControlPlane;
@@ -334,6 +365,10 @@ function safeLifecycleId(value: string): string {
 function isSameOrDescendant(candidate: string, root: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function sameVersion(left: import('../../shared/agent').DataVersion, right: import('../../shared/agent').DataVersion): boolean {
+  return left.dataEpoch === right.dataEpoch && left.dataRevision === right.dataRevision;
 }
 
 function resolveManagedImagePath(reference: string, phase: string, errorCode: string): string {
@@ -421,8 +456,1419 @@ interface ReplacementRequest<T> {
   inputIdentity: unknown;
   sourceBytes?: Uint8Array;
   mutate?: (candidate: Database) => T | Promise<T>;
-  quarantinePaths?: string[] | ((candidate: Database) => string[]);
+  validateLive?: (database: Database, version: import('../../shared/agent').DataVersion) => void | Promise<void>;
+  quarantineFiles?: readonly ReplacementManagedFile[] | ((database: Database) => readonly ReplacementManagedFile[]);
   dependencies?: MaintenanceOperationDependencies;
+}
+
+interface ReplacementManagedFile {
+  readonly fileId: string;
+  readonly sourceKind: string;
+  readonly managedRoot: string;
+  readonly internalPath: string;
+  readonly pathHash: string;
+  readonly contentHash: string;
+  readonly contentSize: number;
+}
+
+const databaseRestoreTableAllowlist = Object.freeze([
+  'questions', 'question_images', 'review_logs', 'tags', 'question_tags',
+  'textbooks', 'knowledge_points', 'question_knowledge_points',
+  'import_batches', 'import_batch_items', 'import_assets', 'import_drafts', 'import_managed_assets',
+  'external_questions', 'external_question_attempts',
+  'study_settings', 'study_subjects', 'study_materials', 'study_tasks', 'study_sessions', 'daily_reviews',
+  'ticktick_lists', 'ticktick_tasks', 'ticktick_tags', 'ticktick_focus_sessions', 'ticktick_bridge',
+  'ticktick_ai_plans', 'ticktick_habits', 'ticktick_habit_logs'
+] as const);
+
+export const databaseClearTableAllowlist = databaseRestoreTableAllowlist;
+const DATABASE_CLEAR_MAX_AFFECTED_ENTITIES = 500;
+
+interface ClearFileSource {
+  readonly sourceKind: string;
+  readonly binding: Readonly<Record<string, unknown>>;
+  readonly reference: string;
+  readonly root: string;
+  readonly expectedHash?: string;
+  readonly expectedSize?: number;
+}
+
+function strictManagedClearFile(source: ClearFileSource): { readonly internalPath: string; readonly pathHash: string; readonly contentHash: string; readonly contentSize: number } {
+  const root = path.normalize(source.root);
+  if (!path.isAbsolute(root) || !fs.existsSync(root)) throw new AgentError('RECOVERY_FENCE');
+  const rootStat = fs.lstatSync(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new AgentError('RECOVERY_FENCE');
+  const realRoot = path.normalize(fs.realpathSync(root));
+  if (path.resolve(realRoot).toLowerCase() !== path.resolve(root).toLowerCase()) throw new AgentError('RECOVERY_FENCE');
+  const candidate = path.normalize(path.isAbsolute(source.reference) ? source.reference : path.resolve(getPaths().root, source.reference));
+  const relative = path.relative(root, candidate);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) || !fs.existsSync(candidate)) {
+    throw new AgentError('RECOVERY_FENCE');
+  }
+  const linkStat = fs.lstatSync(candidate);
+  if (linkStat.isSymbolicLink() || !linkStat.isFile() || linkStat.size < 1) throw new AgentError('RECOVERY_FENCE');
+  const realFile = path.normalize(fs.realpathSync(candidate));
+  if (!isSameOrDescendant(realFile, realRoot) || realFile === realRoot) throw new AgentError('RECOVERY_FENCE');
+  const handle = fs.openSync(candidate, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  let bytes: Buffer;
+  try {
+    const opened = fs.fstatSync(handle);
+    if (!opened.isFile() || opened.dev !== linkStat.dev || opened.ino !== linkStat.ino || opened.size !== linkStat.size) throw new AgentError('RECOVERY_FENCE');
+    bytes = fs.readFileSync(handle);
+  } finally {
+    fs.closeSync(handle);
+  }
+  const contentHash = `sha256-v1:${createHash('sha256').update(bytes).digest('hex')}`;
+  if ((source.expectedHash && contentHash !== source.expectedHash) ||
+      (source.expectedSize !== undefined && bytes.byteLength !== source.expectedSize)) throw new AgentError('RECOVERY_FENCE');
+  return Object.freeze({
+    internalPath: candidate,
+    pathHash: hashCanonicalJson({ root: source.sourceKind, relativePath: relative.replaceAll(path.sep, '/') }),
+    contentHash,
+    contentSize: bytes.byteLength
+  });
+}
+
+function databaseClearResolutionFrom(database: Database, deleteManagedImages: boolean): DatabaseClearResolution {
+  if (typeof deleteManagedImages !== 'boolean') throw new AgentError('VALIDATION_ERROR', { field: 'deleteManagedImages' });
+  const tableCounts = databaseClearTableAllowlist.map((table) => Object.freeze({
+    table,
+    count: Number(one<{ count: number }>(database, `SELECT COUNT(*) AS count FROM ${quoteSqlIdentifier(table)}`)?.count ?? 0)
+  }));
+  const businessRowCount = tableCounts.reduce((total, entry) => total + entry.count, 0);
+  if (!tableCounts.every((entry) => Number.isSafeInteger(entry.count) && entry.count >= 0) || businessRowCount > DATABASE_CLEAR_MAX_AFFECTED_ENTITIES) {
+    throw new AgentError('POLICY_DENIED');
+  }
+  const rowBindings: Array<Readonly<{ table: string; rowHash: string }>> = [];
+  const rowEntities: Array<Readonly<{ entityType: string; entityId: string }>> = [];
+  for (const { table } of tableCounts) {
+    const columns = all<{ name: string }>(database, `PRAGMA table_info(${quoteSqlIdentifier(table)})`).map((column) => column.name);
+    if (columns.length === 0) throw new AgentError('RECOVERY_FENCE');
+    const rows = all<Record<string, SqlValue>>(database, `SELECT ${columns.map(quoteSqlIdentifier).join(',')} FROM ${quoteSqlIdentifier(table)}`)
+      .map((entry) => Object.freeze(Object.fromEntries(columns.map((column) => [column, normalizedSqlValue(entry[column])]))) as Readonly<Record<string, unknown>>)
+      .sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right)));
+    rows.forEach((row, index) => {
+      const rowHash = hashCanonicalJson({ table, index, row });
+      rowBindings.push(Object.freeze({ table, rowHash }));
+      rowEntities.push(Object.freeze({ entityType: `database_row_${table}`, entityId: rowHash }));
+    });
+  }
+  if (rowBindings.length !== businessRowCount) throw new AgentError('RECOVERY_FENCE');
+
+  const paths = getPaths();
+  const sources: Array<ClearFileSource & { readonly sourceKind: DatabaseClearManagedFile['sourceKind'] }> = [
+    ...all<{ id: number; question_id: number; file_path: string }>(database, 'SELECT id,question_id,file_path FROM question_images ORDER BY id').map((image) => Object.freeze({
+      sourceKind: 'question_image' as const,
+      binding: Object.freeze({ imageId: image.id, questionId: image.question_id }),
+      reference: image.file_path,
+      root: path.normalize(paths.images)
+    })),
+    ...all<{ asset_id: string; file_path: string; sha256: string; size: number; state: string }>(database, "SELECT asset_id,file_path,sha256,size,state FROM import_managed_assets WHERE state IN ('staged','consumed') ORDER BY asset_id").map((asset) => Object.freeze({
+      sourceKind: 'import_managed_image' as const,
+      binding: Object.freeze({ assetId: asset.asset_id, state: asset.state }),
+      reference: asset.file_path,
+      root: managedImportInboxRoot(),
+      expectedHash: `sha256-v1:${asset.sha256}`,
+      expectedSize: asset.size
+    }))
+  ];
+  const collected = new Map<string, { evidence: ReturnType<typeof strictManagedClearFile>; kinds: Set<DatabaseClearManagedFile['sourceKind']>; bindings: Readonly<Record<string, unknown>>[] }>();
+  for (const source of sources) {
+    const evidence = strictManagedClearFile(source);
+    const key = path.resolve(evidence.internalPath).toLowerCase();
+    const existing = collected.get(key);
+    if (existing) {
+      if (existing.evidence.contentHash !== evidence.contentHash || existing.evidence.contentSize !== evidence.contentSize || existing.evidence.pathHash !== evidence.pathHash) {
+        throw new AgentError('RECOVERY_FENCE');
+      }
+      existing.kinds.add(source.sourceKind);
+      existing.bindings.push(source.binding);
+    } else {
+      collected.set(key, { evidence, kinds: new Set([source.sourceKind]), bindings: [source.binding] });
+    }
+  }
+  const managedFiles = Object.freeze([...collected.values()].map(({ evidence, kinds, bindings }) => {
+    const sourceKind = kinds.has('question_image') ? 'question_image' as const : 'import_managed_image' as const;
+    const sourceBindingsHash = hashCanonicalJson([...bindings].sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right))));
+    return Object.freeze({
+      fileId: `managed-image-${evidence.pathHash.slice(10, 50)}`,
+      sourceKind,
+      internalPath: evidence.internalPath,
+      pathHash: evidence.pathHash,
+      contentHash: evidence.contentHash,
+      contentSize: evidence.contentSize,
+      sourceBindingsHash
+    });
+  }).sort((left, right) => left.pathHash.localeCompare(right.pathHash)));
+  const affectedEntityCount = businessRowCount + managedFiles.length;
+  if (affectedEntityCount > DATABASE_CLEAR_MAX_AFFECTED_ENTITIES) throw new AgentError('POLICY_DENIED');
+  const fileBindings = managedFiles.map(({ fileId, sourceKind, pathHash, contentHash, contentSize, sourceBindingsHash }) =>
+    Object.freeze({ fileId, sourceKind, pathHash, contentHash, contentSize, sourceBindingsHash }));
+  const fileEntities = fileBindings.map((file) => Object.freeze({ entityType: 'managed_image', entityId: hashCanonicalJson(file) }));
+  const affectedEntities = Object.freeze([...rowEntities, ...fileEntities]
+    .sort((left, right) => `${left.entityType}\0${left.entityId}`.localeCompare(`${right.entityType}\0${right.entityId}`)));
+  const sortedRowBindings = [...rowBindings]
+    .sort((left, right) => `${left.table}\0${left.rowHash}`.localeCompare(`${right.table}\0${right.rowHash}`));
+  const inventoryHash = hashCanonicalJson({ schemaVersion: 1, rowBindings: sortedRowBindings, fileBindings });
+  const affectedSetHash = hashCanonicalJson(affectedEntities);
+  const targetHash = hashCanonicalJson({
+    operation: 'database.clear_all', deleteManagedImages, inventoryHash, affectedSetHash,
+    businessRowCount, managedImageCount: managedFiles.length
+  });
+  return Object.freeze({
+    deleteManagedImages, businessRowCount, managedImageCount: managedFiles.length, affectedEntityCount,
+    inventoryHash, managedFiles, affectedEntities, affectedSetHash, targetHash,
+    dataVersion: Object.freeze({ ...new RevisionStore(database).readCurrentVersion() })
+  });
+}
+
+export function resolveDatabaseClearInventory(deleteManagedImages: boolean, databaseOverride?: Database): DatabaseClearResolution {
+  const database = databaseOverride ?? db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  return databaseClearResolutionFrom(database, deleteManagedImages);
+}
+
+export function resolveImportBatchDeletionInventory(
+  batchId: string,
+  deleteManagedAssets: boolean,
+  identity: { readonly clientId: string; readonly renderer: boolean },
+  databaseOverride?: Database
+): ImportBatchDeletionResolution {
+  const database = databaseOverride ?? db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  return resolveImportBatchDeletion(database, batchId, deleteManagedAssets, identity);
+}
+
+const databaseImportPackageFormat = 'kaoyan-full-data-v1' as const;
+const MAX_DATABASE_IMPORT_ROWS = 250_000;
+const MAX_DATABASE_IMPORT_ROWS_PER_TABLE = 100_000;
+const MAX_DATABASE_IMPORT_STRING_BYTES = 1_048_576;
+
+type DatabaseImportTable = typeof databaseRestoreTableAllowlist[number];
+type DatabaseImportRows = Readonly<Record<DatabaseImportTable, readonly Readonly<Record<string, SqlValue>>[]>>;
+
+export interface DatabaseImportPackageMetadata {
+  readonly format: typeof databaseImportPackageFormat;
+  readonly version: 1;
+  readonly semanticHash: string;
+  readonly semanticSize: number;
+  readonly rowCount: number;
+  readonly tableCounts: Readonly<Record<DatabaseImportTable, number>>;
+}
+
+interface ParsedDatabaseImportPackage {
+  readonly metadata: DatabaseImportPackageMetadata;
+  readonly rows: DatabaseImportRows;
+}
+
+function exactObject(value: unknown, keys: readonly string[], field: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `${field} must be an object`);
+  const result = value as Record<string, unknown>;
+  const expected = [...keys].sort();
+  const actual = Object.keys(result).sort();
+  if (expected.length !== actual.length || expected.some((key, index) => key !== actual[index])) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `${field} has an incompatible shape`);
+  return result;
+}
+
+function parseDatabaseImportPackage(bytes: Uint8Array): ParsedDatabaseImportPackage {
+  if (bytes.byteLength < 1 || bytes.byteLength > 64 * 1024 * 1024) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package size is outside the supported bounds');
+  let text: string;
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package is not valid UTF-8'); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); } catch { throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package is not valid JSON'); }
+  const keys = ['format', 'version', 'exportedAt', ...databaseRestoreTableAllowlist] as const;
+  const payload = exactObject(parsed, keys, 'package');
+  if (payload.format !== databaseImportPackageFormat || payload.version !== 1 || typeof payload.exportedAt !== 'string' ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(payload.exportedAt) || new Date(payload.exportedAt).toISOString() !== payload.exportedAt) {
+    throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package identity is invalid');
+  }
+  let rowCount = 0;
+  const rows = {} as Record<DatabaseImportTable, readonly Readonly<Record<string, SqlValue>>[]>;
+  const tableCounts = {} as Record<DatabaseImportTable, number>;
+  const semanticTables = {} as Record<DatabaseImportTable, readonly Readonly<Record<string, SqlValue>>[]>;
+  for (const table of databaseRestoreTableAllowlist) {
+    const tableRows = payload[table];
+    if (!Array.isArray(tableRows) || tableRows.length > MAX_DATABASE_IMPORT_ROWS_PER_TABLE) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} is outside the supported bounds`);
+    const normalized = tableRows.map((value, index) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} row ${index} is invalid`);
+      const row: Record<string, SqlValue> = {};
+      for (const [key, candidate] of Object.entries(value as Record<string, unknown>)) {
+        if (!key || key.length > 128 || (candidate !== null && typeof candidate !== 'string' && typeof candidate !== 'number')) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} row ${index} contains an invalid value`);
+        if (typeof candidate === 'number' && (!Number.isSafeInteger(candidate) || !Number.isFinite(candidate))) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} row ${index} contains an invalid number`);
+        if (typeof candidate === 'string' && Buffer.byteLength(candidate, 'utf8') > MAX_DATABASE_IMPORT_STRING_BYTES) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} row ${index} contains an oversized value`);
+        row[key] = candidate as SqlValue;
+      }
+      return Object.freeze(row);
+    });
+    rowCount += normalized.length;
+    if (rowCount > MAX_DATABASE_IMPORT_ROWS) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package contains too many rows');
+    rows[table] = Object.freeze(normalized);
+    tableCounts[table] = normalized.length;
+    semanticTables[table] = Object.freeze([...normalized].sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right))));
+  }
+  const semantic = Object.freeze({ format: databaseImportPackageFormat, version: 1, tables: Object.freeze(semanticTables) });
+  const semanticJson = canonicalizeJson(semantic);
+  return Object.freeze({
+    metadata: Object.freeze({
+      format: databaseImportPackageFormat,
+      version: 1 as const,
+      semanticHash: hashCanonicalJson(semantic),
+      semanticSize: Buffer.byteLength(semanticJson, 'utf8'),
+      rowCount,
+      tableCounts: Object.freeze(tableCounts)
+    }),
+    rows: Object.freeze(rows) as DatabaseImportRows
+  });
+}
+
+function createDatabaseImportPackageDatabase(SQL: SqlJsStatic, parsed: ParsedDatabaseImportPackage): Database {
+  const database = new SQL.Database();
+  try {
+    database.run('PRAGMA foreign_keys = OFF;');
+    database.exec(schemaSql);
+    migrateDatabase(database);
+    for (const table of databaseRestoreTableAllowlist) {
+      const columns = all<{ name: string; type: string; notnull: number }>(database, `PRAGMA table_info(${quoteSqlIdentifier(table)})`);
+      const columnNames = columns.map((column) => column.name);
+      if (columnNames.length === 0) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `Import table ${table} is unavailable`);
+      const statement = database.prepare(`INSERT INTO ${quoteSqlIdentifier(table)} (${columnNames.map(quoteSqlIdentifier).join(',')}) VALUES (${columnNames.map(() => '?').join(',')})`);
+      try {
+        for (const [index, row] of parsed.rows[table].entries()) {
+          exactObject(row, columnNames, `${table}[${index}]`);
+          const values = columns.map((column) => {
+            const value = row[column.name];
+            if (value === null) return value;
+            if (column.type.toUpperCase().includes('INT') && (typeof value !== 'number' || !Number.isSafeInteger(value))) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `${table}[${index}].${column.name} must be an integer`);
+            if (column.type.toUpperCase().includes('TEXT') && typeof value !== 'string') throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', `${table}[${index}].${column.name} must be text`);
+            return value;
+          });
+          statement.run(values as SqlValue[]);
+        }
+      } finally {
+        statement.free();
+      }
+    }
+    database.run('PRAGMA foreign_keys = ON;');
+    if ((database.exec('PRAGMA foreign_key_check')[0]?.values ?? []).length > 0 || database.exec('PRAGMA quick_check')[0]?.values?.[0]?.[0] !== 'ok') {
+      throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package violates database integrity constraints');
+    }
+    for (const row of all<{ file_path: string }>(database, 'SELECT file_path FROM question_images')) resolveManagedImagePath(row.file_path, 'import_validation', 'IMPORT_MANAGED_FILE_MISSING');
+    return database;
+  } catch (error) {
+    database.close();
+    if (error instanceof MaintenanceOperationError) throw error;
+    throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Import package is incompatible with the current schema', true, error);
+  }
+}
+
+export async function inspectDatabaseImportPackage(bytes: Uint8Array): Promise<DatabaseImportPackageMetadata> {
+  const parsed = parseDatabaseImportPackage(bytes);
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  const packageDatabase = createDatabaseImportPackageDatabase(SQL, parsed);
+  packageDatabase.close();
+  return parsed.metadata;
+}
+
+function copyRestorableTablesFromBackup(candidate: Database, backup: Database): void {
+  candidate.exec(schemaSql);
+  migrateDatabase(candidate);
+  backup.exec(schemaSql);
+  migrateDatabase(backup);
+  candidate.run('PRAGMA foreign_keys = OFF;');
+  try {
+    for (const table of [...databaseRestoreTableAllowlist].reverse()) candidate.run(`DELETE FROM ${table}`);
+    for (const table of databaseRestoreTableAllowlist) {
+      const candidateColumns = all<{ name: string }>(candidate, `PRAGMA table_info(${table})`).map((column) => column.name);
+      const backupColumns = all<{ name: string }>(backup, `PRAGMA table_info(${table})`).map((column) => column.name);
+      if (candidateColumns.length === 0 || candidateColumns.join('\0') !== backupColumns.join('\0')) {
+        throw new MaintenanceOperationError('BACKUP_INCOMPATIBLE', 'restore_validation', `Backup table schema is incompatible: ${table}`);
+      }
+      const rows = all<Record<string, SqlValue>>(backup, `SELECT ${candidateColumns.join(',')} FROM ${table}`);
+      const placeholders = candidateColumns.map(() => '?').join(',');
+      const statement = candidate.prepare(`INSERT INTO ${table} (${candidateColumns.join(',')}) VALUES (${placeholders})`);
+      try {
+        for (const row of rows) {
+          statement.run(candidateColumns.map((column) => row[column]) as SqlValue[]);
+        }
+      } finally {
+        statement.free();
+      }
+    }
+  } finally {
+    candidate.run('PRAGMA foreign_keys = ON;');
+  }
+  const violations = candidate.exec('PRAGMA foreign_key_check')[0]?.values ?? [];
+  if (violations.length) throw new MaintenanceOperationError('BACKUP_INCOMPATIBLE', 'restore_validation', 'Restored backup violates foreign-key constraints');
+}
+
+function restoreEvidence(filePath: string): DatabaseRestoreFileEvidence {
+  const evidence = fileEvidence(filePath);
+  return Object.freeze({ contentHash: `sha256-v1:${evidence.sha256}`, contentSize: evidence.size });
+}
+
+function restoreEvidenceForBytes(bytes: Uint8Array): DatabaseRestoreFileEvidence {
+  const evidence = evidenceForBytes(bytes);
+  return Object.freeze({ contentHash: `sha256-v1:${evidence.sha256}`, contentSize: evidence.size });
+}
+
+function quoteSqlIdentifier(identifier: string): string {
+  return `"${identifier.replace(/"/g, '""')}"`;
+}
+
+function normalizedSqlValue(value: SqlValue): unknown {
+  if (value instanceof Uint8Array) return Object.freeze({ blobHex: Buffer.from(value).toString('hex') });
+  return value;
+}
+
+function restoreSemanticLiveEvidence(SQL: SqlJsStatic, bytes: Uint8Array, manifest: DatabaseRestoreManifest, expectedVersion: import('../../shared/agent').DataVersion): DatabaseRestoreFileEvidence {
+  const opener = createSqlJsCandidateOpener(SQL);
+  let inspected;
+  try {
+    inspected = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'temp' }, opener, expectedVersion);
+  } catch {
+    throw new AgentError('RECOVERY_FENCE');
+  }
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') throw new AgentError('RECOVERY_FENCE');
+  const database = new SQL.Database(bytes);
+  try {
+    database.run('PRAGMA foreign_keys = ON;');
+    database.exec(schemaSql);
+    migrateDatabase(database);
+    const version = new RevisionStore(database).readCurrentVersion();
+    if (version.dataEpoch !== expectedVersion.dataEpoch || version.dataRevision !== expectedVersion.dataRevision) throw new AgentError('RECOVERY_FENCE');
+    const businessTables = databaseRestoreTableAllowlist.map((table) => {
+      const columns = all<{ name: string; type: string; notnull: number; dflt_value: SqlValue; pk: number }>(database, `PRAGMA table_info(${quoteSqlIdentifier(table)})`);
+      if (columns.length === 0) throw new AgentError('RECOVERY_FENCE');
+      const columnNames = columns.map((column) => column.name);
+      const tableSql = one<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", [table])?.sql;
+      if (typeof tableSql !== 'string') throw new AgentError('RECOVERY_FENCE');
+      const indexes = all<{ name: string; sql: string | null }>(database, "SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name=? ORDER BY name", [table])
+        .map((entry) => Object.freeze({ name: entry.name, sql: entry.sql ?? null }));
+      const rows = all<Record<string, SqlValue>>(database, `SELECT ${columnNames.map(quoteSqlIdentifier).join(',')} FROM ${quoteSqlIdentifier(table)}`)
+        .map((row) => Object.freeze(Object.fromEntries(columnNames.map((column) => [column, normalizedSqlValue(row[column])]))) as Readonly<Record<string, unknown>>)
+        .sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right)));
+      return Object.freeze({
+        table,
+        schema: tableSql,
+        columns: Object.freeze(columns.map((column) => Object.freeze({
+          name: column.name, type: column.type, notnull: column.notnull, dflt: normalizedSqlValue(column.dflt_value), pk: column.pk
+        }))),
+        indexes: Object.freeze(indexes),
+        rows: Object.freeze(rows)
+      });
+    });
+    const receipt = one<Record<string, SqlValue>>(database, `SELECT receipt_id,client_id,request_id,operation,payload_hash,affected_set_hash,
+        base_data_epoch,base_data_revision,catalog_version,catalog_hash,risk,status,reservation_id,grant_id,r4_target_hash,
+        r4_recovery,r4_max_affected_entities,r4_reservation_expires_at,terminal_outcome_hash
+      FROM agent_idempotency WHERE receipt_id=?`, [manifest.receiptId]);
+    const grant = one<Record<string, SqlValue>>(database, `SELECT grant_id,client_id,operation,payload_hash,target_hash,catalog_version,catalog_hash,
+        recovery,max_affected_entities,status,reservation_id,reserved_client_id,reserved_request_id,reserved_payload_hash,
+        reserved_affected_set_hash,reserved_base_epoch,reserved_base_revision,reserved_catalog_version,reserved_catalog_hash,consumed_at
+      FROM agent_r4_grants WHERE grant_id=?`, [manifest.grantId]);
+    if (!receipt || !grant) throw new AgentError('RECOVERY_FENCE');
+    const changeSet = manifest.changeSetId ? one<Record<string, SqlValue>>(database, `SELECT c.change_set_id,c.client_id,c.status,c.catalog_version,c.catalog_hash,
+        c.base_data_epoch,c.base_data_revision,c.affected_set_hash,c.recovery,o.operation,o.payload_hash
+      FROM agent_changesets c INNER JOIN agent_changeset_operations o ON o.change_set_id=c.change_set_id
+      WHERE c.change_set_id=?`, [manifest.changeSetId]) : undefined;
+    if (manifest.changeSetId && !changeSet) throw new AgentError('RECOVERY_FENCE');
+    const semantic = Object.freeze({
+      schemaVersion: 1,
+      version: Object.freeze({ ...version }),
+      operationId: manifest.operationId,
+      receiptId: manifest.receiptId,
+      requestId: manifest.requestId,
+      ownerClientId: manifest.ownerClientId,
+      businessTables: Object.freeze(businessTables),
+      terminalBindings: Object.freeze({
+        receipt: Object.freeze(Object.fromEntries(Object.entries(receipt).map(([key, value]) => [key, normalizedSqlValue(value)]))),
+        grant: Object.freeze(Object.fromEntries(Object.entries(grant).map(([key, value]) => [key, normalizedSqlValue(value)]))),
+        ...(changeSet ? { changeSet: Object.freeze(Object.fromEntries(Object.entries(changeSet).map(([key, value]) => [key, normalizedSqlValue(value)]))) } : {})
+      })
+    });
+    const canonical = canonicalizeJson(semantic);
+    return Object.freeze({ contentHash: hashCanonicalJson(semantic), contentSize: Buffer.byteLength(canonical, 'utf8') });
+  } finally {
+    database.close();
+  }
+}
+
+function databaseImportLiveSemanticEvidence(SQL: SqlJsStatic, bytes: Uint8Array, manifest: DatabaseImportManifest, expectedVersion: import('../../shared/agent').DataVersion): DatabaseImportSemanticEvidence {
+  const opener = createSqlJsCandidateOpener(SQL);
+  let inspected;
+  try { inspected = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'temp' }, opener, expectedVersion); } catch { throw new AgentError('RECOVERY_FENCE'); }
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') throw new AgentError('RECOVERY_FENCE');
+  const database = new SQL.Database(bytes);
+  try {
+    database.run('PRAGMA foreign_keys = ON;');
+    database.exec(schemaSql);
+    migrateDatabase(database);
+    const version = new RevisionStore(database).readCurrentVersion();
+    if (version.dataEpoch !== expectedVersion.dataEpoch || version.dataRevision !== expectedVersion.dataRevision) throw new AgentError('RECOVERY_FENCE');
+    const businessTables = databaseRestoreTableAllowlist.map((table) => {
+      const columns = all<{ name: string }>(database, `PRAGMA table_info(${quoteSqlIdentifier(table)})`).map((column) => column.name);
+      if (columns.length === 0) throw new AgentError('RECOVERY_FENCE');
+      const rows = all<Record<string, SqlValue>>(database, `SELECT ${columns.map(quoteSqlIdentifier).join(',')} FROM ${quoteSqlIdentifier(table)}`)
+        .map((row) => Object.freeze(Object.fromEntries(columns.map((column) => [column, normalizedSqlValue(row[column])]))) as Readonly<Record<string, unknown>>)
+        .sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right)));
+      return Object.freeze({ table, rows: Object.freeze(rows) });
+    });
+    const semantic = Object.freeze({
+      schemaVersion: 1,
+      operation: 'database.replace_from_import',
+      operationId: manifest.operationId,
+      ownerClientId: manifest.ownerClientId,
+      assetId: manifest.package.assetId,
+      version: Object.freeze({ ...version }),
+      businessTables: Object.freeze(businessTables)
+    });
+    const canonical = canonicalizeJson(semantic);
+    return Object.freeze({ contentHash: hashCanonicalJson(semantic), contentSize: Buffer.byteLength(canonical, 'utf8') });
+  } finally {
+    database.close();
+  }
+}
+
+function databaseClearLiveSemanticEvidence(SQL: SqlJsStatic, bytes: Uint8Array, manifest: DatabaseClearManifest, expectedVersion: import('../../shared/agent').DataVersion): DatabaseClearFileEvidence {
+  const opener = createSqlJsCandidateOpener(SQL);
+  let inspected;
+  try { inspected = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'temp' }, opener, expectedVersion); } catch { throw new AgentError('RECOVERY_FENCE'); }
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') throw new AgentError('RECOVERY_FENCE');
+  const database = new SQL.Database(bytes);
+  try {
+    database.run('PRAGMA foreign_keys = ON;');
+    database.exec(schemaSql);
+    migrateDatabase(database);
+    const version = new RevisionStore(database).readCurrentVersion();
+    if (!sameVersion(version, expectedVersion)) throw new AgentError('RECOVERY_FENCE');
+    const tableCounts = databaseClearTableAllowlist.map((table) => Object.freeze({
+      table,
+      count: Number(one<{ count: number }>(database, `SELECT COUNT(*) AS count FROM ${quoteSqlIdentifier(table)}`)?.count ?? -1)
+    }));
+    if (tableCounts.some((entry) => entry.count !== 0)) throw new AgentError('RECOVERY_FENCE');
+    const semantic = Object.freeze({
+      schemaVersion: 1,
+      operation: 'database.clear_all',
+      operationId: manifest.operationId,
+      ownerClientId: manifest.ownerClientId,
+      deleteManagedImages: manifest.deleteManagedImages,
+      inventoryHash: manifest.inventoryHash,
+      affectedSetHash: manifest.affectedSetHash,
+      businessRowCount: manifest.businessRowCount,
+      managedImageCount: manifest.managedImageCount,
+      version: Object.freeze({ ...version }),
+      tableCounts: Object.freeze(tableCounts)
+    });
+    const canonical = canonicalizeJson(semantic);
+    return Object.freeze({ contentHash: hashCanonicalJson(semantic), contentSize: Buffer.byteLength(canonical, 'utf8') });
+  } finally {
+    database.close();
+  }
+}
+
+function sameRestoreEvidence(left: DatabaseRestoreFileEvidence, right: DatabaseRestoreFileEvidence): boolean {
+  return left.contentHash === right.contentHash && left.contentSize === right.contentSize;
+}
+
+function restoreResult(manifest: DatabaseRestoreManifest, versionAfter: import('../../shared/agent').DataVersion) {
+  return Object.freeze({
+    changed: true,
+    value: Object.freeze({ backupId: manifest.backup.assetId, restored: true }),
+    events: Object.freeze([]),
+    dataVersion: Object.freeze({ ...versionAfter })
+  });
+}
+
+function dataRootMigrationResult(manifest: DataRootMigrationManifest, versionAfter: import('../../shared/agent').DataVersion) {
+  return Object.freeze({
+    changed: true,
+    value: Object.freeze({ rootSelectionId: manifest.selectionId, migrated: true, fileCount: manifest.inventoryCount, totalBytes: manifest.inventoryBytes }),
+    events: Object.freeze([]),
+    dataVersion: Object.freeze({ ...versionAfter })
+  });
+}
+
+async function terminalizeRecoveredDataRootMigration(
+  coordinator: DatabaseCoordinator,
+  manifest: DataRootMigrationManifest,
+  versionAfter: import('../../shared/agent').DataVersion,
+  now: () => string
+): Promise<void> {
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) =>
+    coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID });
+  const receipts = new ExecutionReceipts({ audit, workflows, now });
+  const prepared = Object.freeze({
+    receiptId: manifest.receiptId,
+    clientId: manifest.ownerClientId,
+    requestId: manifest.requestId,
+    operation: manifest.receiptOperation,
+    payloadHash: manifest.receiptPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog }),
+    risk: 'R4' as const,
+    createdAt: manifest.receiptCreatedAt,
+    reservation: Object.freeze({
+      apiVersion: 1 as const,
+      reservationId: manifest.reservationId,
+      grantId: manifest.grantId,
+      clientId: manifest.ownerClientId,
+      requestId: manifest.requestId,
+      operation: 'data_root.migrate' as const,
+      payloadHash: manifest.migratePayloadHash,
+      affectedSetHash: manifest.affectedSetHash,
+      baseVersion: Object.freeze({ ...manifest.baseVersion }),
+      catalog: Object.freeze({ ...manifest.catalog }),
+      reservedAt: manifest.reservedAt,
+      expiresAt: manifest.reservationExpiresAt
+    }),
+    r4Authority: Object.freeze({
+      grantId: manifest.grantId,
+      targetHash: manifest.targetHash,
+      recovery: manifest.recovery,
+      maxAffectedEntities: manifest.maxAffectedEntities,
+      reservationExpiresAt: manifest.reservationExpiresAt
+    })
+  });
+  const changeSet = manifest.changeSetId ? Object.freeze({
+    changeSetId: manifest.changeSetId,
+    clientId: manifest.ownerClientId,
+    operation: 'data_root.migrate' as const,
+    payloadHash: manifest.migratePayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog })
+  }) : undefined;
+  const result = dataRootMigrationResult(manifest, versionAfter);
+  const terminalHook = receipts.createTerminalHook(prepared, { ...(changeSet ? { changeSet } : {}) });
+  await coordinator.executeControlWrite(controlCapability, {
+    requestId: `global-root-terminal-${manifest.operationId}`,
+    execute: (database, scope) => {
+      const existing = one<Record<string, SqlValue>>(database, 'SELECT status,terminal_outcome_hash FROM agent_idempotency WHERE receipt_id=?', [manifest.receiptId]);
+      if (!existing) throw new AgentError('RECOVERY_FENCE');
+      if (existing.status === 'completed') {
+        if (existing.terminal_outcome_hash !== hashCanonicalJson(result)) throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: undefined };
+      }
+      terminalHook.execute(database, scope, {
+        value: result,
+        semanticChanged: true,
+        versionBefore: manifest.baseVersion,
+        versionAfter,
+        generationBefore: coordinator.currentGeneration(),
+        generationAfterDataMutation: coordinator.currentGeneration()
+      });
+      database.run(`INSERT OR REPLACE INTO agent_data_root_migration_journals (
+        operation_id,owner_client_id,request_id,receipt_id,reservation_id,grant_id,change_set_id,selection_id,
+        affected_entities_json,affected_set_hash,target_hash,inventory_hash,file_count,total_bytes,base_data_epoch,base_data_revision,
+        catalog_version,catalog_hash,status,version_after_epoch,version_after_revision,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        manifest.operationId, manifest.ownerClientId, manifest.requestId, manifest.receiptId, manifest.reservationId,
+        manifest.grantId, manifest.changeSetId ?? null, manifest.selectionId, canonicalizeJson(manifest.affectedEntities),
+        manifest.affectedSetHash, manifest.targetHash, manifest.inventoryHash, manifest.inventoryCount, manifest.inventoryBytes,
+        manifest.baseVersion.dataEpoch, manifest.baseVersion.dataRevision, manifest.catalog.version, manifest.catalog.hash,
+        'completed', versionAfter.dataEpoch, versionAfter.dataRevision, manifest.createdAt, now()
+      ]);
+      const selection = getInternalGlobalAsset(database, manifest.selectionId);
+      if (!selection || selection.kind !== 'root_selection' || selection.ownerClientId !== manifest.ownerClientId) throw new AgentError('RECOVERY_FENCE');
+      if (selection.status === 'published') transitionGlobalAsset(database, manifest.selectionId, 'consumed', now(), { operationJournalId: manifest.operationId }, scope);
+      else if (selection.status !== 'consumed') throw new AgentError('RECOVERY_FENCE');
+      return { changed: true, value: undefined };
+    }
+  });
+}
+
+async function terminalizeRecoveredDatabaseRestore(
+  coordinator: DatabaseCoordinator,
+  manifest: DatabaseRestoreManifest,
+  versionAfter: import('../../shared/agent').DataVersion,
+  now: () => string
+): Promise<boolean> {
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) =>
+    coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID });
+  const receipts = new ExecutionReceipts({ audit, workflows, now });
+  const prepared = Object.freeze({
+    receiptId: manifest.receiptId,
+    clientId: manifest.ownerClientId,
+    requestId: manifest.requestId,
+    operation: manifest.receiptOperation,
+    payloadHash: manifest.receiptPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog }),
+    risk: manifest.risk,
+    createdAt: manifest.receiptCreatedAt,
+    reservation: Object.freeze({
+      apiVersion: 1 as const,
+      reservationId: manifest.reservationId,
+      grantId: manifest.grantId,
+      clientId: manifest.ownerClientId,
+      requestId: manifest.requestId,
+      operation: 'database.restore' as const,
+      payloadHash: manifest.restorePayloadHash,
+      affectedSetHash: manifest.affectedSetHash,
+      baseVersion: Object.freeze({ ...manifest.baseVersion }),
+      catalog: Object.freeze({ ...manifest.catalog }),
+      reservedAt: manifest.reservedAt,
+      expiresAt: manifest.reservationExpiresAt
+    }),
+    r4Authority: Object.freeze({
+      grantId: manifest.grantId,
+      targetHash: manifest.targetHash,
+      recovery: manifest.recovery,
+      maxAffectedEntities: manifest.maxAffectedEntities,
+      reservationExpiresAt: manifest.reservationExpiresAt
+    })
+  });
+  const changeSet = manifest.changeSetId ? Object.freeze({
+    changeSetId: manifest.changeSetId,
+    clientId: manifest.ownerClientId,
+    operation: 'database.restore' as const,
+    payloadHash: manifest.restorePayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog })
+  }) : undefined;
+  const result = restoreResult(manifest, versionAfter);
+  const terminalHook = receipts.createTerminalHook(prepared, {
+    ...(changeSet ? { changeSet } : {})
+  });
+  const terminal = await coordinator.executeControlWrite(controlCapability, {
+    requestId: `global-restore-terminal-${manifest.operationId}`,
+    execute: (database, scope) => {
+      const row = one<{ status: string; terminal_outcome_hash?: string }>(database, 'SELECT status,terminal_outcome_hash FROM agent_idempotency WHERE receipt_id=?', [manifest.receiptId]);
+      if (!row) throw new AgentError('RECOVERY_FENCE');
+      if (row.status === 'completed') {
+        if (row.terminal_outcome_hash !== hashCanonicalJson(result)) throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: false };
+      }
+      terminalHook.execute(database, scope, {
+        value: result,
+        semanticChanged: true,
+        versionBefore: manifest.baseVersion,
+        versionAfter,
+        generationBefore: coordinator.currentGeneration(),
+        generationAfterDataMutation: coordinator.currentGeneration()
+      });
+      database.run(`INSERT OR REPLACE INTO agent_database_restore_journals (
+        operation_id, owner_client_id, request_id, receipt_id, reservation_id, grant_id, change_set_id, asset_id,
+        affected_set_hash, target_hash, backup_content_hash, backup_content_size, base_data_epoch, base_data_revision,
+        catalog_version, catalog_hash, status, version_after_epoch, version_after_revision, recovery_database_path,
+        created_at, updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        manifest.operationId, manifest.ownerClientId, manifest.requestId, manifest.receiptId, manifest.reservationId, manifest.grantId,
+        manifest.changeSetId ?? null, manifest.backup.assetId, manifest.affectedSetHash, manifest.targetHash, manifest.backup.contentHash,
+        manifest.backup.contentSize, manifest.baseVersion.dataEpoch, manifest.baseVersion.dataRevision, manifest.catalog.version,
+        manifest.catalog.hash, 'completed', versionAfter.dataEpoch, versionAfter.dataRevision, manifest.recoveryDatabasePath!,
+        manifest.createdAt, now()
+      ]);
+      return { changed: true, value: true };
+    }
+  });
+  return terminal.value;
+}
+
+async function verifyCompletedDatabaseRestore(
+  coordinator: DatabaseCoordinator,
+  manifest: DatabaseRestoreManifest,
+  now: () => string
+): Promise<void> {
+  if (!manifest.versionAfter) throw new AgentError('RECOVERY_FENCE');
+  const current = coordinator.currentVersion();
+  if (current.dataEpoch !== manifest.versionAfter.dataEpoch || current.dataRevision < manifest.versionAfter.dataRevision) throw new AgentError('RECOVERY_FENCE');
+  const expectedResultHash = hashCanonicalJson(restoreResult(manifest, manifest.versionAfter));
+  const database = db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  const receipt = one<Record<string, SqlValue>>(database, `SELECT status,terminal_outcome_hash,reservation_id,grant_id,operation,payload_hash,affected_set_hash
+    FROM agent_idempotency WHERE receipt_id=? AND client_id=? AND request_id=?`, [manifest.receiptId, manifest.ownerClientId, manifest.requestId]);
+  if (!receipt || receipt.status !== 'completed' || receipt.terminal_outcome_hash !== expectedResultHash ||
+      receipt.reservation_id !== manifest.reservationId || receipt.grant_id !== manifest.grantId ||
+      receipt.operation !== manifest.receiptOperation || receipt.payload_hash !== manifest.receiptPayloadHash ||
+      receipt.affected_set_hash !== manifest.affectedSetHash) throw new AgentError('RECOVERY_FENCE');
+  const grant = one<Record<string, SqlValue>>(database, `SELECT status,reservation_id,operation,reserved_payload_hash,reserved_affected_set_hash,
+      reserved_base_epoch,reserved_base_revision,reserved_catalog_version,reserved_catalog_hash,target_hash
+    FROM agent_r4_grants WHERE grant_id=?`, [manifest.grantId]);
+  if (!grant || grant.status !== 'consumed' || grant.reservation_id !== manifest.reservationId || grant.operation !== 'database.restore' ||
+      grant.reserved_payload_hash !== manifest.restorePayloadHash || grant.reserved_affected_set_hash !== manifest.affectedSetHash ||
+      grant.reserved_base_epoch !== manifest.baseVersion.dataEpoch || grant.reserved_base_revision !== manifest.baseVersion.dataRevision ||
+      grant.reserved_catalog_version !== manifest.catalog.version || grant.reserved_catalog_hash !== manifest.catalog.hash ||
+      grant.target_hash !== manifest.targetHash) throw new AgentError('RECOVERY_FENCE');
+  if (manifest.changeSetId) {
+    const changeSet = one<Record<string, SqlValue>>(database, `SELECT c.status,c.client_id,c.affected_set_hash,c.base_data_epoch,c.base_data_revision,
+        c.catalog_version,c.catalog_hash,o.operation,o.payload_hash
+      FROM agent_changesets c INNER JOIN agent_changeset_operations o ON o.change_set_id=c.change_set_id
+      WHERE c.change_set_id=?`, [manifest.changeSetId]);
+    if (!changeSet || changeSet.status !== 'applied' || changeSet.client_id !== manifest.ownerClientId ||
+        changeSet.affected_set_hash !== manifest.affectedSetHash || changeSet.base_data_epoch !== manifest.baseVersion.dataEpoch ||
+        changeSet.base_data_revision !== manifest.baseVersion.dataRevision || changeSet.catalog_version !== manifest.catalog.version ||
+        changeSet.catalog_hash !== manifest.catalog.hash || changeSet.operation !== 'database.restore' ||
+        changeSet.payload_hash !== manifest.restorePayloadHash) throw new AgentError('RECOVERY_FENCE');
+  }
+  const journal = one<Record<string, SqlValue>>(database, `SELECT status,receipt_id,reservation_id,grant_id,asset_id,affected_set_hash,target_hash,
+      backup_content_hash,backup_content_size,version_after_epoch,version_after_revision,recovery_database_path
+    FROM agent_database_restore_journals WHERE operation_id=?`, [manifest.operationId]);
+  if (!journal || journal.status !== 'completed' || journal.receipt_id !== manifest.receiptId ||
+      journal.reservation_id !== manifest.reservationId || journal.grant_id !== manifest.grantId ||
+      journal.asset_id !== manifest.backup.assetId || journal.affected_set_hash !== manifest.affectedSetHash ||
+      journal.target_hash !== manifest.targetHash || journal.backup_content_hash !== manifest.backup.contentHash ||
+      journal.backup_content_size !== manifest.backup.contentSize || journal.version_after_epoch !== manifest.versionAfter.dataEpoch ||
+      journal.version_after_revision !== manifest.versionAfter.dataRevision || journal.recovery_database_path !== manifest.recoveryDatabasePath) throw new AgentError('RECOVERY_FENCE');
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) =>
+    coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const verification = await audit.verify();
+  if (!verification.valid) throw new AgentError('RECOVERY_FENCE');
+  const terminalAudit = one<Record<string, SqlValue>>(database, `SELECT kind FROM agent_audit_events
+    WHERE kind='success' AND receipt_id=? AND client_id=? AND request_id=? AND operation=?`, [
+    manifest.receiptId, manifest.ownerClientId, manifest.requestId, manifest.receiptOperation
+  ]);
+  if (!terminalAudit) throw new AgentError('RECOVERY_FENCE');
+}
+
+function databaseImportResult(manifest: DatabaseImportManifest, versionAfter: import('../../shared/agent').DataVersion) {
+  return Object.freeze({
+    changed: true,
+    value: Object.freeze({ importAssetId: manifest.package.assetId, replaced: true }),
+    events: Object.freeze([]),
+    dataVersion: Object.freeze({ ...versionAfter })
+  });
+}
+
+function verifyDatabaseImportPackageManifest(manifest: DatabaseImportManifest): ParsedDatabaseImportPackage {
+  const importsRoot = path.normalize(path.join(getPaths().data, 'managed-database-imports'));
+  const verified = verifyManagedDatabaseImport(manifest.package.internalPath, importsRoot, { hash: manifest.package.contentHash, size: manifest.package.contentSize });
+  const parsed = parseDatabaseImportPackage(verified.bytes);
+  if (parsed.metadata.semanticHash !== manifest.package.semanticHash || parsed.metadata.rowCount !== manifest.package.rowCount) throw new AgentError('RECOVERY_FENCE');
+  return parsed;
+}
+
+async function terminalizeRecoveredDatabaseImport(
+  coordinator: DatabaseCoordinator,
+  manifest: DatabaseImportManifest,
+  versionAfter: import('../../shared/agent').DataVersion,
+  now: () => string
+): Promise<void> {
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID });
+  const receipts = new ExecutionReceipts({ audit, workflows, now });
+  const prepared = Object.freeze({
+    receiptId: manifest.receiptId,
+    clientId: manifest.ownerClientId,
+    requestId: manifest.requestId,
+    operation: manifest.receiptOperation,
+    payloadHash: manifest.receiptPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog }),
+    risk: manifest.risk,
+    createdAt: manifest.receiptCreatedAt,
+    reservation: Object.freeze({
+      apiVersion: 1 as const,
+      reservationId: manifest.reservationId,
+      grantId: manifest.grantId,
+      clientId: manifest.ownerClientId,
+      requestId: manifest.requestId,
+      operation: 'database.replace_from_import' as const,
+      payloadHash: manifest.importPayloadHash,
+      affectedSetHash: manifest.affectedSetHash,
+      baseVersion: Object.freeze({ ...manifest.baseVersion }),
+      catalog: Object.freeze({ ...manifest.catalog }),
+      reservedAt: manifest.reservedAt,
+      expiresAt: manifest.reservationExpiresAt
+    }),
+    r4Authority: Object.freeze({
+      grantId: manifest.grantId,
+      targetHash: manifest.targetHash,
+      recovery: manifest.recovery,
+      maxAffectedEntities: manifest.maxAffectedEntities,
+      reservationExpiresAt: manifest.reservationExpiresAt
+    })
+  });
+  const changeSet = manifest.changeSetId ? Object.freeze({
+    changeSetId: manifest.changeSetId,
+    clientId: manifest.ownerClientId,
+    operation: 'database.replace_from_import' as const,
+    payloadHash: manifest.importPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog })
+  }) : undefined;
+  const result = databaseImportResult(manifest, versionAfter);
+  const terminalHook = receipts.createTerminalHook(prepared, { ...(changeSet ? { changeSet } : {}) });
+  await coordinator.executeControlWrite(controlCapability, {
+    requestId: `global-import-terminal-${manifest.operationId}`,
+    execute: async (database, scope) => {
+      const receipt = one<{ status: string; terminal_outcome_hash?: string }>(database, 'SELECT status,terminal_outcome_hash FROM agent_idempotency WHERE receipt_id=?', [manifest.receiptId]);
+      if (!receipt) throw new AgentError('RECOVERY_FENCE');
+      if (receipt.status === 'completed') {
+        const journal = one<{ status: string }>(database, 'SELECT status FROM agent_database_import_journals WHERE operation_id=?', [manifest.operationId]);
+        const asset = getInternalGlobalAsset(database, manifest.package.assetId);
+        if (receipt.terminal_outcome_hash !== hashCanonicalJson(result) || journal?.status !== 'completed' || asset?.status !== 'consumed') throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: undefined };
+      }
+      const asset = getInternalGlobalAsset(database, manifest.package.assetId);
+      if (!asset || asset.ownerClientId !== manifest.ownerClientId || asset.kind !== 'database_import' || asset.status !== 'published' ||
+          asset.contentHash !== manifest.package.contentHash || asset.contentSize !== manifest.package.contentSize || asset.internalPath !== manifest.package.internalPath) throw new AgentError('RECOVERY_FENCE');
+      await terminalHook.execute(database, scope, {
+        value: result,
+        semanticChanged: true,
+        versionBefore: manifest.baseVersion,
+        versionAfter,
+        generationBefore: coordinator.currentGeneration(),
+        generationAfterDataMutation: coordinator.currentGeneration()
+      });
+      transitionGlobalAsset(database, manifest.package.assetId, 'consumed', now(), {}, scope);
+      database.run(`INSERT INTO agent_database_import_journals (
+        operation_id,owner_client_id,request_id,receipt_id,reservation_id,grant_id,change_set_id,asset_id,
+        affected_set_hash,target_hash,package_content_hash,package_content_size,package_semantic_hash,package_row_count,
+        live_semantic_hash,live_semantic_size,base_data_epoch,base_data_revision,catalog_version,catalog_hash,status,
+        version_after_epoch,version_after_revision,recovery_database_path,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        manifest.operationId, manifest.ownerClientId, manifest.requestId, manifest.receiptId, manifest.reservationId, manifest.grantId,
+        manifest.changeSetId ?? null, manifest.package.assetId, manifest.affectedSetHash, manifest.targetHash, manifest.package.contentHash,
+        manifest.package.contentSize, manifest.package.semanticHash, manifest.package.rowCount, manifest.liveDatabaseEvidence!.contentHash,
+        manifest.liveDatabaseEvidence!.contentSize, manifest.baseVersion.dataEpoch, manifest.baseVersion.dataRevision, manifest.catalog.version,
+        manifest.catalog.hash, 'completed', versionAfter.dataEpoch, versionAfter.dataRevision, manifest.recoveryDatabasePath!, manifest.createdAt, now()
+      ]);
+      return { changed: true, value: undefined };
+    }
+  });
+}
+
+async function verifyCompletedDatabaseImport(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  manifest: DatabaseImportManifest,
+  now: () => string
+): Promise<void> {
+  if (!manifest.versionAfter || !manifest.liveDatabaseEvidence) throw new AgentError('RECOVERY_FENCE');
+  verifyDatabaseImportPackageManifest(manifest);
+  const current = coordinator.currentVersion();
+  if (current.dataEpoch !== manifest.versionAfter.dataEpoch || current.dataRevision < manifest.versionAfter.dataRevision) throw new AgentError('RECOVERY_FENCE');
+  if (current.dataRevision === manifest.versionAfter.dataRevision && !sameRestoreEvidence(
+    databaseImportLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), manifest, manifest.versionAfter), manifest.liveDatabaseEvidence
+  )) throw new AgentError('RECOVERY_FENCE');
+  const database = db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  const resultHash = hashCanonicalJson(databaseImportResult(manifest, manifest.versionAfter));
+  const receipt = one<Record<string, SqlValue>>(database, `SELECT status,terminal_outcome_hash,reservation_id,grant_id,operation,payload_hash,affected_set_hash
+    FROM agent_idempotency WHERE receipt_id=? AND client_id=? AND request_id=?`, [manifest.receiptId, manifest.ownerClientId, manifest.requestId]);
+  if (!receipt || receipt.status !== 'completed' || receipt.terminal_outcome_hash !== resultHash || receipt.reservation_id !== manifest.reservationId ||
+      receipt.grant_id !== manifest.grantId || receipt.operation !== manifest.receiptOperation || receipt.payload_hash !== manifest.receiptPayloadHash ||
+      receipt.affected_set_hash !== manifest.affectedSetHash) throw new AgentError('RECOVERY_FENCE');
+  const grant = one<Record<string, SqlValue>>(database, `SELECT status,reservation_id,operation,reserved_payload_hash,reserved_affected_set_hash,
+      reserved_base_epoch,reserved_base_revision,reserved_catalog_version,reserved_catalog_hash,target_hash FROM agent_r4_grants WHERE grant_id=?`, [manifest.grantId]);
+  if (!grant || grant.status !== 'consumed' || grant.reservation_id !== manifest.reservationId || grant.operation !== 'database.replace_from_import' ||
+      grant.reserved_payload_hash !== manifest.importPayloadHash || grant.reserved_affected_set_hash !== manifest.affectedSetHash ||
+      grant.reserved_base_epoch !== manifest.baseVersion.dataEpoch || grant.reserved_base_revision !== manifest.baseVersion.dataRevision ||
+      grant.reserved_catalog_version !== manifest.catalog.version || grant.reserved_catalog_hash !== manifest.catalog.hash || grant.target_hash !== manifest.targetHash) throw new AgentError('RECOVERY_FENCE');
+  if (manifest.changeSetId) {
+    const changeSet = one<Record<string, SqlValue>>(database, `SELECT c.status,c.client_id,c.affected_set_hash,c.base_data_epoch,c.base_data_revision,
+        c.catalog_version,c.catalog_hash,o.operation,o.payload_hash FROM agent_changesets c INNER JOIN agent_changeset_operations o ON o.change_set_id=c.change_set_id
+      WHERE c.change_set_id=?`, [manifest.changeSetId]);
+    if (!changeSet || changeSet.status !== 'applied' || changeSet.client_id !== manifest.ownerClientId || changeSet.affected_set_hash !== manifest.affectedSetHash ||
+        changeSet.base_data_epoch !== manifest.baseVersion.dataEpoch || changeSet.base_data_revision !== manifest.baseVersion.dataRevision ||
+        changeSet.catalog_version !== manifest.catalog.version || changeSet.catalog_hash !== manifest.catalog.hash ||
+        changeSet.operation !== 'database.replace_from_import' || changeSet.payload_hash !== manifest.importPayloadHash) throw new AgentError('RECOVERY_FENCE');
+  }
+  const asset = getInternalGlobalAsset(database, manifest.package.assetId);
+  const journal = one<Record<string, SqlValue>>(database, `SELECT * FROM agent_database_import_journals WHERE operation_id=?`, [manifest.operationId]);
+  if (!asset || asset.status !== 'consumed' || asset.ownerClientId !== manifest.ownerClientId || asset.kind !== 'database_import' ||
+      !journal || journal.status !== 'completed' || journal.receipt_id !== manifest.receiptId || journal.reservation_id !== manifest.reservationId ||
+      journal.grant_id !== manifest.grantId || journal.asset_id !== manifest.package.assetId || journal.affected_set_hash !== manifest.affectedSetHash ||
+      journal.target_hash !== manifest.targetHash || journal.package_content_hash !== manifest.package.contentHash || journal.package_content_size !== manifest.package.contentSize ||
+      journal.package_semantic_hash !== manifest.package.semanticHash || journal.package_row_count !== manifest.package.rowCount ||
+      journal.live_semantic_hash !== manifest.liveDatabaseEvidence.contentHash || journal.live_semantic_size !== manifest.liveDatabaseEvidence.contentSize ||
+      journal.version_after_epoch !== manifest.versionAfter.dataEpoch || journal.version_after_revision !== manifest.versionAfter.dataRevision ||
+      journal.recovery_database_path !== manifest.recoveryDatabasePath) throw new AgentError('RECOVERY_FENCE');
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  if (!(await audit.verify()).valid) throw new AgentError('RECOVERY_FENCE');
+  const terminalAudit = one<Record<string, SqlValue>>(database, "SELECT kind FROM agent_audit_events WHERE kind='success' AND receipt_id=? AND client_id=? AND request_id=? AND operation=?", [
+    manifest.receiptId, manifest.ownerClientId, manifest.requestId, manifest.receiptOperation
+  ]);
+  if (!terminalAudit) throw new AgentError('RECOVERY_FENCE');
+}
+
+function databaseClearResult(manifest: DatabaseClearManifest, versionAfter: import('../../shared/agent').DataVersion) {
+  return Object.freeze({
+    changed: true,
+    value: Object.freeze({
+      cleared: true as const,
+      deleteManagedImages: manifest.deleteManagedImages,
+      businessRowCount: manifest.businessRowCount,
+      managedImageCount: manifest.managedImageCount
+    }),
+    events: Object.freeze([]),
+    dataVersion: Object.freeze({ ...versionAfter })
+  });
+}
+
+function clearQuarantinePath(operationId: string, index: number): string {
+  return path.normalize(path.join(getPaths().temp, 'a11-quarantine', `${operationId}-${index}.quarantine`));
+}
+
+function assertClearPrivateFilePath(file: DatabaseClearManagedFile): void {
+  const root = file.sourceKind === 'question_image' ? path.normalize(getPaths().images) : managedImportInboxRoot();
+  const relative = path.relative(root, file.internalPath);
+  if (!path.isAbsolute(file.internalPath) || path.normalize(file.internalPath) !== file.internalPath || !relative ||
+      relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative) ||
+      hashCanonicalJson({ root: file.sourceKind, relativePath: relative.replaceAll(path.sep, '/') }) !== file.pathHash) throw new AgentError('RECOVERY_FENCE');
+}
+
+function verifyDatabaseClearFiles(manifest: DatabaseClearManifest, verifyPreservedSources: boolean): void {
+  manifest.managedFiles.forEach((file, index) => {
+    assertClearPrivateFilePath(file);
+    const quarantinePath = clearQuarantinePath(manifest.operationId, index);
+    if (manifest.deleteManagedImages) {
+      if (fs.existsSync(file.internalPath) || !fs.existsSync(quarantinePath) ||
+          !sameRestoreEvidence(restoreEvidence(quarantinePath), { contentHash: file.contentHash, contentSize: file.contentSize })) {
+        throw new AgentError('RECOVERY_FENCE');
+      }
+      const quarantineStat = fs.lstatSync(quarantinePath);
+      if (quarantineStat.isSymbolicLink() || !quarantineStat.isFile()) throw new AgentError('RECOVERY_FENCE');
+      const quarantineRoot = path.normalize(path.join(getPaths().temp, 'a11-quarantine'));
+      const realRoot = path.normalize(fs.realpathSync(quarantineRoot));
+      const realFile = path.normalize(fs.realpathSync(quarantinePath));
+      if (!isSameOrDescendant(realFile, realRoot) || realFile === realRoot) throw new AgentError('RECOVERY_FENCE');
+    } else if (verifyPreservedSources) {
+      const root = file.sourceKind === 'question_image' ? path.normalize(getPaths().images) : managedImportInboxRoot();
+      const verified = strictManagedClearFile({
+        sourceKind: file.sourceKind,
+        binding: Object.freeze({ fileId: file.fileId }),
+        reference: file.internalPath,
+        root,
+        expectedHash: file.contentHash,
+        expectedSize: file.contentSize
+      });
+      if (verified.pathHash !== file.pathHash || fs.existsSync(quarantinePath)) throw new AgentError('RECOVERY_FENCE');
+    }
+  });
+}
+
+function verifyDatabaseClearRecoveryPackage(manifest: DatabaseClearManifest): void {
+  if (!manifest.recoveryDatabasePath || !manifest.recoveryDatabaseEvidence || !manifest.recoveryInventoryPath || !manifest.recoveryInventoryEvidence ||
+      !fs.existsSync(manifest.recoveryDatabasePath) || !fs.existsSync(manifest.recoveryInventoryPath) ||
+      !sameRestoreEvidence(restoreEvidence(manifest.recoveryDatabasePath), manifest.recoveryDatabaseEvidence) ||
+      !sameRestoreEvidence(restoreEvidence(manifest.recoveryInventoryPath), manifest.recoveryInventoryEvidence)) throw new AgentError('RECOVERY_FENCE');
+}
+
+async function terminalizeRecoveredDatabaseClear(
+  coordinator: DatabaseCoordinator,
+  manifest: DatabaseClearManifest,
+  versionAfter: import('../../shared/agent').DataVersion,
+  now: () => string
+): Promise<void> {
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID });
+  const receipts = new ExecutionReceipts({ audit, workflows, now });
+  const prepared = Object.freeze({
+    receiptId: manifest.receiptId,
+    clientId: manifest.ownerClientId,
+    requestId: manifest.requestId,
+    operation: manifest.receiptOperation,
+    payloadHash: manifest.receiptPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog }),
+    risk: manifest.risk,
+    createdAt: manifest.receiptCreatedAt,
+    reservation: Object.freeze({
+      apiVersion: 1 as const,
+      reservationId: manifest.reservationId,
+      grantId: manifest.grantId,
+      clientId: manifest.ownerClientId,
+      requestId: manifest.requestId,
+      operation: 'database.clear_all' as const,
+      payloadHash: manifest.clearPayloadHash,
+      affectedSetHash: manifest.affectedSetHash,
+      baseVersion: Object.freeze({ ...manifest.baseVersion }),
+      catalog: Object.freeze({ ...manifest.catalog }),
+      reservedAt: manifest.reservedAt,
+      expiresAt: manifest.reservationExpiresAt
+    }),
+    r4Authority: Object.freeze({
+      grantId: manifest.grantId,
+      targetHash: manifest.targetHash,
+      recovery: manifest.recovery,
+      maxAffectedEntities: manifest.maxAffectedEntities,
+      reservationExpiresAt: manifest.reservationExpiresAt
+    })
+  });
+  const changeSet = manifest.changeSetId ? Object.freeze({
+    changeSetId: manifest.changeSetId,
+    clientId: manifest.ownerClientId,
+    operation: 'database.clear_all' as const,
+    payloadHash: manifest.clearPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog })
+  }) : undefined;
+  const result = databaseClearResult(manifest, versionAfter);
+  const terminalHook = receipts.createTerminalHook(prepared, { ...(changeSet ? { changeSet } : {}) });
+  await coordinator.executeControlWrite(controlCapability, {
+    requestId: `global-clear-terminal-${manifest.operationId}`,
+    execute: async (database, scope) => {
+      const receipt = one<{ status: string; terminal_outcome_hash?: string }>(database, 'SELECT status,terminal_outcome_hash FROM agent_idempotency WHERE receipt_id=?', [manifest.receiptId]);
+      if (!receipt) throw new AgentError('RECOVERY_FENCE');
+      if (receipt.status === 'completed') {
+        const journal = one<{ status: string }>(database, 'SELECT status FROM agent_database_clear_journals WHERE operation_id=?', [manifest.operationId]);
+        if (receipt.terminal_outcome_hash !== hashCanonicalJson(result) || journal?.status !== 'completed') throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: undefined };
+      }
+      await terminalHook.execute(database, scope, {
+        value: result,
+        semanticChanged: true,
+        versionBefore: manifest.baseVersion,
+        versionAfter,
+        generationBefore: coordinator.currentGeneration(),
+        generationAfterDataMutation: coordinator.currentGeneration()
+      });
+      database.run(`INSERT INTO agent_database_clear_journals (
+        operation_id,owner_client_id,request_id,receipt_id,reservation_id,grant_id,change_set_id,delete_managed_images,
+        business_row_count,managed_image_count,affected_entity_count,inventory_hash,affected_set_hash,target_hash,
+        live_semantic_hash,live_semantic_size,base_data_epoch,base_data_revision,catalog_version,catalog_hash,status,
+        version_after_epoch,version_after_revision,recovery_database_path,recovery_inventory_path,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        manifest.operationId, manifest.ownerClientId, manifest.requestId, manifest.receiptId, manifest.reservationId, manifest.grantId,
+        manifest.changeSetId ?? null, manifest.deleteManagedImages ? 1 : 0, manifest.businessRowCount, manifest.managedImageCount,
+        manifest.affectedEntityCount, manifest.inventoryHash, manifest.affectedSetHash, manifest.targetHash,
+        manifest.liveDatabaseEvidence!.contentHash, manifest.liveDatabaseEvidence!.contentSize,
+        manifest.baseVersion.dataEpoch, manifest.baseVersion.dataRevision, manifest.catalog.version, manifest.catalog.hash, 'completed',
+        versionAfter.dataEpoch, versionAfter.dataRevision, manifest.recoveryDatabasePath!, manifest.recoveryInventoryPath!, manifest.createdAt, now()
+      ]);
+      return { changed: true, value: undefined };
+    }
+  });
+}
+
+async function verifyCompletedDatabaseClear(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  manifest: DatabaseClearManifest,
+  now: () => string
+): Promise<void> {
+  if (!manifest.versionAfter || !manifest.liveDatabaseEvidence) throw new AgentError('RECOVERY_FENCE');
+  verifyDatabaseClearRecoveryPackage(manifest);
+  const current = coordinator.currentVersion();
+  if (current.dataEpoch !== manifest.versionAfter.dataEpoch || current.dataRevision < manifest.versionAfter.dataRevision) throw new AgentError('RECOVERY_FENCE');
+  const sameClearVersion = current.dataRevision === manifest.versionAfter.dataRevision;
+  verifyDatabaseClearFiles(manifest, sameClearVersion);
+  if (sameClearVersion && !sameRestoreEvidence(
+    databaseClearLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), manifest, manifest.versionAfter), manifest.liveDatabaseEvidence
+  )) throw new AgentError('RECOVERY_FENCE');
+  const database = db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  const resultHash = hashCanonicalJson(databaseClearResult(manifest, manifest.versionAfter));
+  const receipt = one<Record<string, SqlValue>>(database, `SELECT status,terminal_outcome_hash,reservation_id,grant_id,operation,payload_hash,affected_set_hash
+    FROM agent_idempotency WHERE receipt_id=? AND client_id=? AND request_id=?`, [manifest.receiptId, manifest.ownerClientId, manifest.requestId]);
+  if (!receipt || receipt.status !== 'completed' || receipt.terminal_outcome_hash !== resultHash || receipt.reservation_id !== manifest.reservationId ||
+      receipt.grant_id !== manifest.grantId || receipt.operation !== manifest.receiptOperation || receipt.payload_hash !== manifest.receiptPayloadHash ||
+      receipt.affected_set_hash !== manifest.affectedSetHash) throw new AgentError('RECOVERY_FENCE');
+  const grant = one<Record<string, SqlValue>>(database, `SELECT status,reservation_id,operation,reserved_payload_hash,reserved_affected_set_hash,
+      reserved_base_epoch,reserved_base_revision,reserved_catalog_version,reserved_catalog_hash,target_hash FROM agent_r4_grants WHERE grant_id=?`, [manifest.grantId]);
+  if (!grant || grant.status !== 'consumed' || grant.reservation_id !== manifest.reservationId || grant.operation !== 'database.clear_all' ||
+      grant.reserved_payload_hash !== manifest.clearPayloadHash || grant.reserved_affected_set_hash !== manifest.affectedSetHash ||
+      grant.reserved_base_epoch !== manifest.baseVersion.dataEpoch || grant.reserved_base_revision !== manifest.baseVersion.dataRevision ||
+      grant.reserved_catalog_version !== manifest.catalog.version || grant.reserved_catalog_hash !== manifest.catalog.hash || grant.target_hash !== manifest.targetHash) {
+    throw new AgentError('RECOVERY_FENCE');
+  }
+  if (manifest.changeSetId) {
+    const changeSet = one<Record<string, SqlValue>>(database, `SELECT c.status,c.client_id,c.affected_set_hash,c.base_data_epoch,c.base_data_revision,
+        c.catalog_version,c.catalog_hash,o.operation,o.payload_hash FROM agent_changesets c INNER JOIN agent_changeset_operations o ON o.change_set_id=c.change_set_id
+      WHERE c.change_set_id=?`, [manifest.changeSetId]);
+    if (!changeSet || changeSet.status !== 'applied' || changeSet.client_id !== manifest.ownerClientId ||
+        changeSet.affected_set_hash !== manifest.affectedSetHash || changeSet.base_data_epoch !== manifest.baseVersion.dataEpoch ||
+        changeSet.base_data_revision !== manifest.baseVersion.dataRevision || changeSet.catalog_version !== manifest.catalog.version ||
+        changeSet.catalog_hash !== manifest.catalog.hash || changeSet.operation !== 'database.clear_all' || changeSet.payload_hash !== manifest.clearPayloadHash) {
+      throw new AgentError('RECOVERY_FENCE');
+    }
+  }
+  const journal = one<Record<string, SqlValue>>(database, 'SELECT * FROM agent_database_clear_journals WHERE operation_id=?', [manifest.operationId]);
+  if (!journal || journal.status !== 'completed' || journal.receipt_id !== manifest.receiptId || journal.reservation_id !== manifest.reservationId ||
+      journal.grant_id !== manifest.grantId || Number(journal.delete_managed_images) !== Number(manifest.deleteManagedImages) ||
+      journal.business_row_count !== manifest.businessRowCount || journal.managed_image_count !== manifest.managedImageCount ||
+      journal.affected_entity_count !== manifest.affectedEntityCount || journal.inventory_hash !== manifest.inventoryHash ||
+      journal.affected_set_hash !== manifest.affectedSetHash || journal.target_hash !== manifest.targetHash ||
+      journal.live_semantic_hash !== manifest.liveDatabaseEvidence.contentHash || journal.live_semantic_size !== manifest.liveDatabaseEvidence.contentSize ||
+      journal.version_after_epoch !== manifest.versionAfter.dataEpoch || journal.version_after_revision !== manifest.versionAfter.dataRevision ||
+      journal.recovery_database_path !== manifest.recoveryDatabasePath || journal.recovery_inventory_path !== manifest.recoveryInventoryPath) {
+    throw new AgentError('RECOVERY_FENCE');
+  }
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  if (!(await audit.verify()).valid) throw new AgentError('RECOVERY_FENCE');
+  const terminalAudit = one<Record<string, SqlValue>>(database, "SELECT kind FROM agent_audit_events WHERE kind='success' AND receipt_id=? AND client_id=? AND request_id=? AND operation=?", [
+    manifest.receiptId, manifest.ownerClientId, manifest.requestId, manifest.receiptOperation
+  ]);
+  if (!terminalAudit) throw new AgentError('RECOVERY_FENCE');
+}
+
+function importBatchDeletionResult(manifest: ImportBatchDeletionManifest, versionAfter: import('../../shared/agent').DataVersion) {
+  return Object.freeze({
+    changed: true,
+    value: Object.freeze({
+      batchId: manifest.batchId,
+      status: 'deleted' as const,
+      deleteManagedAssets: manifest.deleteManagedAssets,
+      deletedQuestions: manifest.deletedQuestionCount,
+      deletedExternalQuestions: manifest.deletedExternalQuestionCount,
+      deletedAttempts: manifest.deletedAttemptCount,
+      softDeletedKnowledgePoints: manifest.softDeletedKnowledgeCount,
+      quarantinedManagedAssets: manifest.quarantinedFileCount
+    }),
+    events: Object.freeze([]),
+    dataVersion: Object.freeze({ ...versionAfter })
+  });
+}
+
+function importBatchDeletionQuarantinePath(operationId: string, index: number): string {
+  return path.normalize(path.join(getPaths().temp, 'a11-quarantine', `${operationId}-${index}.quarantine`));
+}
+
+function verifyImportBatchDeletionFiles(manifest: ImportBatchDeletionManifest, verifyPreservedSources: boolean): void {
+  let quarantineIndex = 0;
+  for (const file of manifest.managedFiles) {
+    if (file.action === 'quarantine') {
+      const quarantinePath = importBatchDeletionQuarantinePath(manifest.operationId, quarantineIndex);
+      quarantineIndex += 1;
+      if (fs.existsSync(file.internalPath) || !fs.existsSync(quarantinePath) ||
+          !sameRestoreEvidence(restoreEvidence(quarantinePath), { contentHash: file.contentHash, contentSize: file.contentSize })) {
+        throw new AgentError('RECOVERY_FENCE');
+      }
+      const quarantineStat = fs.lstatSync(quarantinePath);
+      if (quarantineStat.isSymbolicLink() || !quarantineStat.isFile()) throw new AgentError('RECOVERY_FENCE');
+      const quarantineRoot = path.normalize(path.join(getPaths().temp, 'a11-quarantine'));
+      const realRoot = path.normalize(fs.realpathSync(quarantineRoot));
+      const realFile = path.normalize(fs.realpathSync(quarantinePath));
+      if (!isSameOrDescendant(realFile, realRoot) || realFile === realRoot) throw new AgentError('RECOVERY_FENCE');
+    } else if (verifyPreservedSources) {
+      verifyImportBatchDeletionManagedFile(file, manifest.batchId);
+    }
+  }
+  if (quarantineIndex !== manifest.quarantinedFileCount) throw new AgentError('RECOVERY_FENCE');
+}
+
+function verifyImportBatchDeletionRecoveryPackage(manifest: ImportBatchDeletionManifest): void {
+  if (!manifest.recoveryDatabasePath || !manifest.recoveryDatabaseEvidence || !manifest.recoveryInventoryPath || !manifest.recoveryInventoryEvidence ||
+      !fs.existsSync(manifest.recoveryDatabasePath) || !fs.existsSync(manifest.recoveryInventoryPath) ||
+      !sameRestoreEvidence(restoreEvidence(manifest.recoveryDatabasePath), manifest.recoveryDatabaseEvidence) ||
+      !sameRestoreEvidence(restoreEvidence(manifest.recoveryInventoryPath), manifest.recoveryInventoryEvidence)) throw new AgentError('RECOVERY_FENCE');
+}
+
+function importBatchDeletionLiveSemanticEvidence(
+  SQL: SqlJsStatic,
+  bytes: Uint8Array,
+  manifest: ImportBatchDeletionManifest,
+  expectedVersion: import('../../shared/agent').DataVersion
+): ImportBatchDeletionFileEvidence {
+  const opener = createSqlJsCandidateOpener(SQL);
+  let inspected;
+  try { inspected = inspectDatabaseBytes(bytes, { path: getPaths().database, kind: 'temp' }, opener, expectedVersion); } catch { throw new AgentError('RECOVERY_FENCE'); }
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') throw new AgentError('RECOVERY_FENCE');
+  const database = new SQL.Database(bytes);
+  try {
+    database.run('PRAGMA foreign_keys = ON;');
+    database.exec(schemaSql);
+    migrateDatabase(database);
+    const version = new RevisionStore(database).readCurrentVersion();
+    if (!sameVersion(version, expectedVersion)) throw new AgentError('RECOVERY_FENCE');
+    const batch = one<Record<string, SqlValue>>(database, 'SELECT status,deleted_at,owner_client_id,type FROM import_batches WHERE id=?', [manifest.batchId]);
+    if (!batch || batch.status !== 'deleted' || batch.deleted_at !== manifest.deletedAt || batch.owner_client_id !== manifest.batchOwnerClientId ||
+        batch.type !== manifest.batchType) throw new AgentError('RECOVERY_FENCE');
+    const businessTables = databaseRestoreTableAllowlist.map((table) => {
+      const columns = all<{ name: string }>(database, `PRAGMA table_info(${quoteSqlIdentifier(table)})`).map((column) => column.name);
+      if (columns.length === 0) throw new AgentError('RECOVERY_FENCE');
+      const rows = all<Record<string, SqlValue>>(database, `SELECT ${columns.map(quoteSqlIdentifier).join(',')} FROM ${quoteSqlIdentifier(table)}`)
+        .map((row) => Object.freeze(Object.fromEntries(columns.map((column) => [column, normalizedSqlValue(row[column])]))) as Readonly<Record<string, unknown>>)
+        .sort((left, right) => canonicalizeJson(left).localeCompare(canonicalizeJson(right)));
+      return Object.freeze({ table, rows: Object.freeze(rows) });
+    });
+    const semantic = Object.freeze({
+      schemaVersion: 1,
+      operation: 'imports.delete_batch',
+      operationId: manifest.operationId,
+      ownerClientId: manifest.ownerClientId,
+      batchId: manifest.batchId,
+      deleteManagedAssets: manifest.deleteManagedAssets,
+      inventoryHash: manifest.inventoryHash,
+      affectedSetHash: manifest.affectedSetHash,
+      version: Object.freeze({ ...version }),
+      businessTables: Object.freeze(businessTables)
+    });
+    const canonical = canonicalizeJson(semantic);
+    return Object.freeze({ contentHash: hashCanonicalJson(semantic), contentSize: Buffer.byteLength(canonical, 'utf8') });
+  } finally {
+    database.close();
+  }
+}
+
+async function terminalizeRecoveredImportBatchDeletion(
+  coordinator: DatabaseCoordinator,
+  manifest: ImportBatchDeletionManifest,
+  versionAfter: import('../../shared/agent').DataVersion,
+  now: () => string
+): Promise<void> {
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  const workflows = new WorkflowStore({ executeControlWrite, audit, now, randomUUID });
+  const receipts = new ExecutionReceipts({ audit, workflows, now });
+  const prepared = Object.freeze({
+    receiptId: manifest.receiptId,
+    clientId: manifest.ownerClientId,
+    requestId: manifest.requestId,
+    operation: manifest.receiptOperation,
+    payloadHash: manifest.receiptPayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog }),
+    risk: manifest.risk,
+    createdAt: manifest.receiptCreatedAt,
+    reservation: Object.freeze({
+      apiVersion: 1 as const,
+      reservationId: manifest.reservationId,
+      grantId: manifest.grantId,
+      clientId: manifest.ownerClientId,
+      requestId: manifest.requestId,
+      operation: 'imports.delete_batch' as const,
+      payloadHash: manifest.deletePayloadHash,
+      affectedSetHash: manifest.affectedSetHash,
+      baseVersion: Object.freeze({ ...manifest.baseVersion }),
+      catalog: Object.freeze({ ...manifest.catalog }),
+      reservedAt: manifest.reservedAt,
+      expiresAt: manifest.reservationExpiresAt
+    }),
+    r4Authority: Object.freeze({
+      grantId: manifest.grantId,
+      targetHash: manifest.targetHash,
+      recovery: manifest.recovery,
+      maxAffectedEntities: manifest.maxAffectedEntities,
+      reservationExpiresAt: manifest.reservationExpiresAt
+    })
+  });
+  const changeSet = manifest.changeSetId ? Object.freeze({
+    changeSetId: manifest.changeSetId,
+    clientId: manifest.ownerClientId,
+    operation: 'imports.delete_batch' as const,
+    payloadHash: manifest.deletePayloadHash,
+    affectedSetHash: manifest.affectedSetHash,
+    baseVersion: Object.freeze({ ...manifest.baseVersion }),
+    catalog: Object.freeze({ ...manifest.catalog })
+  }) : undefined;
+  const result = importBatchDeletionResult(manifest, versionAfter);
+  const terminalHook = receipts.createTerminalHook(prepared, { ...(changeSet ? { changeSet } : {}) });
+  await coordinator.executeControlWrite(controlCapability, {
+    requestId: `global-import-batch-delete-terminal-${manifest.operationId}`,
+    execute: async (database, scope) => {
+      const receipt = one<{ status: string; terminal_outcome_hash?: string }>(database, 'SELECT status,terminal_outcome_hash FROM agent_idempotency WHERE receipt_id=?', [manifest.receiptId]);
+      if (!receipt) throw new AgentError('RECOVERY_FENCE');
+      if (receipt.status === 'completed') {
+        const journal = one<{ status: string }>(database, 'SELECT status FROM agent_import_batch_deletion_journals WHERE operation_id=?', [manifest.operationId]);
+        if (receipt.terminal_outcome_hash !== hashCanonicalJson(result) || journal?.status !== 'completed') throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: undefined };
+      }
+      await terminalHook.execute(database, scope, {
+        value: result,
+        semanticChanged: true,
+        versionBefore: manifest.baseVersion,
+        versionAfter,
+        generationBefore: coordinator.currentGeneration(),
+        generationAfterDataMutation: coordinator.currentGeneration()
+      });
+      database.run(`INSERT INTO agent_import_batch_deletion_journals (
+        operation_id,owner_client_id,request_id,receipt_id,reservation_id,grant_id,change_set_id,batch_id,batch_owner_client_id,
+        delete_managed_assets,deleted_question_count,deleted_external_question_count,deleted_attempt_count,soft_deleted_knowledge_count,
+        managed_file_count,quarantined_file_count,affected_entity_count,inventory_hash,affected_set_hash,target_hash,
+        live_semantic_hash,live_semantic_size,base_data_epoch,base_data_revision,catalog_version,catalog_hash,status,
+        version_after_epoch,version_after_revision,recovery_database_path,recovery_inventory_path,created_at,updated_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
+        manifest.operationId, manifest.ownerClientId, manifest.requestId, manifest.receiptId, manifest.reservationId, manifest.grantId,
+        manifest.changeSetId ?? null, manifest.batchId, manifest.batchOwnerClientId, manifest.deleteManagedAssets ? 1 : 0,
+        manifest.deletedQuestionCount, manifest.deletedExternalQuestionCount, manifest.deletedAttemptCount, manifest.softDeletedKnowledgeCount,
+        manifest.managedFileCount, manifest.quarantinedFileCount, manifest.affectedEntityCount, manifest.inventoryHash,
+        manifest.affectedSetHash, manifest.targetHash, manifest.liveDatabaseEvidence!.contentHash, manifest.liveDatabaseEvidence!.contentSize,
+        manifest.baseVersion.dataEpoch, manifest.baseVersion.dataRevision, manifest.catalog.version, manifest.catalog.hash, 'completed',
+        versionAfter.dataEpoch, versionAfter.dataRevision, manifest.recoveryDatabasePath!, manifest.recoveryInventoryPath!, manifest.createdAt, now()
+      ]);
+      return { changed: true, value: undefined };
+    }
+  });
+}
+
+async function verifyCompletedImportBatchDeletion(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  manifest: ImportBatchDeletionManifest,
+  now: () => string
+): Promise<void> {
+  if (!manifest.versionAfter || !manifest.liveDatabaseEvidence) throw new AgentError('RECOVERY_FENCE');
+  verifyImportBatchDeletionRecoveryPackage(manifest);
+  const current = coordinator.currentVersion();
+  if (current.dataEpoch !== manifest.versionAfter.dataEpoch || current.dataRevision < manifest.versionAfter.dataRevision) throw new AgentError('RECOVERY_FENCE');
+  const sameDeletionVersion = current.dataRevision === manifest.versionAfter.dataRevision;
+  verifyImportBatchDeletionFiles(manifest, sameDeletionVersion);
+  if (sameDeletionVersion && !sameRestoreEvidence(
+    importBatchDeletionLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), manifest, manifest.versionAfter), manifest.liveDatabaseEvidence
+  )) throw new AgentError('RECOVERY_FENCE');
+  const database = db;
+  if (!database) throw new AgentError('RECOVERY_FENCE');
+  const resultHash = hashCanonicalJson(importBatchDeletionResult(manifest, manifest.versionAfter));
+  const receipt = one<Record<string, SqlValue>>(database, `SELECT status,terminal_outcome_hash,reservation_id,grant_id,operation,payload_hash,affected_set_hash
+    FROM agent_idempotency WHERE receipt_id=? AND client_id=? AND request_id=?`, [manifest.receiptId, manifest.ownerClientId, manifest.requestId]);
+  if (!receipt || receipt.status !== 'completed' || receipt.terminal_outcome_hash !== resultHash || receipt.reservation_id !== manifest.reservationId ||
+      receipt.grant_id !== manifest.grantId || receipt.operation !== manifest.receiptOperation || receipt.payload_hash !== manifest.receiptPayloadHash ||
+      receipt.affected_set_hash !== manifest.affectedSetHash) throw new AgentError('RECOVERY_FENCE');
+  const grant = one<Record<string, SqlValue>>(database, `SELECT status,reservation_id,operation,reserved_payload_hash,reserved_affected_set_hash,
+      reserved_base_epoch,reserved_base_revision,reserved_catalog_version,reserved_catalog_hash,target_hash FROM agent_r4_grants WHERE grant_id=?`, [manifest.grantId]);
+  if (!grant || grant.status !== 'consumed' || grant.reservation_id !== manifest.reservationId || grant.operation !== 'imports.delete_batch' ||
+      grant.reserved_payload_hash !== manifest.deletePayloadHash || grant.reserved_affected_set_hash !== manifest.affectedSetHash ||
+      grant.reserved_base_epoch !== manifest.baseVersion.dataEpoch || grant.reserved_base_revision !== manifest.baseVersion.dataRevision ||
+      grant.reserved_catalog_version !== manifest.catalog.version || grant.reserved_catalog_hash !== manifest.catalog.hash ||
+      grant.target_hash !== manifest.targetHash) throw new AgentError('RECOVERY_FENCE');
+  if (manifest.changeSetId) {
+    const changeSet = one<Record<string, SqlValue>>(database, `SELECT c.status,c.client_id,c.affected_set_hash,c.base_data_epoch,c.base_data_revision,
+        c.catalog_version,c.catalog_hash,o.operation,o.payload_hash FROM agent_changesets c INNER JOIN agent_changeset_operations o ON o.change_set_id=c.change_set_id
+      WHERE c.change_set_id=?`, [manifest.changeSetId]);
+    if (!changeSet || changeSet.status !== 'applied' || changeSet.client_id !== manifest.ownerClientId ||
+        changeSet.affected_set_hash !== manifest.affectedSetHash || changeSet.base_data_epoch !== manifest.baseVersion.dataEpoch ||
+        changeSet.base_data_revision !== manifest.baseVersion.dataRevision || changeSet.catalog_version !== manifest.catalog.version ||
+        changeSet.catalog_hash !== manifest.catalog.hash || changeSet.operation !== 'imports.delete_batch' ||
+        changeSet.payload_hash !== manifest.deletePayloadHash) throw new AgentError('RECOVERY_FENCE');
+  }
+  const journal = one<Record<string, SqlValue>>(database, 'SELECT * FROM agent_import_batch_deletion_journals WHERE operation_id=?', [manifest.operationId]);
+  if (!journal || journal.status !== 'completed' || journal.receipt_id !== manifest.receiptId || journal.reservation_id !== manifest.reservationId ||
+      journal.grant_id !== manifest.grantId || journal.batch_id !== manifest.batchId || journal.batch_owner_client_id !== manifest.batchOwnerClientId ||
+      Number(journal.delete_managed_assets) !== Number(manifest.deleteManagedAssets) || journal.deleted_question_count !== manifest.deletedQuestionCount ||
+      journal.deleted_external_question_count !== manifest.deletedExternalQuestionCount || journal.deleted_attempt_count !== manifest.deletedAttemptCount ||
+      journal.soft_deleted_knowledge_count !== manifest.softDeletedKnowledgeCount || journal.managed_file_count !== manifest.managedFileCount ||
+      journal.quarantined_file_count !== manifest.quarantinedFileCount || journal.affected_entity_count !== manifest.affectedEntityCount ||
+      journal.inventory_hash !== manifest.inventoryHash || journal.affected_set_hash !== manifest.affectedSetHash || journal.target_hash !== manifest.targetHash ||
+      journal.live_semantic_hash !== manifest.liveDatabaseEvidence.contentHash || journal.live_semantic_size !== manifest.liveDatabaseEvidence.contentSize ||
+      journal.version_after_epoch !== manifest.versionAfter.dataEpoch || journal.version_after_revision !== manifest.versionAfter.dataRevision ||
+      journal.recovery_database_path !== manifest.recoveryDatabasePath || journal.recovery_inventory_path !== manifest.recoveryInventoryPath) {
+    throw new AgentError('RECOVERY_FENCE');
+  }
+  const controlCapability = createDatabaseCoordinatorControlCapability(coordinator);
+  const executeControlWrite = <T>(request: import('../persistence/databaseCoordinator').DatabaseControlWriteRequest<T>) => coordinator.executeControlWrite(controlCapability, request);
+  const audit = new AuditLedger({ executeControlWrite, catalog: operationCatalogIdentity, now, randomUUID });
+  if (!(await audit.verify()).valid) throw new AgentError('RECOVERY_FENCE');
+  const terminalAudit = one<Record<string, SqlValue>>(database, "SELECT kind FROM agent_audit_events WHERE kind='success' AND receipt_id=? AND client_id=? AND request_id=? AND operation=?", [
+    manifest.receiptId, manifest.ownerClientId, manifest.requestId, manifest.receiptOperation
+  ]);
+  if (!terminalAudit) throw new AgentError('RECOVERY_FENCE');
 }
 
 async function prepareReplacementManifest(
@@ -430,7 +1876,7 @@ async function prepareReplacementManifest(
   operationId: string,
   versionBefore: import('../../shared/agent').DataVersion,
   versionAfter: import('../../shared/agent').DataVersion
-): Promise<{ journal: OperationJournal; manifest: OperationManifest; recoveryDatabasePath: string; sourceInventoryPath: string }> {
+): Promise<{ journal: OperationJournal; manifest: OperationManifest; recoveryDatabasePath: string; recoveryInventoryPath: string; sourceInventoryPath: string }> {
   const paths = getPaths();
   const userRecoveryRoot = path.normalize(path.join(app.getPath('userData'), 'agent-recovery'));
   const manifestRoot = path.normalize(path.join(userRecoveryRoot, 'operation-journal'));
@@ -472,17 +1918,23 @@ async function prepareReplacementManifest(
       status: 'pending'
     }
   ];
-  const quarantinePaths = typeof request.quarantinePaths === 'function'
-    ? request.quarantinePaths(db!)
-    : request.quarantinePaths ?? [];
-  for (const [index, candidate] of quarantinePaths.entries()) {
-    const targetPath = resolveManagedImagePath(candidate, 'recovery_package', 'UNSAFE_MANAGED_FILE');
+  const quarantineFiles = typeof request.quarantineFiles === 'function' ? request.quarantineFiles(db!) : request.quarantineFiles ?? [];
+  for (const [index, managedFile] of quarantineFiles.entries()) {
+    const verified = strictManagedClearFile({
+      sourceKind: managedFile.sourceKind,
+      binding: Object.freeze({ fileId: managedFile.fileId }),
+      reference: managedFile.internalPath,
+      root: managedFile.managedRoot,
+      expectedHash: managedFile.contentHash,
+      expectedSize: managedFile.contentSize
+    });
+    if (verified.pathHash !== managedFile.pathHash) throw new AgentError('RECOVERY_FENCE');
     files.push({
-      fileId: `managed-image-${index}`,
+      fileId: `clear-image-${index}`,
       kind: 'quarantine_delete',
-      targetPath,
+      targetPath: verified.internalPath,
       quarantinePath: path.normalize(path.join(paths.temp, 'a11-quarantine', `${operationId}-${index}.quarantine`)),
-      content: fileEvidence(targetPath),
+      content: { sha256: managedFile.contentHash.slice(10), size: managedFile.contentSize },
       status: 'pending'
     });
   }
@@ -511,6 +1963,7 @@ async function prepareReplacementManifest(
     journal: new OperationJournal(new OperationManifestStore(manifestRoot), request.dependencies?.journal),
     manifest,
     recoveryDatabasePath,
+    recoveryInventoryPath,
     sourceInventoryPath
   };
 }
@@ -520,17 +1973,23 @@ async function replaceDatabaseIdentity<T>(request: ReplacementRequest<T>): Promi
   versionBefore: import('../../shared/agent').DataVersion;
   versionAfter: import('../../shared/agent').DataVersion;
   recoveryDatabasePath: string;
+  recoveryInventoryPath: string;
 }> {
+  const jobExecutor = agentControlPlane?.jobExecutor;
   const coordinator = await getDatabaseCoordinator();
-  const lease = await coordinator.beginMaintenance();
+  let lease: Awaited<ReturnType<DatabaseCoordinator['beginMaintenance']>> | undefined;
   let versionBefore = coordinator.currentVersion();
   let candidate: Database | null = null;
   let staged: OperationManifest | null = null;
   let journal: OperationJournal | null = null;
   let databasePublished = false;
   try {
+    lease = await coordinator.beginMaintenance();
+    await jobExecutor?.stopAndDrain();
     await request.dependencies?.onStage?.('maintenance_entered');
     versionBefore = coordinator.currentVersion();
+    await request.validateLive?.(db!, versionBefore);
+    await request.dependencies?.onStage?.('source_validated');
     const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
     const opener = createSqlJsCandidateOpener(SQL);
     candidate = new SQL.Database(request.sourceBytes ?? fs.readFileSync(getPaths().database));
@@ -556,7 +2015,22 @@ async function replaceDatabaseIdentity<T>(request: ReplacementRequest<T>): Promi
     const prepared = await prepareReplacementManifest(request, operationId, versionBefore, versionAfter);
     journal = prepared.journal;
     staged = await journal.stage(await journal.prepare(prepared.manifest));
-    await request.dependencies?.onStage?.('recovery_package_staged');
+    const recoveryFile = staged.files.find((file) => file.fileId === 'database-snapshot');
+    const recoveryInventoryFile = staged.files.find((file) => file.fileId === 'managed-files-inventory');
+    const stagedRecoveryPath = recoveryFile?.stagingPath;
+    const stagedRecoveryInventoryPath = recoveryInventoryFile?.stagingPath;
+    await request.dependencies?.onStage?.('recovery_package_staged', {
+      recoveryDatabasePath: prepared.recoveryDatabasePath,
+      ...(stagedRecoveryPath ? { recoveryDatabaseEvidence: restoreEvidence(stagedRecoveryPath) } : {}),
+      recoveryInventoryPath: prepared.recoveryInventoryPath,
+      ...(stagedRecoveryInventoryPath ? { recoveryInventoryEvidence: restoreEvidence(stagedRecoveryInventoryPath) } : {})
+    });
+    await request.dependencies?.onStage?.('files_quarantined', {
+      recoveryDatabasePath: prepared.recoveryDatabasePath,
+      ...(stagedRecoveryPath ? { recoveryDatabaseEvidence: restoreEvidence(stagedRecoveryPath) } : {}),
+      recoveryInventoryPath: prepared.recoveryInventoryPath,
+      ...(stagedRecoveryInventoryPath ? { recoveryInventoryEvidence: restoreEvidence(stagedRecoveryInventoryPath) } : {})
+    });
     const transitionStore = new EpochTransitionStore(path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'epoch-transitions')));
     await transitionStore.publish(createEpochTransitionEvidence({
       instanceId: safeLifecycleId((request.dependencies?.randomId ?? randomUUID)()),
@@ -590,39 +2064,58 @@ async function replaceDatabaseIdentity<T>(request: ReplacementRequest<T>): Promi
       throw new MaintenanceOperationError('DATABASE_PUBLICATION_INDETERMINATE', publication.failure.phase, 'Database replacement requires recovery before writes can resume', false, publication.error);
     }
     databasePublished = true;
-    await request.dependencies?.onStage?.('database_published');
+    await request.dependencies?.onStage?.('database_published', {
+      versionAfter,
+      recoveryDatabasePath: prepared.recoveryDatabasePath,
+      ...(stagedRecoveryPath ? { recoveryDatabaseEvidence: restoreEvidence(stagedRecoveryPath) } : {}),
+      recoveryInventoryPath: prepared.recoveryInventoryPath,
+      ...(stagedRecoveryInventoryPath ? { recoveryInventoryEvidence: restoreEvidence(stagedRecoveryInventoryPath) } : {})
+    });
     try {
       const completed = await journal.commitFiles(await journal.markDatabaseCommitted(staged));
       if (completed.state !== 'completed') throw new Error('Replacement journal did not complete');
     } catch (error) {
-      resetDatabaseConnection();
-      const recovered = await initializeDatabase();
+      await resetDatabaseConnectionAsync();
+      const recovered = await initializeDatabase({
+        ...(request.dependencies?.now ? { now: request.dependencies.now } : {}),
+        ...(request.dependencies?.databaseClearRecoveryHook ? { databaseClearRecoveryHook: request.dependencies.databaseClearRecoveryHook } : {}),
+        ...(request.dependencies?.importBatchDeletionRecoveryHook ? { importBatchDeletionRecoveryHook: request.dependencies.importBatchDeletionRecoveryHook } : {})
+      });
       if (recovered.state !== 'writable') {
         throw new MaintenanceOperationError('RECOVERY_FENCE', 'journal_finalization', 'Published replacement could not be reconciled', false, error);
       }
     }
     await request.dependencies?.onStage?.('files_committed');
 
-    resetDatabaseConnection();
-    await initializeDatabase();
+    await resetDatabaseConnectionAsync();
+    await initializeDatabase({
+      ...(request.dependencies?.now ? { now: request.dependencies.now } : {}),
+      ...(request.dependencies?.databaseClearRecoveryHook ? { databaseClearRecoveryHook: request.dependencies.databaseClearRecoveryHook } : {}),
+      ...(request.dependencies?.importBatchDeletionRecoveryHook ? { importBatchDeletionRecoveryHook: request.dependencies.importBatchDeletionRecoveryHook } : {})
+    });
     await request.dependencies?.onStage?.('runtime_reopened');
-    return { value, versionBefore, versionAfter, recoveryDatabasePath: prepared.recoveryDatabasePath };
+    return { value, versionBefore, versionAfter, recoveryDatabasePath: prepared.recoveryDatabasePath, recoveryInventoryPath: prepared.recoveryInventoryPath };
   } catch (error) {
-    if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') {
+    if (lease && databaseCoordinator === coordinator && coordinator.state === 'maintenance') {
       if (databasePublished) {
-        resetDatabaseConnection();
-        await initializeDatabase().catch(() => undefined);
+        await resetDatabaseConnectionAsync();
       } else if (staged && journal) {
         await journal.compensate(staged, journalError(error, 'replacement')).catch(async (compensationError) => {
           await journal!.needsRecovery(staged!, journalError(compensationError, 'compensation')).catch(() => undefined);
-          coordinator.finishMaintenance(lease, 'needs_recovery');
+          coordinator.finishMaintenance(lease!, 'needs_recovery');
         });
       }
       if (coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
     }
     throw error;
   } finally {
-    candidate?.close();
+    try {
+      candidate?.close();
+    } finally {
+      if (jobExecutor && agentControlPlane?.jobExecutor === jobExecutor && databaseCoordinator === coordinator && coordinator.state === 'writable') {
+        await jobExecutor.resume();
+      }
+    }
   }
 }
 
@@ -679,6 +2172,78 @@ async function createAgentControlPlane(
       throw new Error('No external credential adapter is installed');
     }
   });
+  const global = registerGlobalApplication({
+    coordinator,
+    readOnlyDatabase: readDatabase,
+    getJobs: () => {
+      if (!agentControlPlane) throw new Error('Agent jobs are unavailable pending Gateway bootstrap');
+      return agentControlPlane.jobs;
+    },
+    currentVersion: () => coordinator.currentVersion(),
+    cursorSecret: dependencies.agent?.cursorSecret ?? createHash('sha256').update(appInstanceId).digest(),
+    now,
+    randomUUID: randomId,
+    managedPaths: Object.freeze({
+      backups: path.normalize(path.join(getPaths().backups, 'agent-materialized')),
+      exports: path.normalize(path.join(getPaths().exports, 'agent-materialized')),
+      imports: path.normalize(path.join(getPaths().data, 'managed-database-imports')),
+      temp: path.normalize(path.join(getPaths().temp, 'agent-global')),
+      journal: path.normalize(path.join(getPaths().data, 'operation-journal', 'global-materialization')),
+      quarantine: path.normalize(path.join(getPaths().temp, 'agent-global-quarantine'))
+    }),
+    materializer: Object.freeze({
+      async stage(input: Parameters<GlobalMaterializer['stage']>[0]) {
+        if (input.kind === 'backup') {
+          const backup = require('./backupService') as typeof import('./backupService');
+          await backup.createDatabaseBackupAt(input.stagedPath);
+          return Object.freeze({ backupKind: input.metadata.backupKind ?? 'manual' });
+        }
+        const pdf = require('./pdfExportService') as typeof import('./pdfExportService');
+        const specification = input.metadata.specification as { readonly scope: 'all' | 'questions'; readonly questionIds?: readonly number[]; readonly mode: 'full' | 'practice' };
+        await pdf.exportQuestionsToPdfAt({
+          scope: specification.scope === 'all' ? 'all' : 'questionIds',
+          mode: specification.mode,
+          ...(specification.questionIds ? { questionIds: [...specification.questionIds] } : {})
+        }, input.stagedPath);
+        return Object.freeze({ scope: specification.scope, mode: specification.mode });
+      }
+    }),
+    databaseRestore: (input) => restoreManagedDatabaseBackup(input),
+    databaseImport: Object.freeze({
+      inspect: (bytes: Uint8Array) => inspectDatabaseImportPackage(bytes),
+      replace: (input: Parameters<typeof replaceManagedDatabaseFromImport>[0]) => replaceManagedDatabaseFromImport(input)
+    }),
+    databaseClear: Object.freeze({
+      resolve: (deleteManagedImages: boolean) => resolveDatabaseClearInventory(deleteManagedImages),
+      replace: (input: Parameters<typeof replaceManagedDatabaseClear>[0]) => replaceManagedDatabaseClear(input)
+    }),
+    importBatchDelete: Object.freeze({
+      resolve: (batchId: string, deleteManagedAssets: boolean, identity: { readonly clientId: string; readonly renderer: boolean }) =>
+        resolveImportBatchDeletionInventory(batchId, deleteManagedAssets, identity),
+      replace: (input: Parameters<typeof replaceManagedImportBatchDeletion>[0]) => replaceManagedImportBatchDeletion(input)
+    }),
+    dataRootMigration: Object.freeze({
+      planSelection: (targetPath: string, selectionId: string, at: string) => planDataRootSelection({
+        targetPath,
+        sourcePaths: getPaths(),
+        baseVersion: coordinator.currentVersion(),
+        schemaHash: hashCanonicalJson({ schemaSql }),
+        selectionId,
+        now: at
+      }),
+      resolveSelection: (asset, allowPopulatedTarget = false) => resolveStoredDataRootSelection({
+        selectionId: asset.assetId,
+        targetPath: asset.internalPath!,
+        stored: asset.metadata as unknown as StoredDataRootSelection,
+        sourcePaths: getPaths(),
+        baseVersion: coordinator.currentVersion(),
+        schemaHash: hashCanonicalJson({ schemaSql }),
+        allowPopulatedTarget
+      }),
+      migrate: (input) => migrateManagedDataRoot(input)
+    })
+  });
+  globalApplication = global;
   const composition = await bootstrapAgentGateway({
     coordinator,
     commandBus,
@@ -691,6 +2256,7 @@ async function createAgentControlPlane(
     operationJournalStores,
     jobStoreHook: dependencies.agent?.jobStoreHook,
     jobExecutorOnError: dependencies.agent?.jobExecutorOnError,
+    jobExecutorOnTerminalized: dependencies.agent?.jobExecutorOnTerminalized,
     now,
     randomUUID: randomId,
     resolveState: (envelope, descriptor) => descriptor.domain === 'questions'
@@ -703,12 +2269,343 @@ async function createAgentControlPlane(
     knowledgeApplication: knowledge,
     studyApplication: study,
     importsApplication: imports,
+    globalApplication: global,
     onRecoveryStage(stage) {
       onStage(stage === 'audit_verified' ? 'audit_ledger_verified' : stage === 'receipts_reconciled' ? 'agent_receipts_reconciled' : 'agent_jobs_reconciled');
     }
   });
+  await global.recoverMaterializations();
   onStage('agent_gateway_ready');
   return composition;
+}
+
+function dataRootMigrationJournalRoot(): string {
+  return path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'data-root-migrations'));
+}
+
+function ensureParentDirectory(filePath: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function copyManagedMigrationFiles(plan: DataRootSelectionPlan): void {
+  for (const file of plan.inventory) {
+    const source = path.normalize(path.join(plan.sourcePath, file.relativePath.replaceAll('/', path.sep)));
+    const target = path.normalize(path.join(plan.targetPath, file.relativePath.replaceAll('/', path.sep)));
+    const relative = path.relative(plan.targetPath, target);
+    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new AgentError('RECOVERY_FENCE');
+    ensureParentDirectory(target);
+    const temp = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.tmp`);
+    fs.copyFileSync(source, temp, fs.constants.COPYFILE_EXCL);
+    const handle = fs.openSync(temp, 'r');
+    try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+    fs.renameSync(temp, target);
+  }
+}
+
+function verifyManagedMigrationFiles(plan: DataRootSelectionPlan): void {
+  for (const file of plan.inventory) {
+    const target = path.normalize(path.join(plan.targetPath, file.relativePath.replaceAll('/', path.sep)));
+    const bytes = fs.readFileSync(target);
+    const hash = `sha256-v1:${createHash('sha256').update(bytes).digest('hex')}`;
+    if (hash !== file.contentHash || bytes.byteLength !== file.contentSize) throw new AgentError('RECOVERY_FENCE');
+  }
+}
+
+async function migrateManagedDataRoot(input: {
+  readonly manifest: Omit<DataRootMigrationManifest, 'schemaVersion' | 'phase' | 'createdAt' | 'updatedAt'>;
+  readonly plan: DataRootSelectionPlan;
+  readonly onStage: (phase: DataRootMigrationPhase, versionAfter?: import('../../shared/agent').DataVersion) => void | Promise<void>;
+}): Promise<{ readonly versionAfter: import('../../shared/agent').DataVersion }> {
+  const jobExecutor = agentControlPlane?.jobExecutor;
+  const coordinator = await getDatabaseCoordinator();
+  let lease: Awaited<ReturnType<DatabaseCoordinator['beginMaintenance']>> | undefined;
+  let journalManifest: DataRootMigrationManifest | undefined;
+  const journal = new DataRootMigrationJournalStore(dataRootMigrationJournalRoot());
+  try {
+    lease = await coordinator.beginMaintenance();
+    await jobExecutor?.stopAndDrain();
+    const repeated = resolveStoredDataRootSelection({
+      selectionId: input.manifest.selectionId,
+      targetPath: input.plan.targetPath,
+      stored: {
+        targetIdentity: input.plan.targetIdentity,
+        sourceIdentity: input.plan.sourceIdentity,
+        inventoryHash: input.plan.inventoryHash,
+        inventoryBytes: input.plan.inventoryBytes,
+        inventoryCount: input.plan.inventory.length,
+        planningAvailableBytes: input.plan.planningAvailableBytes,
+        requiredBytes: input.plan.requiredBytes,
+        schemaHash: input.plan.schemaHash,
+        baseDataEpoch: input.plan.baseVersion.dataEpoch,
+        baseDataRevision: input.plan.baseVersion.dataRevision,
+        affectedSetHash: input.plan.affectedSetHash,
+        targetHash: input.plan.targetHash,
+        selectionBindingHash: input.plan.selectionBindingHash,
+        expiresAt: input.plan.expiresAt
+      },
+      sourcePaths: getPaths(),
+      baseVersion: coordinator.currentVersion(),
+      schemaHash: input.plan.schemaHash
+    });
+    if (repeated.targetHash !== input.plan.targetHash || repeated.affectedSetHash !== input.plan.affectedSetHash) throw new AgentError('RECOVERY_FENCE');
+    journalManifest = journal.ensureIntent(input.manifest, (input.manifest as { receiptCreatedAt: string }).receiptCreatedAt);
+    await input.onStage('intent');
+    journalManifest = journal.advance(journalManifest, 'verified', new Date().toISOString());
+    await input.onStage('verified');
+    journalManifest = journal.advance(journalManifest, 'copying', new Date().toISOString());
+    copyManagedMigrationFiles(input.plan);
+    journalManifest = journal.advance(journalManifest, 'copied', new Date().toISOString());
+    verifyManagedMigrationFiles(input.plan);
+    journalManifest = journal.advance(journalManifest, 'hash_verified', new Date().toISOString());
+    const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+    const candidate = new SQL.Database(fs.readFileSync(getPaths().database));
+    let versionAfter;
+    try {
+      candidate.run('PRAGMA foreign_keys = ON;');
+      versionAfter = new RevisionStore(candidate).resetDatabaseIdentity(createRevisionMutationCapability(candidate), randomUUID());
+      const bytes = candidate.export();
+      const opener = createSqlJsCandidateOpener(SQL);
+      const targetDatabase = path.join(input.plan.targetPath, 'data', 'mistakes.db');
+      const publication = await atomicPersist({
+        livePath: targetDatabase,
+        requestId: input.manifest.operationId,
+        bytes,
+        expectedVersion: versionAfter,
+        dependencies: { opener, files: defaultAtomicFileDependencies, randomId: randomUUID }
+      });
+      if (publication.status !== 'success') throw new AgentError('RECOVERY_FENCE');
+    } finally {
+      candidate.close();
+    }
+    journalManifest = journal.advance(journalManifest, 'candidate_published', new Date().toISOString(), { versionAfter });
+    await input.onStage('candidate_published', versionAfter);
+    const authority = readDataRootAuthoritySnapshot();
+    await publishDataRootMigrationAuthority({
+      expected: authority,
+      operationId: input.manifest.operationId,
+      nextRoot: input.plan.targetPath,
+      previousRootBinding: input.plan.sourceIdentity,
+      nextRootBinding: input.plan.targetIdentity,
+      publishedAt: new Date().toISOString()
+    });
+    journalManifest = journal.advance(journalManifest, 'config_published', new Date().toISOString(), { versionAfter });
+    await input.onStage('config_published', versionAfter);
+    await resetDatabaseConnectionAsync();
+    const initialized = await initializeDatabase();
+    if (initialized.state !== 'writable') throw new AgentError('RECOVERY_FENCE');
+    journalManifest = journal.advance(journalManifest, 'runtime_reopened', new Date().toISOString(), { versionAfter });
+    const newCoordinator = await getDatabaseCoordinator();
+    await terminalizeRecoveredDataRootMigration(newCoordinator, journalManifest, versionAfter, () => new Date().toISOString());
+    journalManifest = journal.advance(journalManifest, 'receipt_terminalized', new Date().toISOString(), { versionAfter });
+    journal.advance(journalManifest, 'completed', new Date().toISOString(), { versionAfter });
+    return { versionAfter };
+  } catch (error) {
+    if (journalManifest && journalManifest.phase !== 'completed' && journalManifest.phase !== 'needs_recovery') {
+      try { journal.advance(journalManifest, 'needs_recovery', new Date().toISOString(), { reason: error instanceof Error ? error.message.slice(0, 120) : 'migration_failed' }); } catch { /* preserve original */ }
+    }
+    if (lease && databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'needs_recovery');
+    throw error;
+  } finally {
+    if (lease && databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
+    if (jobExecutor && agentControlPlane?.jobExecutor === jobExecutor && databaseCoordinator === coordinator && coordinator.state === 'writable') await jobExecutor.resume();
+  }
+}
+
+async function recoverDatabaseClearReceipts(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  dependencies: DatabaseInitializationDependencies = {}
+): Promise<void> {
+  const journalRoot = path.normalize(path.join(getPaths().data, 'operation-journal', 'global-materialization', 'database-clears'));
+  const store = new DatabaseClearJournalStore(journalRoot);
+  const manifests = store.scan();
+  if (manifests.length === 0) return;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const fence = async (): Promise<never> => {
+    const lease = await coordinator.beginMaintenance();
+    coordinator.finishMaintenance(lease, 'needs_recovery');
+    throw new AgentError('RECOVERY_FENCE');
+  };
+  for (const manifest of manifests) {
+    if (manifest.phase === 'completed') {
+      try { await verifyCompletedDatabaseClear(coordinator, SQL, manifest, now); } catch { await fence(); }
+      continue;
+    }
+    if (manifest.phase !== 'live_published') {
+      if (manifest.phase !== 'needs_recovery') await store.advance(manifest, 'needs_recovery', now(), { reason: 'clear_not_live_published' });
+      await fence();
+    }
+    const versionAfter = manifest.versionAfter;
+    const liveDatabaseEvidence = manifest.liveDatabaseEvidence;
+    if (!versionAfter || !liveDatabaseEvidence) await fence();
+    try {
+      verifyDatabaseClearRecoveryPackage(manifest);
+      verifyDatabaseClearFiles(manifest, true);
+      if (!sameVersion(coordinator.currentVersion(), versionAfter!) || !sameRestoreEvidence(
+        databaseClearLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), manifest, versionAfter!), liveDatabaseEvidence!
+      )) throw new AgentError('RECOVERY_FENCE');
+    } catch {
+      await fence();
+    }
+    await dependencies.databaseClearRecoveryHook?.('before_terminalization');
+    await terminalizeRecoveredDatabaseClear(coordinator, manifest, versionAfter!, now);
+    await dependencies.databaseClearRecoveryHook?.('after_terminalization');
+    const completed = await store.advance(manifest, 'completed', now(), {
+      versionAfter: versionAfter!,
+      recoveryDatabasePath: manifest.recoveryDatabasePath,
+      recoveryDatabaseEvidence: manifest.recoveryDatabaseEvidence,
+      recoveryInventoryPath: manifest.recoveryInventoryPath,
+      recoveryInventoryEvidence: manifest.recoveryInventoryEvidence,
+      liveDatabaseEvidence: liveDatabaseEvidence!
+    });
+    await verifyCompletedDatabaseClear(coordinator, SQL, completed, now);
+  }
+}
+
+async function recoverDatabaseRestoreReceipts(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  dependencies: DatabaseInitializationDependencies = {}
+): Promise<void> {
+  const paths = getPaths();
+  const journalRoot = path.normalize(path.join(paths.data, 'operation-journal', 'global-materialization', 'database-restores'));
+  const store = new DatabaseRestoreJournalStore(journalRoot);
+  const manifests = store.scan();
+  if (manifests.length === 0) return;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  for (const manifest of manifests) {
+    if (manifest.recoveryDatabasePath && (!fs.existsSync(manifest.recoveryDatabasePath) || !manifest.recoveryDatabaseEvidence || !sameRestoreEvidence(restoreEvidence(manifest.recoveryDatabasePath), manifest.recoveryDatabaseEvidence))) {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+      throw new AgentError('RECOVERY_FENCE');
+    }
+    if (manifest.phase === 'completed') {
+      await verifyCompletedDatabaseRestore(coordinator, manifest, now);
+      continue;
+    }
+    if (manifest.phase !== 'live_published') {
+      await store.advance(manifest, 'needs_recovery', now(), { reason: 'restore_not_live_published' });
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+      throw new AgentError('RECOVERY_FENCE');
+    }
+    if (!manifest.versionAfter || !manifest.liveDatabaseEvidence ||
+        coordinator.currentVersion().dataEpoch !== manifest.versionAfter.dataEpoch || coordinator.currentVersion().dataRevision !== manifest.versionAfter.dataRevision) {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+      throw new AgentError('RECOVERY_FENCE');
+    }
+    if (!sameRestoreEvidence(restoreSemanticLiveEvidence(SQL, fs.readFileSync(paths.database), manifest, manifest.versionAfter), manifest.liveDatabaseEvidence)) {
+      const lease = await coordinator.beginMaintenance();
+      coordinator.finishMaintenance(lease, 'needs_recovery');
+      throw new AgentError('RECOVERY_FENCE');
+    }
+    const changed = await terminalizeRecoveredDatabaseRestore(coordinator, manifest, manifest.versionAfter, now);
+    if (changed) await store.advance(manifest, 'completed', now(), {
+      versionAfter: manifest.versionAfter,
+      recoveryDatabasePath: manifest.recoveryDatabasePath,
+      recoveryDatabaseEvidence: manifest.recoveryDatabaseEvidence,
+      liveDatabaseEvidence: manifest.liveDatabaseEvidence
+    });
+  }
+}
+
+async function recoverDatabaseImportReceipts(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  dependencies: DatabaseInitializationDependencies = {}
+): Promise<void> {
+  const paths = getPaths();
+  const journalRoot = path.normalize(path.join(paths.data, 'operation-journal', 'global-materialization', 'database-imports'));
+  const store = new DatabaseImportJournalStore(journalRoot);
+  const manifests = store.scan();
+  if (manifests.length === 0) return;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const fence = async (): Promise<never> => {
+    const lease = await coordinator.beginMaintenance();
+    coordinator.finishMaintenance(lease, 'needs_recovery');
+    throw new AgentError('RECOVERY_FENCE');
+  };
+  for (const manifest of manifests) {
+    try { verifyDatabaseImportPackageManifest(manifest); } catch { await fence(); }
+    if (manifest.recoveryDatabasePath && (!fs.existsSync(manifest.recoveryDatabasePath) || !manifest.recoveryDatabaseEvidence ||
+        !sameRestoreEvidence(restoreEvidence(manifest.recoveryDatabasePath), manifest.recoveryDatabaseEvidence))) await fence();
+    if (manifest.phase === 'completed') {
+      try { await verifyCompletedDatabaseImport(coordinator, SQL, manifest, now); } catch { await fence(); }
+      continue;
+    }
+    if (manifest.phase !== 'live_published') {
+      await store.advance(manifest, 'needs_recovery', now(), { reason: 'import_not_live_published' });
+      await fence();
+    }
+    const versionAfter = manifest.versionAfter;
+    const liveDatabaseEvidence = manifest.liveDatabaseEvidence;
+    if (!versionAfter || !liveDatabaseEvidence) {
+      await fence();
+      throw new AgentError('RECOVERY_FENCE');
+    }
+    if (coordinator.currentVersion().dataEpoch !== versionAfter.dataEpoch || coordinator.currentVersion().dataRevision !== versionAfter.dataRevision) await fence();
+    if (!sameRestoreEvidence(databaseImportLiveSemanticEvidence(SQL, fs.readFileSync(paths.database), manifest, versionAfter), liveDatabaseEvidence)) await fence();
+    await terminalizeRecoveredDatabaseImport(coordinator, manifest, versionAfter, now);
+    const completed = await store.advance(manifest, 'completed', now(), {
+      versionAfter,
+      recoveryDatabasePath: manifest.recoveryDatabasePath,
+      recoveryDatabaseEvidence: manifest.recoveryDatabaseEvidence,
+      liveDatabaseEvidence
+    });
+    await verifyCompletedDatabaseImport(coordinator, SQL, completed, now);
+  }
+}
+
+async function recoverImportBatchDeletionReceipts(
+  coordinator: DatabaseCoordinator,
+  SQL: SqlJsStatic,
+  dependencies: DatabaseInitializationDependencies = {}
+): Promise<void> {
+  const journalRoot = path.normalize(path.join(getPaths().data, 'operation-journal', 'global-materialization', 'import-batch-deletions'));
+  const store = new ImportBatchDeletionJournalStore(journalRoot);
+  const manifests = store.scan();
+  if (manifests.length === 0) return;
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  const fence = async (): Promise<never> => {
+    const lease = await coordinator.beginMaintenance();
+    coordinator.finishMaintenance(lease, 'needs_recovery');
+    throw new AgentError('RECOVERY_FENCE');
+  };
+  for (const manifest of manifests) {
+    if (manifest.phase === 'completed') {
+      try { await verifyCompletedImportBatchDeletion(coordinator, SQL, manifest, now); } catch { await fence(); }
+      continue;
+    }
+    if (manifest.phase !== 'live_published') {
+      if (manifest.phase !== 'needs_recovery') await store.advance(manifest, 'needs_recovery', now(), { reason: 'import_batch_delete_not_live_published' });
+      await fence();
+    }
+    const versionAfter = manifest.versionAfter;
+    const liveDatabaseEvidence = manifest.liveDatabaseEvidence;
+    if (!versionAfter || !liveDatabaseEvidence) await fence();
+    try {
+      verifyImportBatchDeletionRecoveryPackage(manifest);
+      verifyImportBatchDeletionFiles(manifest, true);
+      if (!sameVersion(coordinator.currentVersion(), versionAfter!) || !sameRestoreEvidence(
+        importBatchDeletionLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), manifest, versionAfter!), liveDatabaseEvidence!
+      )) throw new AgentError('RECOVERY_FENCE');
+    } catch {
+      await fence();
+    }
+    await dependencies.importBatchDeletionRecoveryHook?.('before_terminalization');
+    await terminalizeRecoveredImportBatchDeletion(coordinator, manifest, versionAfter!, now);
+    await dependencies.importBatchDeletionRecoveryHook?.('after_terminalization');
+    const completed = await store.advance(manifest, 'completed', now(), {
+      versionAfter: versionAfter!,
+      recoveryDatabasePath: manifest.recoveryDatabasePath,
+      recoveryDatabaseEvidence: manifest.recoveryDatabaseEvidence,
+      recoveryInventoryPath: manifest.recoveryInventoryPath,
+      recoveryInventoryEvidence: manifest.recoveryInventoryEvidence,
+      liveDatabaseEvidence: liveDatabaseEvidence!
+    });
+    await verifyCompletedImportBatchDeletion(coordinator, SQL, completed, now);
+  }
 }
 
 async function initializeDatabaseOnce(
@@ -824,6 +2721,10 @@ async function initializeDatabaseOnce(
     onStage('needs_recovery');
   } else {
     try {
+      await recoverDatabaseClearReceipts(coordinator, SQL, dependencies);
+      await recoverDatabaseRestoreReceipts(coordinator, SQL, dependencies);
+      await recoverDatabaseImportReceipts(coordinator, SQL, dependencies);
+      await recoverImportBatchDeletionReceipts(coordinator, SQL, dependencies);
       agentControlPlane = await createAgentControlPlane(coordinator, readOnlyDatabase, questionsApplication, tickTickApplication, knowledgeApplication, studyApplication, importsApplication, operationJournalStores, dependencies, onStage);
     } catch (error) {
       if (coordinator.state !== 'needs_recovery') {
@@ -847,8 +2748,46 @@ async function initializeDatabaseOnce(
 }
 
 function migrateDatabase(database: Database) {
+  const importBatchColumns = all<{ name: string }>(database, 'PRAGMA table_info(import_batches)').map((column) => column.name);
+  if (importBatchColumns.length && !importBatchColumns.includes('owner_client_id')) {
+    database.run('ALTER TABLE import_batches ADD COLUMN owner_client_id TEXT');
+  }
+  database.run('CREATE INDEX IF NOT EXISTS idx_import_batches_owner ON import_batches(owner_client_id, imported_at, id)');
+  const globalAssetColumns = all<{ name: string }>(database, 'PRAGMA table_info(agent_global_assets)').map((column) => column.name);
+  if (globalAssetColumns.length) {
+    if (!globalAssetColumns.includes('staged_path')) database.run('ALTER TABLE agent_global_assets ADD COLUMN staged_path TEXT');
+    if (!globalAssetColumns.includes('content_hash')) database.run('ALTER TABLE agent_global_assets ADD COLUMN content_hash TEXT');
+    if (!globalAssetColumns.includes('content_size')) database.run('ALTER TABLE agent_global_assets ADD COLUMN content_size INTEGER');
+    const globalAssetSql = String(one<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_global_assets'")?.sql ?? '');
+    if (!globalAssetSql.includes("'consumed'") || !globalAssetSql.includes("'database_import'")) {
+      database.run('ALTER TABLE agent_global_assets RENAME TO agent_global_assets_legacy');
+      database.run(`CREATE TABLE agent_global_assets (
+        asset_id TEXT PRIMARY KEY, owner_client_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('backup', 'export', 'database_import', 'root_selection')),
+        status TEXT NOT NULL CHECK (status IN ('intent', 'staged', 'published', 'consumed', 'quarantined', 'failed', 'needs_recovery')),
+        metadata_json TEXT NOT NULL, metadata_hash TEXT NOT NULL, internal_path TEXT, staged_path TEXT,
+        content_hash TEXT, content_size INTEGER, operation_journal_id TEXT, job_id TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      )`);
+      database.run(`INSERT INTO agent_global_assets (
+        asset_id,owner_client_id,kind,status,metadata_json,metadata_hash,internal_path,staged_path,content_hash,content_size,
+        operation_journal_id,job_id,created_at,updated_at
+      ) SELECT asset_id,owner_client_id,kind,status,metadata_json,metadata_hash,internal_path,staged_path,content_hash,content_size,
+        operation_journal_id,job_id,created_at,updated_at FROM agent_global_assets_legacy`);
+      database.run('DROP TABLE agent_global_assets_legacy');
+      database.run('CREATE INDEX IF NOT EXISTS idx_agent_global_assets_owner_kind ON agent_global_assets(owner_client_id, kind, created_at, asset_id)');
+      database.run('CREATE INDEX IF NOT EXISTS idx_agent_global_assets_recovery ON agent_global_assets(status, updated_at)');
+    }
+  }
+  const deletionJournalColumns = all<{ name: string }>(database, 'PRAGMA table_info(agent_backup_deletion_journals)').map((column) => column.name);
+  if (deletionJournalColumns.length) {
+    // Existing development journals predate replay bindings and are deliberately fenced by NULL checks.
+    for (const column of ['request_id', 'receipt_id', 'reservation_id', 'grant_id', 'affected_set_hash']) {
+      if (!deletionJournalColumns.includes(column)) database.run(`ALTER TABLE agent_backup_deletion_journals ADD COLUMN ${column} TEXT`);
+    }
+  }
   const scopeSql = String(all<{ sql: string }>(database, "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'agent_client_scopes'")[0]?.sql ?? '');
-  if (scopeSql && (!scopeSql.includes("'imports.read'") || !scopeSql.includes("'imports.write'") || !scopeSql.includes("'ticktick.lists.read'") || !scopeSql.includes("'ticktick.bridges.write'"))) {
+  if (scopeSql && (!scopeSql.includes("'imports.read'") || !scopeSql.includes("'imports.write'") || !scopeSql.includes("'ticktick.lists.read'") || !scopeSql.includes("'ticktick.bridges.write'") || !scopeSql.includes("'backups.read'") || !scopeSql.includes("'data_root.migrate'"))) {
     database.run('ALTER TABLE agent_client_scopes RENAME TO agent_client_scopes_legacy');
     database.run(`CREATE TABLE agent_client_scopes (
       client_id TEXT NOT NULL,
@@ -858,7 +2797,8 @@ function migrateDatabase(database: Database) {
         'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
         'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'imports.read', 'imports.write', 'operations.batch', 'tasks.read',
         'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin', 'focus.read', 'focus.control', 'files.images.read',
-        'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
+        'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write',
+        'backups.read', 'backups.create', 'backups.delete', 'exports.create', 'exports.read', 'database.restore', 'database.replace', 'database.clear', 'imports.delete', 'data_root.migrate'
       )), catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0), created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
       PRIMARY KEY (client_id, scope), FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
     )`);
@@ -1436,6 +3376,7 @@ export async function getStats(): Promise<StatsData> {
 export async function exportData() {
   const database = await getDb();
   const payload = {
+    format: databaseImportPackageFormat,
     version: 1,
     exportedAt: nowIso(),
     questions: all(database, 'SELECT * FROM questions'),
@@ -1451,12 +3392,22 @@ export async function exportData() {
     import_batches: all(database, 'SELECT * FROM import_batches'),
     import_batch_items: all(database, 'SELECT * FROM import_batch_items'),
     import_assets: all(database, 'SELECT * FROM import_assets'),
+    import_drafts: all(database, 'SELECT * FROM import_drafts'),
+    import_managed_assets: all(database, 'SELECT * FROM import_managed_assets'),
     study_settings: all(database, 'SELECT * FROM study_settings'),
     study_subjects: all(database, 'SELECT * FROM study_subjects'),
     study_materials: all(database, 'SELECT * FROM study_materials'),
     study_tasks: all(database, 'SELECT * FROM study_tasks'),
     study_sessions: all(database, 'SELECT * FROM study_sessions'),
-    daily_reviews: all(database, 'SELECT * FROM daily_reviews')
+    daily_reviews: all(database, 'SELECT * FROM daily_reviews'),
+    ticktick_lists: all(database, 'SELECT * FROM ticktick_lists'),
+    ticktick_tasks: all(database, 'SELECT * FROM ticktick_tasks'),
+    ticktick_tags: all(database, 'SELECT * FROM ticktick_tags'),
+    ticktick_focus_sessions: all(database, 'SELECT * FROM ticktick_focus_sessions'),
+    ticktick_bridge: all(database, 'SELECT * FROM ticktick_bridge'),
+    ticktick_ai_plans: all(database, 'SELECT * FROM ticktick_ai_plans'),
+    ticktick_habits: all(database, 'SELECT * FROM ticktick_habits'),
+    ticktick_habit_logs: all(database, 'SELECT * FROM ticktick_habit_logs')
   };
   const fileName = `kaoyan-math-mistakes-${dateOnly()}-${Date.now()}.json`;
   const target = path.join(getPaths().exports, fileName);
@@ -1693,10 +3644,11 @@ export async function importData(filePath: string) {
       run(
         database,
         `INSERT INTO import_batches (
-          id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           batch.id,
+          batch.owner_client_id ?? null,
           batch.type ?? 'unknown',
           batch.name ?? '',
           batch.source_file_name ?? '',
@@ -1883,17 +3835,27 @@ export async function importData(filePath: string) {
 }
 
 export async function clearAllData(deleteImages: boolean, dependencies: MaintenanceOperationDependencies = {}) {
+  let resolution: DatabaseClearResolution | undefined;
   await replaceDatabaseIdentity({
     commandType: 'database.clear_all',
     inputIdentity: { deleteImages },
-    quarantinePaths: deleteImages
-      ? (database) => all<QuestionImage>(database, 'SELECT * FROM question_images').map((image) => image.file_path)
-      : [],
+    validateLive(database, version) {
+      resolution = databaseClearResolutionFrom(database, deleteImages);
+      if (!sameVersion(version, resolution.dataVersion)) throw new AgentError('DATA_REVISION_CONFLICT');
+    },
+    quarantineFiles: deleteImages ? () => {
+      if (!resolution) throw new AgentError('RECOVERY_FENCE');
+      return resolution.managedFiles.map((file) => Object.freeze({
+        ...file,
+        managedRoot: file.sourceKind === 'question_image' ? path.normalize(getPaths().images) : managedImportInboxRoot()
+      }));
+    } : [],
     dependencies,
     mutate(candidate) {
-      for (const table of ['daily_reviews', 'study_sessions', 'study_tasks', 'study_materials', 'study_subjects', 'study_settings', 'import_assets', 'import_batch_items', 'import_batches', 'external_question_attempts', 'external_questions', 'question_knowledge_points', 'knowledge_points', 'textbooks', 'question_tags', 'tags', 'review_logs', 'question_images', 'questions']) {
-        candidate.run(`DELETE FROM ${table}`);
-      }
+      candidate.run('PRAGMA foreign_keys = OFF;');
+      try { for (const table of [...databaseClearTableAllowlist].reverse()) candidate.run(`DELETE FROM ${quoteSqlIdentifier(table)}`); }
+      finally { candidate.run('PRAGMA foreign_keys = ON;'); }
+      if ((candidate.exec('PRAGMA foreign_key_check')[0]?.values.length ?? 0) !== 0) throw new AgentError('RECOVERY_FENCE');
       return true;
     }
   });
@@ -2000,11 +3962,21 @@ export async function restoreDatabaseFromFile(
   const bytes = fs.readFileSync(normalized);
   const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
   const opener = createSqlJsCandidateOpener(SQL);
-  const inspected = inspectDatabaseBytes(bytes, { path: normalized, kind: 'temp' }, opener);
+  let inspected;
+  try {
+    inspected = inspectDatabaseBytes(bytes, { path: normalized, kind: 'temp' }, opener);
+  } catch {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
   if (inspected.status !== 'valid' || inspected.metadata !== 'present') {
     throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
   }
-  const validationDatabase = new SQL.Database(bytes);
+  let validationDatabase: Database;
+  try {
+    validationDatabase = new SQL.Database(bytes);
+  } catch {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
   try {
     const requiredTables = ['questions', 'question_images', 'tags', 'question_tags', 'review_logs', 'question_knowledge_points'];
     const tables = new Set(all<{ name: string }>(validationDatabase, "SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name));
@@ -2025,6 +3997,306 @@ export async function restoreDatabaseFromFile(
   });
 }
 
+export async function restoreManagedDatabaseBackup(input: {
+  readonly backupPath: string;
+  readonly operationId: string;
+  readonly manifest: DatabaseRestoreManifest;
+  readonly now?: () => string;
+  readonly onStage: (stage: 'backup_validated' | 'recovery_package_staged' | 'database_published', evidence?: { readonly versionAfter?: import('../../shared/agent').DataVersion; readonly recoveryDatabasePath?: string; readonly recoveryDatabaseEvidence?: DatabaseRestoreFileEvidence; readonly liveDatabaseEvidence?: DatabaseRestoreFileEvidence }) => void | Promise<void>;
+  readonly atomicHook?: import('../persistence').AtomicPersistHook;
+}) {
+  const normalized = path.normalize(path.resolve(input.backupPath));
+  if (!fs.existsSync(normalized)) throw new MaintenanceOperationError('BACKUP_NOT_FOUND', 'restore_validation', 'Backup file does not exist');
+  const bytes = fs.readFileSync(normalized);
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  const opener = createSqlJsCandidateOpener(SQL);
+  let inspected;
+  try {
+    inspected = inspectDatabaseBytes(bytes, { path: normalized, kind: 'temp' }, opener);
+  } catch {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
+  if (inspected.status !== 'valid' || inspected.metadata !== 'present') {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
+  let validationDatabase: Database;
+  try {
+    validationDatabase = new SQL.Database(bytes);
+  } catch {
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
+  try {
+    const requiredTables = ['questions', 'question_images', 'tags', 'question_tags', 'review_logs', 'question_knowledge_points'];
+    const tables = new Set(all<{ name: string }>(validationDatabase, "SELECT name FROM sqlite_master WHERE type = 'table'").map((row) => row.name));
+    if (requiredTables.some((table) => !tables.has(table))) {
+      throw new MaintenanceOperationError('BACKUP_INCOMPATIBLE', 'restore_validation', 'Backup does not contain the required question schema');
+    }
+    for (const row of all<{ file_path: string }>(validationDatabase, 'SELECT file_path FROM question_images')) {
+      resolveManagedImagePath(row.file_path, 'restore_validation', 'BACKUP_MANAGED_FILES_MISSING');
+    }
+    validationDatabase.exec(schemaSql);
+    migrateDatabase(validationDatabase);
+  } catch (error) {
+    if (error instanceof MaintenanceOperationError) throw error;
+    throw new MaintenanceOperationError('BACKUP_INVALID', 'restore_validation', 'Backup is corrupt, incompatible, or has ambiguous identity');
+  }
+  await input.onStage('backup_validated');
+  const recoveryDatabasePath = path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'consistency-packages', `${input.operationId}.before.db`));
+  try {
+    return await replaceDatabaseIdentity({
+      commandType: 'database.restore',
+      inputIdentity: { managedBackup: evidenceForBytes(bytes), operationId: input.operationId },
+      mutate(candidate) {
+        copyRestorableTablesFromBackup(candidate, validationDatabase);
+        return Object.freeze({ restored: true });
+      },
+      dependencies: {
+        randomId: () => input.operationId,
+        ...(input.now ? { now: input.now } : {}),
+        ...(input.atomicHook ? { atomicHook: input.atomicHook } : {}),
+        async onStage(stage, evidence) {
+          if (stage === 'recovery_package_staged') await input.onStage(stage, {
+            recoveryDatabasePath,
+            ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {})
+          });
+          if (stage === 'database_published') await input.onStage(stage, {
+            ...(evidence?.versionAfter ? { versionAfter: evidence.versionAfter } : {}),
+            recoveryDatabasePath,
+            ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {}),
+            ...(evidence?.versionAfter ? { liveDatabaseEvidence: restoreSemanticLiveEvidence(SQL, fs.readFileSync(getPaths().database), input.manifest, evidence.versionAfter) } : {})
+          });
+        }
+      }
+    });
+  } finally {
+    validationDatabase.close();
+  }
+}
+
+export async function replaceManagedDatabaseFromImport(input: {
+  readonly packagePath: string;
+  readonly operationId: string;
+  readonly manifest: DatabaseImportManifest;
+  readonly now?: () => string;
+  readonly onStage: (stage: 'package_validated' | 'recovery_package_staged' | 'database_published', evidence?: {
+    readonly versionAfter?: import('../../shared/agent').DataVersion;
+    readonly recoveryDatabasePath?: string;
+    readonly recoveryDatabaseEvidence?: DatabaseImportSemanticEvidence;
+    readonly liveDatabaseEvidence?: DatabaseImportSemanticEvidence;
+  }) => void | Promise<void>;
+  readonly atomicHook?: import('../persistence').AtomicPersistHook;
+}) {
+  const normalized = path.normalize(path.resolve(input.packagePath));
+  if (!fs.existsSync(normalized)) throw new MaintenanceOperationError('IMPORT_PACKAGE_NOT_FOUND', 'import_validation', 'Managed import package does not exist');
+  const bytes = fs.readFileSync(normalized);
+  const content = evidenceForBytes(bytes);
+  if (`sha256-v1:${content.sha256}` !== input.manifest.package.contentHash || content.size !== input.manifest.package.contentSize) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Managed import package evidence changed');
+  const parsed = parseDatabaseImportPackage(bytes);
+  if (parsed.metadata.semanticHash !== input.manifest.package.semanticHash || parsed.metadata.rowCount !== input.manifest.package.rowCount) throw new MaintenanceOperationError('IMPORT_PACKAGE_INVALID', 'import_validation', 'Managed import package semantics changed');
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  const packageDatabase = createDatabaseImportPackageDatabase(SQL, parsed);
+  try {
+    await input.onStage('package_validated');
+    const recoveryDatabasePath = path.normalize(path.join(app.getPath('userData'), 'agent-recovery', 'consistency-packages', `${input.operationId}.before.db`));
+    return await replaceDatabaseIdentity({
+      commandType: 'database.replace_from_import',
+      inputIdentity: { managedImport: content, semanticHash: parsed.metadata.semanticHash, operationId: input.operationId },
+      mutate(candidate) {
+        copyRestorableTablesFromBackup(candidate, packageDatabase);
+        return Object.freeze({ replaced: true });
+      },
+      dependencies: {
+        randomId: () => input.operationId,
+        ...(input.now ? { now: input.now } : {}),
+        ...(input.atomicHook ? { atomicHook: input.atomicHook } : {}),
+        async onStage(stage, evidence) {
+          if (stage === 'recovery_package_staged') await input.onStage(stage, {
+            recoveryDatabasePath,
+            ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {})
+          });
+          if (stage === 'database_published') await input.onStage(stage, {
+            ...(evidence?.versionAfter ? { versionAfter: evidence.versionAfter } : {}),
+            recoveryDatabasePath,
+            ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {}),
+            ...(evidence?.versionAfter ? { liveDatabaseEvidence: databaseImportLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), input.manifest, evidence.versionAfter) } : {})
+          });
+        }
+      }
+    });
+  } finally {
+    packageDatabase.close();
+  }
+}
+
+export async function replaceManagedDatabaseClear(input: {
+  readonly operationId: string;
+  readonly manifest: DatabaseClearManifest;
+  readonly resolution: DatabaseClearResolution;
+  readonly now?: () => string;
+  readonly onStage: (stage: 'inventory_validated' | 'recovery_package_staged' | 'files_quarantined' | 'database_published' | 'cleanup_reconciled', evidence?: {
+    readonly versionAfter?: import('../../shared/agent').DataVersion;
+    readonly recoveryDatabasePath?: string;
+    readonly recoveryDatabaseEvidence?: DatabaseClearFileEvidence;
+    readonly recoveryInventoryPath?: string;
+    readonly recoveryInventoryEvidence?: DatabaseClearFileEvidence;
+    readonly liveDatabaseEvidence?: DatabaseClearFileEvidence;
+  }) => void | Promise<void>;
+  readonly atomicHook?: import('../persistence').AtomicPersistHook;
+  readonly journal?: OperationJournalDependencies;
+  readonly recoveryHook?: DatabaseInitializationDependencies['databaseClearRecoveryHook'];
+}) {
+  if (input.operationId !== input.manifest.operationId || input.resolution.deleteManagedImages !== input.manifest.deleteManagedImages ||
+      input.resolution.businessRowCount !== input.manifest.businessRowCount || input.resolution.managedImageCount !== input.manifest.managedImageCount ||
+      input.resolution.affectedEntityCount !== input.manifest.affectedEntityCount || input.resolution.inventoryHash !== input.manifest.inventoryHash ||
+      input.resolution.affectedSetHash !== input.manifest.affectedSetHash || input.resolution.targetHash !== input.manifest.targetHash ||
+      !sameVersion(input.resolution.dataVersion, input.manifest.baseVersion)) throw new AgentError('RECOVERY_FENCE');
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  return replaceDatabaseIdentity({
+    commandType: 'database.clear_all',
+    inputIdentity: Object.freeze({
+      operationId: input.operationId,
+      deleteManagedImages: input.manifest.deleteManagedImages,
+      inventoryHash: input.manifest.inventoryHash,
+      affectedSetHash: input.manifest.affectedSetHash,
+      targetHash: input.manifest.targetHash
+    }),
+    async validateLive(database, version) {
+      const repeated = databaseClearResolutionFrom(database, input.manifest.deleteManagedImages);
+      if (!sameVersion(version, input.manifest.baseVersion) || repeated.inventoryHash !== input.manifest.inventoryHash ||
+          repeated.affectedSetHash !== input.manifest.affectedSetHash || repeated.targetHash !== input.manifest.targetHash ||
+          canonicalizeJson(repeated.managedFiles) !== canonicalizeJson(input.manifest.managedFiles)) throw new AgentError('RECOVERY_FENCE');
+      await input.onStage('inventory_validated');
+    },
+    quarantineFiles: input.manifest.deleteManagedImages ? input.manifest.managedFiles.map((file) => Object.freeze({
+      ...file,
+      managedRoot: file.sourceKind === 'question_image' ? path.normalize(getPaths().images) : managedImportInboxRoot()
+    })) : [],
+    mutate(candidate) {
+      candidate.run('PRAGMA foreign_keys = OFF;');
+      try {
+        for (const table of [...databaseClearTableAllowlist].reverse()) candidate.run(`DELETE FROM ${quoteSqlIdentifier(table)}`);
+      } finally {
+        candidate.run('PRAGMA foreign_keys = ON;');
+      }
+      if ((candidate.exec('PRAGMA foreign_key_check')[0]?.values.length ?? 0) !== 0) throw new AgentError('RECOVERY_FENCE');
+      return Object.freeze({ cleared: true });
+    },
+    dependencies: {
+      randomId: () => input.operationId,
+      ...(input.now ? { now: input.now } : {}),
+      ...(input.atomicHook ? { atomicHook: input.atomicHook } : {}),
+      ...(input.journal ? { journal: input.journal } : {}),
+      ...(input.recoveryHook ? { databaseClearRecoveryHook: input.recoveryHook } : {}),
+      async onStage(stage, evidence) {
+        if (stage === 'recovery_package_staged') await input.onStage(stage, evidence);
+        if (stage === 'files_quarantined') await input.onStage(stage, evidence);
+        if (stage === 'database_published') await input.onStage(stage, {
+          ...(evidence?.versionAfter ? { versionAfter: evidence.versionAfter } : {}),
+          ...(evidence?.recoveryDatabasePath ? { recoveryDatabasePath: evidence.recoveryDatabasePath } : {}),
+          ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {}),
+          ...(evidence?.recoveryInventoryPath ? { recoveryInventoryPath: evidence.recoveryInventoryPath } : {}),
+          ...(evidence?.recoveryInventoryEvidence ? { recoveryInventoryEvidence: evidence.recoveryInventoryEvidence } : {}),
+          ...(evidence?.versionAfter ? { liveDatabaseEvidence: databaseClearLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), input.manifest, evidence.versionAfter) } : {})
+        });
+        if (stage === 'files_committed') await input.onStage('cleanup_reconciled');
+      }
+    }
+  });
+}
+
+export async function replaceManagedImportBatchDeletion(input: {
+  readonly operationId: string;
+  readonly manifest: ImportBatchDeletionManifest;
+  readonly resolution: ImportBatchDeletionResolution;
+  readonly now?: () => string;
+  readonly onStage: (stage: 'inventory_validated' | 'recovery_package_staged' | 'files_quarantined' | 'database_published' | 'cleanup_reconciled', evidence?: {
+    readonly versionAfter?: import('../../shared/agent').DataVersion;
+    readonly recoveryDatabasePath?: string;
+    readonly recoveryDatabaseEvidence?: ImportBatchDeletionFileEvidence;
+    readonly recoveryInventoryPath?: string;
+    readonly recoveryInventoryEvidence?: ImportBatchDeletionFileEvidence;
+    readonly liveDatabaseEvidence?: ImportBatchDeletionFileEvidence;
+  }) => void | Promise<void>;
+  readonly atomicHook?: import('../persistence').AtomicPersistHook;
+  readonly journal?: OperationJournalDependencies;
+  readonly recoveryHook?: DatabaseInitializationDependencies['importBatchDeletionRecoveryHook'];
+}) {
+  if (input.operationId !== input.manifest.operationId || input.resolution.batchId !== input.manifest.batchId ||
+      input.resolution.batchType !== input.manifest.batchType || input.resolution.batchOwnerClientId !== input.manifest.batchOwnerClientId ||
+      input.resolution.ownershipPolicy !== input.manifest.ownershipPolicy ||
+      input.resolution.deleteManagedAssets !== input.manifest.deleteManagedAssets ||
+      input.resolution.deletedQuestionCount !== input.manifest.deletedQuestionCount ||
+      input.resolution.deletedExternalQuestionCount !== input.manifest.deletedExternalQuestionCount ||
+      input.resolution.deletedAttemptCount !== input.manifest.deletedAttemptCount ||
+      input.resolution.softDeletedKnowledgeCount !== input.manifest.softDeletedKnowledgeCount ||
+      input.resolution.managedFileCount !== input.manifest.managedFileCount ||
+      input.resolution.quarantinedFileCount !== input.manifest.quarantinedFileCount ||
+      input.resolution.affectedEntityCount !== input.manifest.affectedEntityCount ||
+      input.resolution.inventoryHash !== input.manifest.inventoryHash || input.resolution.affectedSetHash !== input.manifest.affectedSetHash ||
+      input.resolution.targetHash !== input.manifest.targetHash || !sameVersion(input.resolution.dataVersion, input.manifest.baseVersion) ||
+      canonicalizeJson(input.resolution.inventoryRows) !== canonicalizeJson(input.manifest.inventoryRows) ||
+      canonicalizeJson(input.resolution.managedFiles) !== canonicalizeJson(input.manifest.managedFiles) ||
+      canonicalizeJson(input.resolution.affectedEntities) !== canonicalizeJson(input.manifest.affectedEntities)) throw new AgentError('RECOVERY_FENCE');
+  const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
+  return replaceDatabaseIdentity({
+    commandType: 'imports.delete_batch',
+    inputIdentity: Object.freeze({
+      operationId: input.operationId,
+      batchId: input.manifest.batchId,
+      deleteManagedAssets: input.manifest.deleteManagedAssets,
+      inventoryHash: input.manifest.inventoryHash,
+      affectedSetHash: input.manifest.affectedSetHash,
+      targetHash: input.manifest.targetHash
+    }),
+    async validateLive(database, version) {
+      const repeated = resolveImportBatchDeletion(database, input.manifest.batchId, input.manifest.deleteManagedAssets, {
+        clientId: input.manifest.ownerClientId,
+        renderer: input.manifest.ownershipPolicy === 'legacy_local_renderer_only'
+      });
+      if (!sameVersion(version, input.manifest.baseVersion) || repeated.inventoryHash !== input.manifest.inventoryHash ||
+          repeated.affectedSetHash !== input.manifest.affectedSetHash || repeated.targetHash !== input.manifest.targetHash ||
+          canonicalizeJson(repeated.inventoryRows) !== canonicalizeJson(input.manifest.inventoryRows) ||
+          canonicalizeJson(repeated.managedFiles) !== canonicalizeJson(input.manifest.managedFiles) ||
+          canonicalizeJson(repeated.affectedEntities) !== canonicalizeJson(input.manifest.affectedEntities) ||
+          canonicalizeJson(repeated.mutation) !== canonicalizeJson(input.resolution.mutation)) throw new AgentError('RECOVERY_FENCE');
+      await input.onStage('inventory_validated');
+    },
+    quarantineFiles: input.manifest.managedFiles.filter((file) => file.action === 'quarantine').map((file) => Object.freeze({
+      fileId: file.fileId,
+      sourceKind: file.rootKind === 'question_bank_batch' ? `question_bank_batch:${input.manifest.batchId}` : file.rootKind,
+      managedRoot: importBatchDeletionManagedRoot(file, input.manifest.batchId),
+      internalPath: file.internalPath,
+      pathHash: file.pathHash,
+      contentHash: file.contentHash,
+      contentSize: file.contentSize
+    })),
+    mutate(candidate) {
+      applyImportBatchDeletion(candidate, input.resolution, input.manifest.deletedAt);
+      return Object.freeze({ deleted: true });
+    },
+    dependencies: {
+      randomId: () => input.operationId,
+      ...(input.now ? { now: input.now } : {}),
+      ...(input.atomicHook ? { atomicHook: input.atomicHook } : {}),
+      ...(input.journal ? { journal: input.journal } : {}),
+      ...(input.recoveryHook ? { importBatchDeletionRecoveryHook: input.recoveryHook } : {}),
+      async onStage(stage, evidence) {
+        if (stage === 'recovery_package_staged') await input.onStage(stage, evidence);
+        if (stage === 'files_quarantined') await input.onStage(stage, evidence);
+        if (stage === 'database_published') await input.onStage(stage, {
+          ...(evidence?.versionAfter ? { versionAfter: evidence.versionAfter } : {}),
+          ...(evidence?.recoveryDatabasePath ? { recoveryDatabasePath: evidence.recoveryDatabasePath } : {}),
+          ...(evidence?.recoveryDatabaseEvidence ? { recoveryDatabaseEvidence: evidence.recoveryDatabaseEvidence } : {}),
+          ...(evidence?.recoveryInventoryPath ? { recoveryInventoryPath: evidence.recoveryInventoryPath } : {}),
+          ...(evidence?.recoveryInventoryEvidence ? { recoveryInventoryEvidence: evidence.recoveryInventoryEvidence } : {}),
+          ...(evidence?.versionAfter ? { liveDatabaseEvidence: importBatchDeletionLiveSemanticEvidence(SQL, fs.readFileSync(getPaths().database), input.manifest, evidence.versionAfter) } : {})
+        });
+        if (stage === 'files_committed') await input.onStage('cleanup_reconciled');
+      }
+    }
+  });
+}
+
 export interface DataRootSwitchDependencies {
   maintenance?: MaintenanceOperationDependencies;
   root?: RootSwitchDependencies;
@@ -2035,14 +4307,17 @@ export async function switchDataRoot(
   migrate: boolean,
   dependencies: DataRootSwitchDependencies = {}
 ) {
+  const jobExecutor = agentControlPlane?.jobExecutor;
   const coordinator = await getDatabaseCoordinator();
-  const lease = await coordinator.beginMaintenance();
   const oldPaths = getPaths();
+  let lease: Awaited<ReturnType<DatabaseCoordinator['beginMaintenance']>> | undefined;
   let plan: Awaited<ReturnType<typeof stageDataRootSwitch>> | null = null;
   let staged: OperationManifest | null = null;
   let journal: OperationJournal | null = null;
   let configPublished = false;
   try {
+    lease = await coordinator.beginMaintenance();
+    await jobExecutor?.stopAndDrain();
     plan = await stageDataRootSwitch(oldPaths, root, migrate, dependencies.root);
     const SQL = await initSqlJs({ locateFile: () => resolveSqlWasmPath() });
     const opener = createSqlJsCandidateOpener(SQL);
@@ -2109,7 +4384,7 @@ export async function switchDataRoot(
 
     await publishDataRootSwitch(plan, dependencies.root);
     configPublished = true;
-    resetDatabaseConnection();
+    await resetDatabaseConnectionAsync();
     const initialized = await initializeDatabase();
     if (initialized.state !== 'writable') throw new MaintenanceOperationError('RECOVERY_FENCE', 'root_reopen', 'New data root requires recovery', false);
     const rootRecovery = initialized.journalRecovery.outcomes.find((outcome) => outcome.operationId === staged?.operationId);
@@ -2122,23 +4397,29 @@ export async function switchDataRoot(
       try {
         restoreDataRootAuthority(oldPaths, dependencies.root?.randomId);
       } catch (rollbackError) {
-        if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'needs_recovery');
+        if (lease && databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'needs_recovery');
         throw new MaintenanceOperationError('ROOT_CONFIG_ROLLBACK_FAILED', 'config_rollback', 'Data-root configuration could not be restored', false, rollbackError);
       }
     }
     if (staged && journal) await journal.compensate(staged, journalError(error, 'root_switch')).catch(() => undefined);
-    if (databaseCoordinator !== coordinator) resetDatabaseConnection();
+    if (databaseCoordinator !== coordinator) await resetDatabaseConnectionAsync();
     if (!databaseCoordinator) await initializeDatabase().catch(() => undefined);
-    if (databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
+    if (lease && databaseCoordinator === coordinator && coordinator.state === 'maintenance') coordinator.finishMaintenance(lease, 'writable');
     throw error;
+  } finally {
+    if (jobExecutor && agentControlPlane?.jobExecutor === jobExecutor && databaseCoordinator === coordinator && coordinator.state === 'writable') {
+      await jobExecutor.resume();
+    }
   }
 }
 
-export function resetDatabaseConnection() {
-  if (databaseCoordinator?.pendingWrites) {
-    throw new Error('Cannot reset the database while coordinator writes are pending');
+export function resetDatabaseConnection(): void {
+  if (databaseCoordinator?.pendingWrites) throw new Error('Cannot reset the database while coordinator writes are pending');
+  const jobExecutor = agentControlPlane?.jobExecutor;
+  if (jobExecutor && !jobExecutor.isIdle()) {
+    throw new Error('Cannot synchronously reset the database while JobExecutor is active; await resetDatabaseConnectionAsync()');
   }
-  agentControlPlane?.jobExecutor.stop();
+  jobExecutor?.stop();
   if (db) {
     db.close();
     db = null;
@@ -2150,10 +4431,16 @@ export function resetDatabaseConnection() {
   knowledgeApplication = null;
   studyApplication = null;
   importsApplication = null;
+  globalApplication = null;
   agentControlPlane = null;
   initializationPromise = null;
   initializationResult = null;
   shutdownPromise = null;
+}
+
+export async function resetDatabaseConnectionAsync(): Promise<void> {
+  await shutdownDatabase();
+  resetDatabaseConnection();
 }
 
 export function assertDatabaseReadyForRuntimeIpc(): void {
@@ -2170,9 +4457,16 @@ export function shutdownDatabase(): Promise<void> {
 
 async function shutdownDatabaseOnce(): Promise<void> {
   const coordinator = databaseCoordinator;
-  if (!coordinator) return;
-  agentControlPlane?.jobExecutor.stop();
-  await coordinator.shutdown();
+  const jobExecutor = agentControlPlane?.jobExecutor;
+  const executorDrain = jobExecutor?.stopAndDrain() ?? Promise.resolve();
+  if (!jobExecutor || jobExecutor.isIdle()) {
+    const coordinatorDrain = coordinator?.shutdown();
+    await executorDrain;
+    await coordinatorDrain;
+    return;
+  }
+  await executorDrain;
+  await coordinator?.shutdown();
 }
 
 export function getCurrentPaths(): AppPaths {

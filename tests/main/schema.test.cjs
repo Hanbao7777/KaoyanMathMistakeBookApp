@@ -46,6 +46,11 @@ test('initializeDatabase creates critical application tables', async () => {
     'agent_audit_segments',
     'agent_audit_events',
     'agent_jobs',
+    'agent_global_assets',
+    'agent_database_restore_journals',
+    'agent_database_import_journals',
+    'agent_database_clear_journals',
+    'agent_import_batch_deletion_journals',
     'ticktick_lists',
     'ticktick_tasks',
     'ticktick_bridge'
@@ -54,6 +59,40 @@ test('initializeDatabase creates critical application tables', async () => {
   for (const table of tables) {
     assert.equal(tableExists(db, table), true, `${table} should exist`);
   }
+});
+
+test('C13 database import durability schema supports single-use managed packages', async () => {
+  const db = await databaseService.getDatabase();
+  const assetSql = db.exec("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_global_assets'")[0].values[0][0];
+  assert.match(assetSql, /'database_import'/);
+  assert.match(assetSql, /'consumed'/);
+  assert.deepEqual(tableColumns(db, 'agent_database_import_journals').slice(0, 8), [
+    'operation_id', 'owner_client_id', 'request_id', 'receipt_id', 'reservation_id', 'grant_id', 'change_set_id', 'asset_id'
+  ]);
+  assert.equal(indexExists(db, 'idx_agent_database_import_journals_request'), true);
+  assert.equal(indexExists(db, 'idx_agent_database_import_journals_status'), true);
+});
+
+test('C13 database clear durability schema binds policy, inventory, semantics, and terminal state', async () => {
+  const db = await databaseService.getDatabase();
+  assert.deepEqual(tableColumns(db, 'agent_database_clear_journals').slice(0, 11), [
+    'operation_id', 'owner_client_id', 'request_id', 'receipt_id', 'reservation_id', 'grant_id', 'change_set_id',
+    'delete_managed_images', 'business_row_count', 'managed_image_count', 'affected_entity_count'
+  ]);
+  assert.equal(indexExists(db, 'idx_agent_database_clear_journals_request'), true);
+  assert.equal(indexExists(db, 'idx_agent_database_clear_journals_status'), true);
+});
+
+test('C13 import-batch deletion schema binds ownership and terminal recovery evidence', async () => {
+  const db = await databaseService.getDatabase();
+  assert.equal(tableColumns(db, 'import_batches').includes('owner_client_id'), true);
+  assert.equal(indexExists(db, 'idx_import_batches_owner'), true);
+  assert.deepEqual(tableColumns(db, 'agent_import_batch_deletion_journals').slice(0, 10), [
+    'operation_id', 'owner_client_id', 'request_id', 'receipt_id', 'reservation_id', 'grant_id', 'change_set_id',
+    'batch_id', 'batch_owner_client_id', 'delete_managed_assets'
+  ]);
+  assert.equal(indexExists(db, 'idx_agent_import_batch_deletion_journals_request'), true);
+  assert.equal(indexExists(db, 'idx_agent_import_batch_deletion_journals_status'), true);
 });
 
 test('control_metadata enforces singleton and safe metadata constraints', async () => {

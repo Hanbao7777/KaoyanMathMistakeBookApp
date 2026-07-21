@@ -40,7 +40,8 @@ function admission(requestId, grantId, r4Overrides = {}) {
     affectedEntities: [{ entityType: 'question-set', entityId: 'all' }],
     baseVersion: { dataEpoch: 'epoch-r4', dataRevision: 7 }, catalog: agent.operationCatalogIdentity,
     risk: 'R4', policyVersion: 'policy-v1', r4: {
-      grantId, targetHash: hash({ target: 'all-questions' }), recovery: 'consistency_bundle',
+      grantId, operation: 'questions.clear_all', payloadHash: hash({ deleteImages: true, maxQuestions: 500 }),
+      targetHash: hash({ target: 'all-questions' }), recovery: 'consistency_bundle',
       maxAffectedEntities: 500, expiresAt: '2026-07-16T12:10:00.000Z', ...r4Overrides
     }
   };

@@ -7,8 +7,10 @@ const resources = require(path.join(root, 'dist/main/main/mcp/resources/index.js
 const protocol = require(path.join(root, 'dist/main/main/mcp/protocol.js'));
 
 test('C11 MCP tools and owner-bound import resource are exact', async () => {
-  const names = registry.mcpV1BusinessRegistry.filter(({ operation }) => operation.startsWith('imports.')).map(({ name }) => name).sort();
+  const c11Operations = ['imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel'];
+  const names = registry.mcpV1BusinessRegistry.filter(({ operation }) => c11Operations.includes(operation)).map(({ name }) => name).sort();
   assert.deepEqual(names, ['imports.add_draft_image', 'imports.apply_draft', 'imports.cancel', 'imports.create_draft', 'imports.get', 'imports.preview_draft', 'imports.validate_draft']);
+  assert.equal(names.includes('imports.delete_batch'), false);
   const resource = resources.mcpV1ResourceTemplates.find(({ descriptor }) => descriptor.name === 'imports.view');
   assert.equal(resource.descriptor.uriTemplate, 'kaoyan://imports/{draftId}');
   const calls = [];

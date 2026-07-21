@@ -39,12 +39,12 @@ test('instructions and shared contracts are bounded and dependency-free', () => 
 });
 
 test('external manifest and registry expose exactly the accepted C6, C9, C11, and C12 operations', () => {
-  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@5');
+  assert.equal(mcp.mcpExternalExposureManifest.version, 'mcp-external-exposure-v1@6');
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest), true);
   assert.equal(Object.isFrozen(mcp.mcpExternalExposureManifest.businessOperations), true);
-  assert.equal(mcp.mcpExternalBusinessOperations.length, 49);
-  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 49);
-  assert.equal(registry.mcpV1BusinessRegistry.length, 49);
+  assert.equal(mcp.mcpExternalBusinessOperations.length, 59);
+  assert.equal(new Set(mcp.mcpExternalBusinessOperations).size, 59);
+  assert.equal(registry.mcpV1BusinessRegistry.length, 59);
   assert.deepEqual(
     registry.mcpV1BusinessRegistry.map(({ operation }) => operation).sort(),
     [...mcp.mcpExternalBusinessOperations].sort()
@@ -103,7 +103,12 @@ test('every business tool has an exact runtime envelope and payload validator', 
     'ticktick.lists.list': {}, 'ticktick.lists.create': { input: { name: 'List' } }, 'ticktick.lists.update': { listId: 'list-1', input: { color: '#fff' } },
     'ticktick.habits.list': {}, 'ticktick.habits.create': { input: { name: 'Habit' } }, 'ticktick.habits.update': { habitId: 'habit-1', input: { target_count: 2 } },
     'ticktick.calendar.list_events': { year: 2026, month: 7 }, 'ticktick.bridges.get': { taskId: 'task-1' },
-    'ticktick.bridges.update': { input: { ticktick_task_id: 'task-1', linked_type: 'question', linked_id: '1' } }
+    'ticktick.bridges.update': { input: { ticktick_task_id: 'task-1', linked_type: 'question', linked_id: '1' } },
+    'backups.list': { pageSize: 10 }, 'backups.create': { kind: 'manual' },
+    'exports.create': { specification: { scope: 'questions', questionIds: [1], mode: 'full' } }, 'exports.get': { exportId: 'export-1' },
+    'backups.delete': { backupId: 'backup-1' }, 'database.restore': { backupId: 'backup-1' },
+    'database.replace_from_import': { importAssetId: 'asset-1' }, 'database.clear_all': { deleteManagedImages: false },
+    'imports.delete_batch': { batchId: 'batch-1', deleteManagedAssets: false }, 'data_root.migrate': { rootSelectionId: 'selection-1' }
   };
   for (const descriptor of registry.mcpV1BusinessRegistry) {
     const command = descriptor.handler.gatewayMethod === 'execute';

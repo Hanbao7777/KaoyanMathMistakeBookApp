@@ -35,12 +35,13 @@ import {
 import { createKnowledgeRendererAdapter } from './adapters/knowledgeIpc';
 import { createStudyRendererAdapter } from './adapters/studyIpc';
 import { createImportsRendererAdapter } from './adapters/importsIpc';
+import { createGlobalRendererAdapter } from './adapters/globalIpc';
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
 import { checkImageExists, getImageUrl, openImage, revealImageInFolder } from '../services/imageService';
-import { createDatabaseBackupMaintained, deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
-import { exportQuestionsToPdf, openExportedPdf, openExportsFolder } from '../services/pdfExportService';
+import { deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
+import { openExportedPdf, openExportsFolder } from '../services/pdfExportService';
 import {
   cleanupStructuredImport,
   confirmStructuredImport,
@@ -436,6 +437,10 @@ export function registerIpc() {
     const [controlPlane, coordinator, application] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator(), getImportsApplication()]);
     return createImportsRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), application, currentVersion: () => coordinator.currentVersion() });
   };
+  const global = async () => {
+    const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
+    return createGlobalRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
+  };
   handle('knowledge:listNodes', async (parentNodeId?: string, subject?: string) => (await knowledge()).listNodes(parentNodeId, subject));
   handle('knowledge:getNode', async (nodeId: string) => (await knowledge()).getNode(nodeId));
   handle('knowledge:listLinks', async (input: { nodeId?: string; questionId?: number }) => (await knowledge()).listLinks(input));
@@ -492,13 +497,18 @@ export function registerIpc() {
   handle('settings:clear', (deleteImages: boolean) => clearAllData(deleteImages));
   handle('settings:chooseRoot', () => chooseDataRoot());
   handle('settings:setRoot', (root: string, migrate: boolean) => switchDataRoot(root, migrate));
-  handle('backups:create', (type?: DatabaseBackupKind) => createDatabaseBackupMaintained(type || 'manual'));
+  handle('backups:create', async () => (await global()).createBackup());
   handle('backups:ensureDaily', () => ensureDailyAutoBackup());
-  handle('backups:list', () => listDatabaseBackups());
+  handle('backups:list', async () => (await global()).listBackups());
+  handle('backups:listLegacy', () => listDatabaseBackups());
   handle('backups:restore', (fileName: string) => restoreDatabaseBackup(fileName));
   handle('backups:delete', (fileName: string) => deleteDatabaseBackup(fileName));
   handle('backups:openFolder', () => openBackupsFolder());
-  handle('pdfExport:create', (options: PdfExportOptions) => exportQuestionsToPdf(options));
+  handle('pdfExport:create', async (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => (await global()).createExport({
+    scope: options.scope === 'all' ? 'all' : 'questions', mode: options.mode,
+    ...(options.scope === 'questionIds' && options.questionIds ? { questionIds: options.questionIds } : {})
+  }));
+  handle('pdfExport:get', async (assetId: string) => (await global()).getExport(assetId));
   handle('pdfExport:open', (filePath: string) => openExportedPdf(filePath));
   handle('pdfExport:openFolder', () => openExportsFolder());
   handle('structuredImport:template', () => createImportTemplate());

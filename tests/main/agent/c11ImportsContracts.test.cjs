@@ -10,9 +10,9 @@ const exposure = require(path.join(root, 'dist/main/shared/mcp/v1/exposureManife
 
 function item(overrides = {}) { return { itemId: 'item-1', title: '极限题', content: 'lim x', wrongThinking: '', correctSolution: '1', answer: '1', subject: '高等数学', category: '极限', questionType: '解答题', errorReason: '概念不清', difficulty: '中等', masteryLevel: '未掌握', source: 'C11', tags: [], knowledgePoints: [], ...overrides }; }
 
-test('C11 exposes exactly seven bounded import operations with explicit scopes and risk', () => {
+test('C11 exposes exactly eight bounded import operations with explicit scopes and risk', () => {
   const names = exposure.mcpExternalBusinessOperations.filter((name) => name.startsWith('imports.')).sort();
-  assert.deepEqual(names, ['imports.add_draft_image', 'imports.apply_draft', 'imports.cancel', 'imports.create_draft', 'imports.get', 'imports.preview_draft', 'imports.validate_draft']);
+  assert.deepEqual(names, ['imports.add_draft_image', 'imports.apply_draft', 'imports.cancel', 'imports.create_draft', 'imports.delete_batch', 'imports.get', 'imports.preview_draft', 'imports.validate_draft']);
   assert.equal(agent.resolveOperationDescriptor('imports.apply_draft').policyBounds.minimumRisk, 'R3');
   assert.equal(agent.resolveOperationDescriptor('imports.apply_draft').policyBounds.maxAffectedEntities, 50);
   assert.deepEqual(agent.resolveOperationDescriptor('imports.apply_draft').sideEffects, ['database', 'managed_files']);

@@ -85,6 +85,23 @@ test('root switch rejects every pre-existing nonempty target before creating man
   });
 });
 
+test('failed maintenance acquisition does not stop the current JobExecutor', async () => {
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const plane = await databaseService.getAgentControlPlane();
+  const lease = await coordinator.beginMaintenance();
+  try {
+    const target = assertOwnedPath(path.join(getControlPlanePaths().testRoot, 'already-maintained-root'));
+    await assert.rejects(
+      databaseService.switchDataRoot(target, false),
+      (error) => error.code === 'MAINTENANCE_FENCE'
+    );
+    assert.equal(plane.jobExecutor.isStopped(), false);
+    assert.equal(plane.jobExecutor.isIdle(), true);
+  } finally {
+    coordinator.finishMaintenance(lease, 'writable');
+  }
+});
+
 test('insufficient space and copy/config phase failures leave the prior root authoritative', async () => {
   await seedQuestion();
   const original = databaseService.getCurrentPaths();

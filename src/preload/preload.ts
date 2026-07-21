@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AgentControlApi, AppApi } from '../shared/api';
+import type { AgentControlApi, AppApi, ManagedBackup, ManagedExport, ManagedGlobalJob } from '../shared/api';
 import type {
   AppPaths,
   AddExternalQuestionToMistakesResult,
@@ -171,13 +171,15 @@ const api: AppApi = {
   clearAllData: (deleteImages: boolean) => invoke<boolean>('settings:clear', deleteImages),
   chooseRoot: () => invoke<string | null>('settings:chooseRoot'),
   setRoot: (root: string, migrate: boolean) => invoke<AppPaths>('settings:setRoot', root, migrate),
-  createDatabaseBackup: (type?: DatabaseBackupKind) => invoke<DatabaseBackupResult>('backups:create', type),
+  createDatabaseBackup: () => invoke<ManagedGlobalJob>('backups:create'),
   ensureDailyAutoBackup: () => invoke<DatabaseBackupResult | null>('backups:ensureDaily'),
-  listDatabaseBackups: () => invoke<DatabaseBackupInfo[]>('backups:list'),
+  listDatabaseBackups: () => invoke<readonly ManagedBackup[]>('backups:list'),
+  listLegacyDatabaseBackups: () => invoke<DatabaseBackupInfo[]>('backups:listLegacy'),
   restoreDatabaseBackup: (fileName: string) => invoke<RestoreDatabaseBackupResult>('backups:restore', fileName),
   deleteDatabaseBackup: (fileName: string) => invoke<boolean>('backups:delete', fileName),
   openBackupsFolder: () => invoke<boolean>('backups:openFolder'),
-  exportQuestionsToPdf: (options: PdfExportOptions) => invoke<PdfExportResult>('pdfExport:create', options),
+  exportQuestionsToPdf: (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => invoke<ManagedGlobalJob>('pdfExport:create', options),
+  getManagedExport: (assetId: string) => invoke<ManagedExport>('pdfExport:get', assetId),
   openExportedPdf: (filePath: string) => invoke<boolean>('pdfExport:open', filePath),
   openExportsFolder: () => invoke<boolean>('pdfExport:openFolder'),
   createImportTemplate: () => invoke<string>('structuredImport:template'),

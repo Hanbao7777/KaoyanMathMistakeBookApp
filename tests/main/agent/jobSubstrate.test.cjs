@@ -289,6 +289,322 @@ test('unexpected executor failure yields a stable bounded failed result and pres
   assert.ok(result.result.value.resultSize < 1_000);
 });
 
+test('stopAndDrain settles executor errors and remains idempotent while stopped and idle', async () => {
+  let leaseReached;
+  let releaseLease;
+  const leaseStarted = new Promise((resolve) => { leaseReached = resolve; });
+  const leaseGate = new Promise((resolve) => { releaseLease = resolve; });
+  const failure = new Error('lease failure during drain');
+  const errors = [];
+  let leaseAttempts = 0;
+  const executor = new JobExecutor({
+    store: {
+      async leaseNext() {
+        leaseAttempts += 1;
+        leaseReached();
+        await leaseGate;
+        throw failure;
+      },
+      async hasQueued() { return true; }
+    },
+    resolvePrincipal: async () => ({}),
+    gateway: { async execute() { throw new Error('unreachable'); }, async query() { throw new Error('unreachable'); } },
+    onError(error) { errors.push(error); }
+  });
+
+  executor.start();
+  await leaseStarted;
+  const drained = executor.stopAndDrain();
+  executor.kick();
+  releaseLease();
+  await drained;
+  await executor.stopAndDrain();
+
+  assert.equal(executor.isIdle(), true);
+  assert.equal(executor.isStopped(), true);
+  assert.equal(leaseAttempts, 1);
+  assert.deepEqual(errors, [failure]);
+});
+
+test('maintenance rejection suspends the drain until explicit resume', async () => {
+  const lease = {
+    job: { apiVersion: 1, jobId: '00000000-0000-4000-8000-000000000091', gatewayRequestId: crypto.randomUUID(), operation: 'questions.review_buckets' },
+    leaseToken: crypto.randomUUID(), target: { operation: 'questions.review_buckets', kind: 'query', payload: {} }, principalClaims: {}
+  };
+  let queued = true;
+  let leaseAttempts = 0;
+  let dispatchAttempts = 0;
+  let queryAttempts = 0;
+  let requeues = 0;
+  const terminals = [];
+  const executor = new JobExecutor({
+    store: {
+      async leaseNext() {
+        if (!queued) return null;
+        queued = false;
+        leaseAttempts += 1;
+        return lease;
+      },
+      async hasQueued() { return queued; },
+      async beginDispatch() { dispatchAttempts += 1; return true; },
+      async bindEvidence() {},
+      async requeueAtSafeCheckpoint() { requeues += 1; queued = true; },
+      async terminalize(_jobId, _token, status) { terminals.push(status); }
+    },
+    resolvePrincipal: async () => ({}),
+    gateway: {
+      async execute() { throw new Error('unreachable'); },
+      async query() {
+        queryAttempts += 1;
+        return queryAttempts === 1
+          ? { kind: 'rejected', error: { code: 'MAINTENANCE_FENCE', message: 'maintenance', retryable: true } }
+          : { kind: 'completed', result: { value: {}, dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } };
+      }
+    }
+  });
+
+  executor.start();
+  await executor.whenIdle();
+  assert.deepEqual({ leaseAttempts, dispatchAttempts, queryAttempts, requeues, terminals }, {
+    leaseAttempts: 1, dispatchAttempts: 1, queryAttempts: 1, requeues: 1, terminals: []
+  });
+  assert.equal(executor.isIdle(), true);
+
+  await executor.resume();
+  await executor.whenIdle();
+  assert.deepEqual({ leaseAttempts, dispatchAttempts, queryAttempts, requeues, terminals }, {
+    leaseAttempts: 2, dispatchAttempts: 2, queryAttempts: 2, requeues: 1, terminals: ['completed']
+  });
+});
+
+test('transient maintenance fence from a newly admitted write retries once without a poller', async () => {
+  const lease = {
+    job: { apiVersion: 1, jobId: '00000000-0000-4000-8000-000000000092', gatewayRequestId: crypto.randomUUID(), operation: 'questions.review_buckets' },
+    leaseToken: crypto.randomUUID(), target: { operation: 'questions.review_buckets', kind: 'query', payload: {} }, principalClaims: {}
+  };
+  let queued = true;
+  let fenceWaitReached;
+  let releaseFenceWait;
+  const fenceWaitStarted = new Promise((resolve) => { fenceWaitReached = resolve; });
+  const fenceWaitGate = new Promise((resolve) => { releaseFenceWait = resolve; });
+  let leaseAttempts = 0;
+  let queryAttempts = 0;
+  let requeues = 0;
+  let writeActivityVersion = 0;
+  const terminals = [];
+  const executor = new JobExecutor({
+    store: {
+      async leaseNext() {
+        if (!queued) return null;
+        queued = false;
+        leaseAttempts += 1;
+        return lease;
+      },
+      async hasQueued() { return queued; },
+      async beginDispatch() { return true; },
+      async bindEvidence() {},
+      async requeueAtSafeCheckpoint() { requeues += 1; queued = true; },
+      async terminalize(_jobId, _token, status) { terminals.push(status); }
+    },
+    resolvePrincipal: async () => ({}),
+    gateway: {
+      async execute() { throw new Error('unreachable'); },
+      async query() {
+        queryAttempts += 1;
+        if (queryAttempts === 1) writeActivityVersion += 1;
+        return queryAttempts === 1
+          ? { kind: 'rejected', error: { code: 'MAINTENANCE_FENCE', message: 'transient', retryable: true } }
+          : { kind: 'completed', result: { value: {}, dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } };
+      }
+    },
+    isMaintenanceActive: () => false,
+    pendingWrites: () => 0,
+    writeActivityVersion: () => writeActivityVersion,
+    async waitForTransientFence() {
+      fenceWaitReached();
+      await fenceWaitGate;
+    }
+  });
+
+  executor.start();
+  await fenceWaitStarted;
+  assert.deepEqual({ leaseAttempts, queryAttempts, requeues, terminals }, {
+    leaseAttempts: 1, queryAttempts: 1, requeues: 1, terminals: []
+  });
+  releaseFenceWait();
+  await executor.whenIdle();
+  assert.deepEqual({ leaseAttempts, queryAttempts, requeues, terminals }, {
+    leaseAttempts: 2, queryAttempts: 2, requeues: 1, terminals: ['completed']
+  });
+});
+
+test('transient maintenance fence from an already pending write retries once without a poller', async () => {
+  const lease = {
+    job: { apiVersion: 1, jobId: '00000000-0000-4000-8000-000000000093', gatewayRequestId: crypto.randomUUID(), operation: 'questions.review_buckets' },
+    leaseToken: crypto.randomUUID(), target: { operation: 'questions.review_buckets', kind: 'query', payload: {} }, principalClaims: {}
+  };
+  let queued = true;
+  let releaseFenceWait;
+  const fenceWaitGate = new Promise((resolve) => { releaseFenceWait = resolve; });
+  let leaseAttempts = 0;
+  let queryAttempts = 0;
+  let requeues = 0;
+  let pendingWrites = 1;
+  let fenceWaitCalls = 0;
+  const terminals = [];
+  const executor = new JobExecutor({
+    store: {
+      async leaseNext() {
+        if (!queued) return null;
+        queued = false;
+        leaseAttempts += 1;
+        return lease;
+      },
+      async hasQueued() { return queued; },
+      async beginDispatch() { return true; },
+      async bindEvidence() {},
+      async requeueAtSafeCheckpoint() { requeues += 1; queued = true; },
+      async terminalize(_jobId, _token, status) { terminals.push(status); }
+    },
+    resolvePrincipal: async () => ({}),
+    gateway: {
+      async execute() { throw new Error('unreachable'); },
+      async query() {
+        queryAttempts += 1;
+        if (queryAttempts === 1) pendingWrites = 0;
+        return queryAttempts === 1
+          ? { kind: 'rejected', error: { code: 'MAINTENANCE_FENCE', message: 'transient', retryable: true } }
+          : { kind: 'completed', result: { value: {}, dataVersion: { dataEpoch: 'epoch', dataRevision: 1 } } };
+      }
+    },
+    isMaintenanceActive: () => false,
+    pendingWrites: () => pendingWrites,
+    writeActivityVersion: () => 1,
+    async waitForTransientFence() {
+      fenceWaitCalls += 1;
+      await fenceWaitGate;
+    }
+  });
+
+  executor.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual({ leaseAttempts, queryAttempts, requeues, fenceWaitCalls, terminals }, {
+    leaseAttempts: 1, queryAttempts: 1, requeues: 1, fenceWaitCalls: 1, terminals: []
+  });
+  assert.equal(executor.isIdle(), false);
+  releaseFenceWait();
+  await executor.whenIdle();
+  assert.deepEqual({ leaseAttempts, queryAttempts, requeues, fenceWaitCalls, terminals }, {
+    leaseAttempts: 2, queryAttempts: 2, requeues: 1, fenceWaitCalls: 1, terminals: ['completed']
+  });
+});
+
+test('database shutdown drains the executor terminal callback before closing sql.js', async () => {
+  let terminalCallbackReached;
+  let releaseTerminalCallback;
+  const terminalCallbackStarted = new Promise((resolve) => { terminalCallbackReached = resolve; });
+  const terminalCallbackGate = new Promise((resolve) => { releaseTerminalCallback = resolve; });
+  let gated = false;
+  await reset({
+    async jobExecutorOnTerminalized() {
+      if (gated) return;
+      gated = true;
+      terminalCallbackReached();
+      await terminalCallbackGate;
+    }
+  });
+  const { plane, principal } = await client('c8-lifecycle', 'lifecycle-session');
+  const created = await createJob(plane, principal);
+  await terminalCallbackStarted;
+
+  const database = await environment.databaseService.getDatabase();
+  const status = database.exec('SELECT status FROM agent_jobs WHERE job_id = ?', [created.result.value.jobId])[0].values[0][0];
+  const coordinator = await environment.databaseService.getDatabaseCoordinator();
+  assert.equal(status, 'completed');
+  assert.equal(coordinator.pendingWrites, 0);
+  const close = database.close.bind(database);
+  let closeCalled = false;
+  database.close = () => {
+    closeCalled = true;
+    close();
+  };
+  const resetPromise = environment.databaseService.shutdownDatabase()
+    .then(() => environment.databaseService.resetDatabaseConnection());
+
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(closeCalled, false, 'database closed while the executor terminal callback was active');
+    assert.equal(plane.jobExecutor.isIdle(), false);
+    releaseTerminalCallback();
+    await resetPromise;
+    assert.equal(plane.jobExecutor.isIdle(), true);
+    assert.equal(closeCalled, true);
+  } finally {
+    releaseTerminalCallback();
+    await resetPromise.catch(() => undefined);
+  }
+});
+
+test('rejected synchronous reset preserves executor state while coordinator writes are pending', async () => {
+  const { plane } = await client('c8-reset-pending', 'reset-pending-session');
+  await plane.jobExecutor.whenIdle();
+  const coordinator = await environment.databaseService.getDatabaseCoordinator();
+  let writeReached;
+  let releaseWrite;
+  const writeStarted = new Promise((resolve) => { writeReached = resolve; });
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  const writePromise = coordinator.executeWrite({
+    requestId: 'c8-reset-pending-write',
+    concurrency: 'none',
+    async execute() {
+      writeReached();
+      await writeGate;
+      return { changed: false, value: undefined };
+    }
+  });
+  await writeStarted;
+
+  try {
+    assert.equal(coordinator.pendingWrites, 1);
+    assert.throws(() => environment.databaseService.resetDatabaseConnection(), /coordinator writes are pending/);
+    assert.equal(plane.jobExecutor.isStopped(), false);
+  } finally {
+    releaseWrite();
+    await writePromise;
+  }
+});
+
+test('rejected synchronous reset preserves an active executor state', async () => {
+  let terminalCallbackReached;
+  let releaseTerminalCallback;
+  const terminalCallbackStarted = new Promise((resolve) => { terminalCallbackReached = resolve; });
+  const terminalCallbackGate = new Promise((resolve) => { releaseTerminalCallback = resolve; });
+  await reset({
+    async jobExecutorOnTerminalized() {
+      terminalCallbackReached();
+      await terminalCallbackGate;
+    }
+  });
+  const { plane, principal } = await client('c8-reset-active', 'reset-active-session');
+  await createJob(plane, principal);
+  await terminalCallbackStarted;
+
+  try {
+    const coordinator = await environment.databaseService.getDatabaseCoordinator();
+    assert.equal(coordinator.pendingWrites, 0);
+    assert.equal(plane.jobExecutor.isIdle(), false);
+    assert.equal(plane.jobExecutor.isStopped(), false);
+    assert.throws(
+      () => environment.databaseService.resetDatabaseConnection(),
+      /Cannot synchronously reset the database while JobExecutor is active/
+    );
+    assert.equal(plane.jobExecutor.isStopped(), false);
+  } finally {
+    releaseTerminalCallback();
+    await plane.jobExecutor.whenIdle();
+  }
+});
+
 test('restart reconciles a result published before its terminal row and interrupts evidence-free leases', async () => {
   await reset({ jobStoreHook(stage) { if (stage === 'before_terminal_write') throw new Error('fault-after-result-publish'); } });
   const { plane, principal } = await client();

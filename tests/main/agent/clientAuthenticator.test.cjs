@@ -81,7 +81,8 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
     'imports.read', 'imports.write', 'operations.batch',
     'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
     'sessions.manage', 'sessions.read', 'system.read',
-    'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write'
+    'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write',
+    'backups.read', 'backups.create', 'exports.create', 'exports.read'
   ]);
   assert.equal(first.scopes.includes('tasks.write'), true);
   assert.doesNotThrow(() => authentication.assertIssuedAgentPrincipal(first));
@@ -110,7 +111,8 @@ test('renderer business allowlist is exact, frozen, and module-owned', () => {
     'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
     'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel',
     'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
-    'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
+    'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update',
+    'backups.list', 'backups.create', 'exports.create', 'exports.get'
   ]);
   assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);

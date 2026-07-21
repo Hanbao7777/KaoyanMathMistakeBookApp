@@ -54,7 +54,7 @@ function challengeFor(protocolVersion) {
   const challenge = Object.freeze({
     version: 'kaoyan-stdio-auth-v1', challengeId: randomUUID(), nonce: randomBytes(32).toString('base64url'), appInstanceId: instanceId,
     clientId, mcpProtocolVersion: protocolVersion, launcherVersion: '1.0.0', audience: 'kaoyan-mcp-loopback', transport: 'stdio-bridge',
-    expiresAt: new Date(Date.now() + 60_000).toISOString()
+    expiresAt: new Date(Date.now() + 30_000).toISOString()
   });
   challenges.set(challenge.challengeId, challenge);
   return challenge;

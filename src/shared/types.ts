@@ -696,6 +696,7 @@ export type ImportBatchStatus = 'active' | 'deleted' | 'failed';
 
 export interface ImportBatch {
   id: string;
+  owner_client_id: string | null;
   type: ImportBatchType;
   name: string;
   source_file_name: string;

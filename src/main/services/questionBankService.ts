@@ -372,8 +372,8 @@ function createImportBatchMutation(
     database,
     scope,
     `INSERT INTO import_batches (
-      id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-    ) VALUES (?, 'question_bank', ?, ?, ?, ?, 0, 0, ?, ?, NULL)`,
+      id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'local-renderer-management', 'question_bank', ?, ?, ?, ?, 0, 0, ?, ?, NULL)`,
     [input.id, input.name, input.sourceFileName, input.source, nowIso(), input.status ?? 'active', JSON.stringify(input.metadata)]
   );
 }

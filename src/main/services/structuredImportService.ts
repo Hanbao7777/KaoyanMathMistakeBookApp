@@ -553,8 +553,8 @@ async function createStructuredBatch(session: ImportSession) {
     execute(database) {
       database.run(
         `INSERT INTO import_batches (
-          id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
-        ) VALUES (?, 'wrong_questions', ?, ?, '', ?, 0, 0, 'active', ?, NULL)`,
+          id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+        ) VALUES (?, 'local-renderer-management', 'wrong_questions', ?, ?, '', ?, 0, 0, 'active', ?, NULL)`,
         [batchId, path.basename(session.preview.sourceFile), path.basename(session.preview.sourceFile), nowIso(), JSON.stringify(metadata)]
       );
       return { changed: true, value: batchId };

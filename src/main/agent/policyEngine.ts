@@ -64,6 +64,7 @@ export interface PolicyEvaluation {
   readonly r4Grant?: R4Grant;
   readonly localApprovedChangeSet?: true;
   readonly workflowResume?: true;
+  readonly internalJob?: true;
 }
 
 function deny(risk: RiskLevel, descriptor: OperationDescriptor, policyVersion: string, reasonCode: string): PolicyDecision {
@@ -130,7 +131,7 @@ export class PolicyEngine {
     const localApprovedChangeSet = principal.renderer && evaluation.localApprovedChangeSet === true;
     const workflowResume = evaluation.workflowResume === true;
     if (workflowResume && descriptor.name !== 'agent.changesets.apply') throw new AgentError('POLICY_INVARIANT_VIOLATION');
-    if (!principal.renderer && descriptor.domain !== 'management' && !isMcpExternalBusinessOperation(descriptor.name)) {
+    if (!principal.renderer && !evaluation.internalJob && descriptor.domain !== 'management' && !isMcpExternalBusinessOperation(descriptor.name)) {
       return deny(resolveRisk(descriptor, input, state), descriptor, settings.policyVersion, 'EXTERNAL_MCP_EXPOSURE_BOUNDARY');
     }
     if (principal.renderer && !migratedRendererBusiness && !localManagementAction && !localApprovedChangeSet) {

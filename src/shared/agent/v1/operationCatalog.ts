@@ -21,7 +21,7 @@ import {
   validateOperationCatalog
 } from './gatewaySchemas';
 
-export const operationCatalogVersion = 'agent-catalog-v1@6' as const;
+export const operationCatalogVersion = 'agent-catalog-v1@7' as const;
 
 interface DescriptorDefinition {
   readonly kind: OperationKind;
@@ -171,6 +171,18 @@ const definitions: Record<OperationName, DescriptorDefinition> = {
    , 'ticktick.habits.list': businessQuery('ticktick', ['ticktick.habits.read'])
    , 'ticktick.calendar.list_events': businessQuery('ticktick', ['ticktick.calendar.read'])
    , 'ticktick.bridges.get': businessQuery('ticktick', ['ticktick.bridges.read'])
+   , 'backups.list': businessQuery('global', ['backups.read'])
+   , 'exports.get': businessQuery('global', ['exports.read'])
+   , 'backups.create': businessCommand('global', ['backups.create'], 'R2', 'inverse', { sideEffects: ['database', 'managed_files'], maxAffectedEntities: 1 })
+   , 'exports.create': businessCommand('global', ['exports.create'], 'R2', 'inverse', { sideEffects: ['managed_files'], maxAffectedEntities: 50 })
+   , 'backups.materialize': businessCommand('global', ['backups.create'], 'R2', 'inverse', { sideEffects: ['managed_files'], maxAffectedEntities: 1 })
+   , 'exports.materialize': businessCommand('global', ['exports.create'], 'R2', 'inverse', { sideEffects: ['managed_files'], maxAffectedEntities: 1 })
+   , 'backups.delete': r4Command('global', ['backups.delete'])
+   , 'database.restore': r4Command('global', ['database.restore'])
+   , 'database.replace_from_import': r4Command('global', ['database.replace'])
+   , 'database.clear_all': r4Command('global', ['database.clear'])
+   , 'imports.delete_batch': r4Command('global', ['imports.delete'])
+   , 'data_root.migrate': r4Command('global', ['data_root.migrate'])
 };
 
 function managementCommand(
@@ -189,7 +201,7 @@ function managementQuery(requiredScopes: readonly AgentScope[], rendererManageme
 }
 
 function businessCommand(
-  domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'study' | 'imports' | 'ticktick',
+  domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'study' | 'imports' | 'ticktick' | 'global',
   requiredScopes: readonly AgentScope[],
   risk: RiskLevel,
   recovery: RecoveryRequirement,
@@ -212,13 +224,14 @@ function batchCommand(
   });
 }
 
-function r4Command(domain: 'questions' | 'tasks', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
+function r4Command(domain: 'questions' | 'tasks' | 'global', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
   return businessCommand(domain, requiredScopes, 'R4', 'consistency_bundle', {
-    approval: 'r4_grant', requiresChangeSet: true, maxAffectedEntities: 500
+    approval: 'r4_grant', requiresChangeSet: true, maxAffectedEntities: 500,
+    ...(domain === 'global' ? { riskResolver: 'global_resolved' as const } : {})
   });
 }
 
-function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics' | 'study' | 'imports' | 'ticktick', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
+function businessQuery(domain: 'questions' | 'tasks' | 'focus' | 'knowledge' | 'textbooks' | 'analytics' | 'study' | 'imports' | 'ticktick' | 'global', requiredScopes: readonly AgentScope[]): DescriptorDefinition {
   return { kind: 'query', domain, requiredScopes, risk: 'R1' };
 }
 

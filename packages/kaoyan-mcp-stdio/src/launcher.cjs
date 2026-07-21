@@ -29,6 +29,7 @@ const MAX_STDERR_BYTES = 32 * 1024;
 const MAX_JOURNAL_BYTES = 16 * 1024;
 const MAX_CLAIM_BYTES = 1024;
 const MAX_IN_FLIGHT = 16;
+const MAX_CHALLENGE_FUTURE_MS = 65_000;
 const DISCOVERY_FILE = 'mcp-loopback.discovery.json';
 const STATES = new Set(['prepared', 'forwarded', 'needs_lookup', 'terminal']);
 const TRANSITIONS = new Map([
@@ -505,7 +506,7 @@ function validateChallenge(challenge, record, initialize, clientId) {
       challenge.clientId !== clientId || challenge.mcpProtocolVersion !== initialize.params.protocolVersion || challenge.launcherVersion !== LAUNCHER_VERSION ||
       challenge.audience !== 'kaoyan-mcp-loopback' || challenge.transport !== 'stdio-bridge') throw new Error('App authentication challenge is invalid');
   const expires = Date.parse(challenge.expiresAt);
-  if (!Number.isFinite(expires) || new Date(expires).toISOString() !== challenge.expiresAt || expires <= Date.now() || expires > Date.now() + 60_000) throw new Error('App authentication challenge is expired');
+  if (!Number.isFinite(expires) || new Date(expires).toISOString() !== challenge.expiresAt || expires <= Date.now() || expires > Date.now() + MAX_CHALLENGE_FUTURE_MS) throw new Error('App authentication challenge is expired');
 }
 
 class HttpBridgeClient {
@@ -560,18 +561,29 @@ class HttpBridgeClient {
 
   async authenticate(record, initialize, signal) {
     const baseHeaders = { 'x-kaoyan-client-id': this.options.clientId, 'x-kaoyan-launcher-version': LAUNCHER_VERSION };
-    const challenged = await this.post(record, initialize, baseHeaders, signal);
-    const challenge = challenged.body?.error?.data?.challenge;
-    if (challenged.status !== 401 || !challenge) throw new Error('App did not issue an authentication challenge');
-    validateChallenge(challenge, record, initialize, this.options.clientId);
-    const signature = await this.options.keyLifecycle.sign(this.options.keyName, Buffer.from(canonicalize(challenge), 'utf8').toString('base64url'));
-    const admitted = await this.post(record, initialize, { ...baseHeaders, 'x-kaoyan-challenge-id': challenge.challengeId, 'x-kaoyan-challenge-signature': signature }, signal);
-    const sessionId = admitted.headers['mcp-session-id'];
-    if (admitted.status !== 200 || typeof sessionId !== 'string' || !UUID.test(sessionId)) throw new Error('App rejected launcher authentication');
-    this.session = { instanceId: record.instanceId, protocolVersion: initialize.params.protocolVersion, sessionId };
-    this.initializeMessage = JSON.parse(JSON.stringify(initialize));
-    this.initialized = false;
-    return admitted.body;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const challenged = await this.post(record, initialize, baseHeaders, signal);
+      const challenge = challenged.body?.error?.data?.challenge;
+      if (challenged.status !== 401 || !challenge) throw new Error('App did not issue an authentication challenge');
+      validateChallenge(challenge, record, initialize, this.options.clientId);
+      let signature;
+      try {
+        signature = await this.options.keyLifecycle.sign(this.options.keyName, Buffer.from(canonicalize(challenge), 'utf8').toString('base64url'));
+      } catch (error) {
+        if (attempt === 0 && !signal?.aborted) continue;
+        throw error;
+      }
+      const admitted = await this.post(record, initialize, { ...baseHeaders, 'x-kaoyan-challenge-id': challenge.challengeId, 'x-kaoyan-challenge-signature': signature }, signal);
+      const sessionId = admitted.headers['mcp-session-id'];
+      if (admitted.status === 200 && typeof sessionId === 'string' && UUID.test(sessionId)) {
+        this.session = { instanceId: record.instanceId, protocolVersion: initialize.params.protocolVersion, sessionId };
+        this.initializeMessage = JSON.parse(JSON.stringify(initialize));
+        this.initialized = false;
+        return admitted.body;
+      }
+      if (attempt === 1) throw new Error('App rejected launcher authentication');
+    }
+    throw new Error('App rejected launcher authentication');
   }
 
   sessionHeaders() {
@@ -639,7 +651,8 @@ class Launcher {
   }
 
   diagnostic(code) {
-    const safe = new Set(['request_failed', 'journal_recovery_failed', 'startup_failed', 'protocol_input_rejected', 'authentication_failed', 'response_invalid', 'session_failed', 'shutdown']);
+    const safe = new Set(['request_failed', 'journal_recovery_failed', 'startup_failed', 'protocol_input_rejected', 'authentication_failed',
+      'authentication_challenge_invalid', 'authentication_challenge_expired', 'authentication_signing_failed', 'response_invalid', 'session_failed', 'shutdown']);
     const line = `kaoyan-mcp: ${safe.has(code) ? code : 'request_failed'}\n`;
     const bytes = Buffer.byteLength(line);
     if (this.stderrBytes + bytes <= MAX_STDERR_BYTES) { this.stderrBytes += bytes; this.stderr.write(line); }
@@ -660,7 +673,15 @@ class Launcher {
   async ensureApp(signal) {
     let record = await this.discovery(signal);
     if (record) return record;
-    if (!this.options.appPath) throw new Error('Kaoyan App is unavailable');
+    if (!this.options.appPath) {
+      const deadline = Date.now() + Math.min(this.options.startupTimeoutMs, 1_000);
+      while (Date.now() < deadline && !signal?.aborted) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        record = await this.discovery(signal);
+        if (record) return record;
+      }
+      throw new Error('Kaoyan App is unavailable');
+    }
     const root = safeRoot(this.options.discoveryRoot);
     const lock = new DurableClaimLock(root, 'app-startup', { ...this.options, filesystem: this.options.filesystem, now: this.options.now });
     const acquired = await lock.acquire(() => this.discovery(signal));
@@ -850,8 +871,14 @@ class Launcher {
       if (message.id !== undefined && result) await this.emit(result);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : '';
-      const diagnostic = /authentication challenge|authentication challenge is|rejected launcher authentication/.test(errorMessage)
-        ? 'authentication_failed'
+      const diagnostic = /authentication challenge is invalid/.test(errorMessage)
+        ? 'authentication_challenge_invalid'
+        : /authentication challenge is expired/.test(errorMessage)
+          ? 'authentication_challenge_expired'
+          : /CNG operation failed/.test(errorMessage)
+            ? 'authentication_signing_failed'
+            : /authentication challenge|rejected launcher authentication/.test(errorMessage)
+              ? 'authentication_failed'
         : /response|outcome/.test(errorMessage)
           ? 'response_invalid'
           : /session/.test(errorMessage)

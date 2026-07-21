@@ -5,6 +5,7 @@ import { validateTickTickCommand, validateTickTickQuery } from '../application/t
 import { validateKnowledgeCommand, validateKnowledgeQuery } from '../application/knowledge/contracts';
 import { validateStudyCommand, validateStudyQuery } from '../application/study/contracts';
 import { validateImportsCommand, validateImportsQuery } from '../application/imports/contracts';
+import { validateGlobalCommand, validateGlobalQuery } from '../application/global/contracts';
 import { assertMcpExternalExposureManifest, mcpExternalExposureManifest, mcpExternalBusinessOperations } from '../../shared/mcp/v1/exposureManifest';
 import { mcpCapabilityVersion, mcpCurrentProtocolVersion, mcpProtocolVersions, mcpSchemaVersion, mcpServerVersion } from '../../shared/mcp/v1/versions';
 import type { McpCapabilitySummary, McpRegistryDescriptor, McpRuntimeValidator } from '../../shared/mcp/v1/contracts';
@@ -38,7 +39,12 @@ const descriptions: Readonly<Record<string, string>> = Object.freeze({
    'imports.create_draft': 'Create one bounded structured import draft.', 'imports.add_draft_image': 'Bind one App-managed user-selected image to a draft item.', 'imports.validate_draft': 'Validate and deduplicate one bounded import draft.', 'imports.preview_draft': 'Read the deterministic change preview for one draft.', 'imports.apply_draft': 'Apply one validated import draft through a durable job and journal.', 'imports.get': 'Read one owner-bound import draft.', 'imports.cancel': 'Cancel one owner-bound draft and quarantine staged assets.', 'imports.view': 'Read one owner-bound import draft resource.',
    'study.get_today': 'Read one bounded daily study supervision summary.', 'study.get_week_summary': 'Read one bounded week-to-date study summary.', 'study.create_plan_draft': 'Create at most twenty bounded draft study tasks.', 'study.apply_plan_adjustment': 'Adjust one existing study task.', 'study.record_manual_progress': 'Record one bounded manual study session.', 'study.today.view': 'Read one addressable daily study summary.', 'study.week.view': 'Read one addressable weekly study summary.', 'study.daily_review.zh_en': 'Use the bilingual bounded daily study review workflow.', 'study.weekly_review.zh_en': 'Use the bilingual bounded weekly study review workflow.',
    'ticktick.lists.list': 'List bounded TickTick-style lists.', 'ticktick.lists.create': 'Create one bounded TickTick-style list.', 'ticktick.lists.update': 'Update one bounded TickTick-style list.', 'ticktick.habits.list': 'List bounded habits.', 'ticktick.habits.create': 'Create one bounded habit.', 'ticktick.habits.update': 'Update one bounded habit.', 'ticktick.calendar.list_events': 'List bounded calendar events for one month.', 'ticktick.bridges.get': 'Read bounded bridges for one task.', 'ticktick.bridges.update': 'Upsert one bounded local bridge.',
-   'ticktick.lists.view': 'Read the bounded TickTick list collection resource.', 'ticktick.habits.view': 'Read the bounded habit collection resource.', 'ticktick.calendar.view': 'Read one bounded calendar month resource.', 'ticktick.bridges.view': 'Read bridges for one bounded task resource.'
+    'ticktick.lists.view': 'Read the bounded TickTick list collection resource.', 'ticktick.habits.view': 'Read the bounded habit collection resource.', 'ticktick.calendar.view': 'Read one bounded calendar month resource.', 'ticktick.bridges.view': 'Read bridges for one bounded task resource.',
+    'backups.list': 'List bounded managed backup metadata.', 'backups.create': 'Create one App-managed database backup through a durable job.',
+    'backups.delete': 'Request deletion of one resolved managed backup.', 'database.restore': 'Request restoration from one resolved managed backup.',
+    'database.replace_from_import': 'Request replacement from one resolved managed import asset.', 'database.clear_all': 'Request a bounded full-data clear.',
+    'imports.delete_batch': 'Request deletion of one resolved import batch.', 'data_root.migrate': 'Request migration using one local-user-selected root token.',
+    'exports.create': 'Create one bounded App-managed export through a durable job.', 'exports.get': 'Read owner-bound export metadata only.', 'exports.view': 'Read one owner-bound export metadata resource.'
 });
 
 function schema(id: string, direction: 'input' | 'output') {
@@ -64,6 +70,10 @@ function payloadValidator(operation: OperationName): McpRuntimeValidator {
       return;
     }
     if (operation.startsWith('study.')) { if (resolveOperationDescriptor(operation).kind === 'command') validateStudyCommand(request); else validateStudyQuery(request); return; }
+    if (operation.startsWith('backups.') || operation.startsWith('exports.') || operation.startsWith('database.') || operation === 'data_root.migrate' || operation === 'imports.delete_batch') {
+      if (resolveOperationDescriptor(operation).kind === 'command') validateGlobalCommand(request); else validateGlobalQuery(request);
+      return;
+    }
     if (operation.startsWith('imports.')) { if (resolveOperationDescriptor(operation).kind === 'command') validateImportsCommand(request); else validateImportsQuery(request); return; }
     if (resolveOperationDescriptor(operation).kind === 'command') validateTickTickCommand(request);
     else validateTickTickQuery(request);
@@ -123,14 +133,16 @@ export const mcpV1SupportRegistry: readonly McpRegistryDescriptor[] = Object.fre
   Object.freeze({ ...gatewayEntry('knowledge.view', 'knowledge.get_node', 'resource-template'), exposure: 'support' as const, name: 'knowledge.view', uriTemplate: 'kaoyan://knowledge/{nodeId}' }),
   Object.freeze({ ...gatewayEntry('textbooks.view', 'textbooks.get', 'resource-template'), exposure: 'support' as const, name: 'textbooks.view', uriTemplate: 'kaoyan://textbooks/{textbookId}' }),
   Object.freeze({ ...gatewayEntry('imports.view', 'imports.get', 'resource-template'), exposure: 'support' as const, name: 'imports.view', uriTemplate: 'kaoyan://imports/{draftId}' }),
+  Object.freeze({ ...gatewayEntry('backups.view', 'backups.list', 'resource'), exposure: 'support' as const, name: 'backups.view', uri: 'kaoyan://backups' }),
   Object.freeze({ ...gatewayEntry('study.today.view', 'study.get_today', 'resource'), exposure: 'support' as const, name: 'study.today.view', uri: 'kaoyan://study/today' }),
    Object.freeze({ ...gatewayEntry('study.week.view', 'study.get_week_summary', 'resource'), exposure: 'support' as const, name: 'study.week.view', uri: 'kaoyan://study/week' }),
    Object.freeze({ ...gatewayEntry('ticktick.lists.view', 'ticktick.lists.list', 'resource'), exposure: 'support' as const, name: 'ticktick.lists.view', uri: 'kaoyan://ticktick/lists' }),
    Object.freeze({ ...gatewayEntry('ticktick.habits.view', 'ticktick.habits.list', 'resource'), exposure: 'support' as const, name: 'ticktick.habits.view', uri: 'kaoyan://ticktick/habits' }),
    Object.freeze({ ...gatewayEntry('study.daily_review.zh_en', 'study.get_today', 'prompt'), exposure: 'support' as const, name: 'study.daily_review.zh_en', promptArguments: Object.freeze(['date']) }),
    Object.freeze({ ...gatewayEntry('study.weekly_review.zh_en', 'study.get_week_summary', 'prompt'), exposure: 'support' as const, name: 'study.weekly_review.zh_en', promptArguments: Object.freeze(['date']) }),
-   Object.freeze({ ...gatewayEntry('ticktick.calendar.view', 'ticktick.calendar.list_events', 'resource-template'), exposure: 'support' as const, name: 'ticktick.calendar.view', uriTemplate: 'kaoyan://ticktick/calendar/{year}/{month}' }),
-   Object.freeze({ ...gatewayEntry('ticktick.bridges.view', 'ticktick.bridges.get', 'resource-template'), exposure: 'support' as const, name: 'ticktick.bridges.view', uriTemplate: 'kaoyan://ticktick/bridges/{taskId}' })
+    Object.freeze({ ...gatewayEntry('ticktick.calendar.view', 'ticktick.calendar.list_events', 'resource-template'), exposure: 'support' as const, name: 'ticktick.calendar.view', uriTemplate: 'kaoyan://ticktick/calendar/{year}/{month}' }),
+    Object.freeze({ ...gatewayEntry('ticktick.bridges.view', 'ticktick.bridges.get', 'resource-template'), exposure: 'support' as const, name: 'ticktick.bridges.view', uriTemplate: 'kaoyan://ticktick/bridges/{taskId}' }),
+    Object.freeze({ ...gatewayEntry('exports.view', 'exports.get', 'resource-template'), exposure: 'support' as const, name: 'exports.view', uriTemplate: 'kaoyan://exports/{exportId}' })
 ]);
 
 export const mcpV1Registry: readonly McpRegistryDescriptor[] = Object.freeze([...mcpV1BusinessRegistry, ...mcpV1JobRegistry, ...mcpV1SupportRegistry]);
@@ -141,12 +153,12 @@ export function createMcpCapabilitySummary(principal: AgentPrincipal): McpCapabi
   return Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: visible.filter(({ primitive }) => primitive === 'tool').length, resources: visible.filter(({ primitive }) => primitive === 'resource').length, resourceTemplates: visible.filter(({ primitive }) => primitive === 'resource-template').length, prompts: visible.filter(({ primitive }) => primitive === 'prompt').length });
 }
 
-export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: mcpV1BusinessRegistry.length + mcpV1JobRegistry.length, resources: 7, resourceTemplates: 9, prompts: 4 });
+export const mcpV1CapabilitySummary: McpCapabilitySummary = Object.freeze({ schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, tools: mcpV1BusinessRegistry.length + mcpV1JobRegistry.length, resources: 8, resourceTemplates: 11, prompts: 4 });
 export const mcpV1ServerMetadata = Object.freeze({ serverVersion: mcpServerVersion, capabilityVersion: mcpCapabilityVersion, schemaVersion: mcpSchemaVersion, protocolVersions: Object.freeze([...mcpProtocolVersions]), currentProtocolVersion: mcpCurrentProtocolVersion, tasks: true, instructions: mcpServerInstructionsValue, exposureManifestVersion: mcpExternalExposureManifest.version });
 
 function assertRegistry(): void {
   assertMcpExternalExposureManifest(mcpExternalExposureManifest); validateMcpServerInstructions(mcpServerInstructionsValue);
-  if (mcpV1BusinessRegistry.length !== 49) throw new Error('MCP business registry must contain exactly 49 operations');
+  if (mcpV1BusinessRegistry.length !== 59) throw new Error('MCP business registry must contain exactly 59 operations');
   if (JSON.stringify([...mcpExternalExposureManifest.businessOperations].sort()) !== JSON.stringify(mcpV1BusinessRegistry.map(({ operation }) => operation).sort())) throw new Error('MCP registry and exposure manifest differ');
   if (new Set(mcpV1Registry.map(({ name }) => name)).size !== mcpV1Registry.length) throw new Error('MCP public names must be unique');
   for (const descriptor of mcpV1Registry) {

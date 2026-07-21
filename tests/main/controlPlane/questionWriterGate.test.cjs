@@ -100,13 +100,19 @@ function classifySql(file, source, index, statement) {
     assert.match(source, /assertDatabaseMutationScope\(scope, database\)/);
     return 'coordinator-scoped C9 knowledge application';
   }
+  if (name === 'src/main/application/global/importBatchDeletion.ts') {
+    return 'coordinator-fenced import-batch replacement';
+  }
   if (name === 'src/main/services/databaseService.ts') {
     const migration = enclosingRange(source, 'function migrateDatabase(', 'export function runSql(');
+    const restoreReplacement = enclosingRange(source, 'function copyRestorableTablesFromBackup(', 'async function prepareReplacementManifest(');
     const importReplacement = enclosingRange(source, 'export async function importData(', 'export async function clearAllData(');
     const clearReplacement = enclosingRange(source, 'export async function clearAllData(', 'export async function createVerifiedDatabaseSnapshot(');
+    const managedClearReplacement = enclosingRange(source, 'export async function replaceManagedDatabaseClear(', 'export interface DataRootSwitchDependencies');
     if (inRange(index, migration)) return 'legacy schema migration bootstrap';
+    if (inRange(index, restoreReplacement)) return 'coordinator-fenced restore replacement';
     if (inRange(index, importReplacement)) return 'coordinator-fenced JSON identity replacement';
-    if (inRange(index, clearReplacement)) return 'coordinator-fenced global clear replacement';
+    if (inRange(index, clearReplacement) || inRange(index, managedClearReplacement)) return 'coordinator-fenced global clear replacement';
   }
   return null;
 }
@@ -129,7 +135,7 @@ function questionSqlOccurrences() {
         });
       }
     }
-    for (const match of source.matchAll(/DELETE\s+FROM\s+\$\{table\}/g)) {
+    for (const match of source.matchAll(/DELETE\s+FROM\s+\$\{(?:table|quoteSqlIdentifier\(table\))\}/g)) {
       occurrences.push({
         file: relative(file),
         line: lineAt(source, match.index),
@@ -176,7 +182,9 @@ test('all question-owned SQL mutations have an exact allowed scope', () => {
     .map((classification) => [classification, occurrences.filter((entry) => entry.classification === classification).length]));
   assert.deepEqual(counts, {
     'coordinator-fenced JSON identity replacement': 3,
-    'coordinator-fenced global clear replacement': 1,
+    'coordinator-fenced global clear replacement': 2,
+    'coordinator-fenced import-batch replacement': 1,
+    'coordinator-fenced restore replacement': 1,
     'coordinator-scoped question repository': 18,
     'coordinator-scoped C9 knowledge application': 2,
     'legacy schema migration bootstrap': 9,

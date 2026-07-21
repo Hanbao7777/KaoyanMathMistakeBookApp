@@ -14,6 +14,7 @@ const agent = require('../../../dist/launcher-build/src/shared/agent/index.js');
 const {
   DurableClaimLock,
   ForwardingJournal,
+  HttpBridgeClient,
   Launcher,
   boundedLines,
   hash,
@@ -32,6 +33,14 @@ const dataVersion = { dataEpoch: 'epoch-one', dataRevision: 1 };
 const commandResult = { changed: true, value: { ok: true }, events: [], dataVersion };
 const completedTerminal = { kind: 'command-result', result: commandResult };
 const completedOutcome = mcp.mapGatewayTerminalToMcpOutcome('questions.create', requestId, completedTerminal);
+
+function authenticationChallenge(challengeId) {
+  return {
+    version: 'kaoyan-stdio-auth-v1', challengeId, nonce: 'a'.repeat(43), appInstanceId: instanceId,
+    clientId, mcpProtocolVersion: '2025-11-25', launcherVersion: '1.0.0', audience: 'kaoyan-mcp-loopback', transport: 'stdio-bridge',
+    expiresAt: new Date(Date.now() + 30_000).toISOString()
+  };
+}
 
 function root() { return fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-c4-')); }
 
@@ -96,6 +105,107 @@ function captureStream() {
   let content = '';
   return { stream: { write(value, callback) { content += String(value); callback?.(); return true; }, once() {} }, read: () => content };
 }
+
+test('authentication retries once with a fresh challenge after a rejected admission', async () => {
+  const firstChallenge = authenticationChallenge('123e4567-e89b-42d3-a456-426614174003');
+  const secondChallenge = authenticationChallenge('123e4567-e89b-42d3-a456-426614174004');
+  const signedChallenges = [];
+  const bridge = new HttpBridgeClient({
+    clientId,
+    keyName: 'kaoyan-client-one',
+    keyLifecycle: { async sign(_keyName, encodedChallenge) { signedChallenges.push(JSON.parse(Buffer.from(encodedChallenge, 'base64url').toString('utf8')).challengeId); return 'signature'; } }
+  });
+  const calls = [];
+  bridge.post = async (_record, _body, headers) => {
+    calls.push(headers);
+    if (!headers['x-kaoyan-challenge-id']) {
+      const challenge = calls.filter((value) => !value['x-kaoyan-challenge-id']).length === 1 ? firstChallenge : secondChallenge;
+      return { status: 401, headers: {}, body: { error: { data: { challenge } } } };
+    }
+    if (headers['x-kaoyan-challenge-id'] === firstChallenge.challengeId) return { status: 401, headers: {}, body: null };
+    return { status: 200, headers: { 'mcp-session-id': '123e4567-e89b-42d3-a456-426614174005' }, body: { jsonrpc: '2.0', id: 1, result: {} } };
+  };
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } };
+  await bridge.authenticate({ instanceId, port: 12345 }, initialize);
+  assert.deepEqual(signedChallenges, [firstChallenge.challengeId, secondChallenge.challengeId]);
+  assert.deepEqual(calls.map((headers) => headers['x-kaoyan-challenge-id'] || null), [null, firstChallenge.challengeId, null, secondChallenge.challengeId]);
+});
+
+test('authentication retries once with a fresh challenge after a transient signing failure', async () => {
+  const firstChallenge = authenticationChallenge('123e4567-e89b-42d3-a456-426614174006');
+  const secondChallenge = authenticationChallenge('123e4567-e89b-42d3-a456-426614174007');
+  let signs = 0;
+  const bridge = new HttpBridgeClient({
+    clientId,
+    keyName: 'kaoyan-client-one',
+    keyLifecycle: { async sign() { signs += 1; if (signs === 1) throw new Error('CNG operation failed'); return 'signature'; } }
+  });
+  const calls = [];
+  bridge.post = async (_record, _body, headers) => {
+    calls.push(headers);
+    if (!headers['x-kaoyan-challenge-id']) {
+      const challenge = calls.filter((value) => !value['x-kaoyan-challenge-id']).length === 1 ? firstChallenge : secondChallenge;
+      return { status: 401, headers: {}, body: { error: { data: { challenge } } } };
+    }
+    return { status: 200, headers: { 'mcp-session-id': '123e4567-e89b-42d3-a456-426614174008' }, body: { jsonrpc: '2.0', id: 1, result: {} } };
+  };
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } };
+  await bridge.authenticate({ instanceId, port: 12345 }, initialize);
+  assert.equal(signs, 2);
+  assert.deepEqual(calls.map((headers) => headers['x-kaoyan-challenge-id'] || null), [null, null, secondChallenge.challengeId]);
+});
+
+test('authentication rejects an invalid challenge without retrying or signing', async () => {
+  const invalidChallenge = { ...authenticationChallenge('123e4567-e89b-42d3-a456-426614174009'), clientId: 'misbound-client' };
+  let calls = 0;
+  let signs = 0;
+  const bridge = new HttpBridgeClient({
+    clientId,
+    keyName: 'kaoyan-client-one',
+    keyLifecycle: { async sign() { signs += 1; return 'signature'; } }
+  });
+  bridge.post = async () => {
+    calls += 1;
+    return { status: 401, headers: {}, body: { error: { data: { challenge: invalidChallenge } } } };
+  };
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } };
+  await assert.rejects(
+    bridge.authenticate({ instanceId, port: 12345 }, initialize),
+    /authentication challenge is invalid/
+  );
+  assert.equal(calls, 1);
+  assert.equal(signs, 0);
+});
+
+test('authentication accepts a bounded server clock lead on challenge expiry', async () => {
+  const challenge = { ...authenticationChallenge('123e4567-e89b-42d3-a456-426614174010'), expiresAt: new Date(Date.now() + 61_000).toISOString() };
+  let signs = 0;
+  const bridge = new HttpBridgeClient({
+    clientId,
+    keyName: 'kaoyan-client-one',
+    keyLifecycle: { async sign() { signs += 1; return 'signature'; } }
+  });
+  bridge.post = async (_record, _body, headers) => headers['x-kaoyan-challenge-id']
+    ? { status: 200, headers: { 'mcp-session-id': '123e4567-e89b-42d3-a456-426614174011' }, body: { jsonrpc: '2.0', id: 1, result: {} } }
+    : { status: 401, headers: {}, body: { error: { data: { challenge } } } };
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } };
+  await bridge.authenticate({ instanceId, port: 12345 }, initialize);
+  assert.equal(signs, 1);
+});
+
+test('authentication rejects challenge expiry beyond the clock-skew bound', async () => {
+  const challenge = { ...authenticationChallenge('123e4567-e89b-42d3-a456-426614174012'), expiresAt: new Date(Date.now() + 66_000).toISOString() };
+  let signs = 0;
+  const bridge = new HttpBridgeClient({
+    clientId,
+    keyName: 'kaoyan-client-one',
+    keyLifecycle: { async sign() { signs += 1; return 'signature'; } }
+  });
+  bridge.post = async () => ({ status: 401, headers: {}, body: { error: { data: { challenge } } } });
+  const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'test', version: '1' } } };
+  await assert.rejects(bridge.authenticate({ instanceId, port: 12345 }, initialize), /authentication challenge is expired/);
+  assert.equal(signs, 0);
+});
 
 test('real C1 tool arguments inject trusted catalog and keep Gateway requestId canonical', async () => {
   const temporaryRoot = root();
@@ -442,6 +552,21 @@ test('running App is reused and absent App fails without spawning', async () => 
     const absent = new Launcher({ clientId, keyName: 'kaoyan-client-one', discoveryRoot: temporaryRoot, journalRoot: temporaryRoot, startupTimeoutMs: 100, timeoutMs: 100, bridge: {} });
     absent.discovery = async () => null;
     await assert.rejects(absent.ensureApp(), /unavailable/);
+  } finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); }
+});
+
+test('externally started App discovery tolerates a bounded transient handshake race', async () => {
+  const temporaryRoot = root();
+  try {
+    const record = { instanceId, port: 12345 };
+    let discoveries = 0;
+    const instance = new Launcher({
+      clientId, keyName: 'kaoyan-client-one', discoveryRoot: temporaryRoot, journalRoot: temporaryRoot,
+      startupTimeoutMs: 250, timeoutMs: 100, bridge: {}
+    });
+    instance.discovery = async () => (++discoveries >= 3 ? record : null);
+    assert.equal(await instance.ensureApp(), record);
+    assert.equal(discoveries, 3);
   } finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); }
 });
 

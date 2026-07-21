@@ -43,7 +43,7 @@ function grant(overrides = {}) {
 
 test('exports an immutable, exhaustive, versioned catalog', () => {
   assert.doesNotThrow(() => agent.validateOperationCatalog(agent.operationCatalog));
-  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@6');
+  assert.equal(agent.operationCatalog.version, 'agent-catalog-v1@7');
   assert.deepEqual(
     agent.operationCatalog.operations.map((descriptor) => descriptor.name),
     [...agent.operationNames].sort()
@@ -69,7 +69,9 @@ test('exports an immutable, exhaustive, versioned catalog', () => {
     'study.get_today', 'study.get_week_summary', 'study.create_plan_draft', 'study.apply_plan_adjustment', 'study.record_manual_progress',
     'imports.create_draft', 'imports.add_draft_image', 'imports.validate_draft', 'imports.preview_draft', 'imports.apply_draft', 'imports.get', 'imports.cancel',
     'ticktick.lists.list', 'ticktick.lists.create', 'ticktick.lists.update', 'ticktick.habits.list', 'ticktick.habits.create', 'ticktick.habits.update',
-    'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update'
+    'ticktick.calendar.list_events', 'ticktick.bridges.get', 'ticktick.bridges.update',
+    'backups.list', 'backups.create', 'exports.create', 'exports.get', 'backups.delete', 'database.restore',
+    'database.replace_from_import', 'database.clear_all', 'imports.delete_batch', 'data_root.migrate'
   ]);
   assert.equal(mcp.isMcpExternalBusinessOperation('questions.migrate_categories'), false);
   assert.equal(mcp.isMcpExternalBusinessOperation('tasks.create'), true);

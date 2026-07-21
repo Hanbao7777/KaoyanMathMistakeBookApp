@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
@@ -15,11 +16,11 @@ const { bootstrapControlMetadata } = requireMain('persistence/databaseBootstrap.
 
 const dataRoot = path.join(testRoot, 'migration-upgrade-data-root');
 
-async function createSqlDatabase() {
+async function createSqlDatabase(bytes) {
   const SQL = await initSqlJs({
     locateFile: () => require.resolve('sql.js/dist/sql-wasm.wasm')
   });
-  return new SQL.Database();
+  return new SQL.Database(bytes);
 }
 
 function tableColumns(db, tableName) {
@@ -103,6 +104,20 @@ async function writeOldDatabaseSnapshot() {
       FOREIGN KEY (question_id) REFERENCES questions(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE import_batches (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      name TEXT DEFAULT '',
+      source_file_name TEXT DEFAULT '',
+      source TEXT DEFAULT '',
+      imported_at TEXT NOT NULL,
+      item_count INTEGER DEFAULT 0,
+      asset_count INTEGER DEFAULT 0,
+      status TEXT DEFAULT 'active',
+      metadata_json TEXT DEFAULT '',
+      deleted_at TEXT
+    );
+
     CREATE TABLE ticktick_lists (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -145,6 +160,9 @@ async function writeOldDatabaseSnapshot() {
     INSERT INTO review_logs (id, question_id, result, note, review_date, created_at)
     VALUES (201, 101, 'wrong', '旧复习记录', '2025-01-03', '2025-01-03T00:00:00.000Z');
 
+    INSERT INTO import_batches (id,type,name,source_file_name,source,imported_at,item_count,asset_count,status,metadata_json,deleted_at)
+    VALUES ('legacy-import-batch','wrong_questions','旧导入批次','','legacy','2025-01-01T00:00:00.000Z',0,0,'active','',NULL);
+
     INSERT INTO ticktick_lists (id, name, color, icon, sort_order, is_folder, parent_id, created_at, updated_at)
     VALUES ('list-old-1', '旧 TickTick 清单', '#4a90d9', 'list', 1, 0, NULL, '2025-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z');
 
@@ -180,6 +198,9 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
 
   assert.equal(indexExists(db, 'idx_ticktick_tasks_list'), true);
   assert.equal(indexExists(db, 'idx_review_logs_reviewed_at'), true);
+  assert.equal(tableColumns(db, 'import_batches').includes('owner_client_id'), true);
+  assert.equal(indexExists(db, 'idx_import_batches_owner'), true);
+  assert.equal(one(db, 'SELECT owner_client_id FROM import_batches WHERE id=?', ['legacy-import-batch']).owner_client_id, null);
   for (const tableName of [
     'agent_control_settings', 'agent_clients', 'agent_client_scopes', 'agent_sessions',
     'agent_idempotency', 'agent_r4_grants', 'agent_approvals', 'agent_changesets',
@@ -235,4 +256,62 @@ test('initializeDatabase upgrades a minimal old mistake-book and TickTick databa
   const reviewLogs = await databaseService.listReviewLogs(101);
   assert.equal(reviewLogs.length, 1);
   assert.equal(reviewLogs[0].id, 201);
+});
+
+test('initializeDatabase upgrades consumed-capable global assets that predate database imports', async () => {
+  const dbPath = pathService.getPaths().database;
+  const source = await createSqlDatabase(fs.readFileSync(dbPath));
+  const metadataJson = '{}';
+  const metadataHash = `sha256-v1:${crypto.createHash('sha256').update(metadataJson).digest('hex')}`;
+  try {
+    source.exec(`
+      CREATE TABLE agent_global_assets (
+        asset_id TEXT PRIMARY KEY,
+        owner_client_id TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('backup', 'export', 'root_selection')),
+        status TEXT NOT NULL CHECK (status IN ('intent', 'staged', 'published', 'consumed', 'quarantined', 'failed', 'needs_recovery')),
+        metadata_json TEXT NOT NULL,
+        metadata_hash TEXT NOT NULL,
+        internal_path TEXT,
+        staged_path TEXT,
+        content_hash TEXT,
+        content_size INTEGER,
+        operation_journal_id TEXT,
+        job_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX idx_agent_global_assets_owner_kind ON agent_global_assets(owner_client_id, kind, created_at, asset_id);
+      CREATE INDEX idx_agent_global_assets_recovery ON agent_global_assets(status, updated_at);
+    `);
+    source.run(`INSERT INTO agent_global_assets (
+      asset_id,owner_client_id,kind,status,metadata_json,metadata_hash,internal_path,staged_path,content_hash,content_size,
+      operation_journal_id,job_id,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,NULL,NULL,NULL,NULL,NULL,NULL,?,?)`, [
+      'asset-existing-backup', 'migration-owner', 'backup', 'failed', metadataJson, metadataHash,
+      '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z'
+    ]);
+    fs.writeFileSync(dbPath, Buffer.from(source.export()));
+  } finally {
+    source.close();
+  }
+
+  await databaseService.initializeDatabase();
+  const db = await databaseService.getDatabase();
+  assert.deepEqual(one(db, `SELECT asset_id,owner_client_id,kind,status,metadata_json,metadata_hash,internal_path,staged_path,
+      content_hash,content_size,operation_journal_id,job_id,created_at,updated_at
+    FROM agent_global_assets WHERE asset_id='asset-existing-backup'`), {
+    asset_id: 'asset-existing-backup', owner_client_id: 'migration-owner', kind: 'backup', status: 'failed',
+    metadata_json: metadataJson, metadata_hash: metadataHash, internal_path: null, staged_path: null,
+    content_hash: null, content_size: null, operation_journal_id: null, job_id: null,
+    created_at: '2026-07-20T00:00:00.000Z', updated_at: '2026-07-20T00:00:00.000Z'
+  });
+  assert.equal(indexExists(db, 'idx_agent_global_assets_owner_kind'), true);
+  assert.equal(indexExists(db, 'idx_agent_global_assets_recovery'), true);
+  assert.doesNotThrow(() => db.run(`INSERT INTO agent_global_assets (
+    asset_id,owner_client_id,kind,status,metadata_json,metadata_hash,created_at,updated_at
+  ) VALUES (?,?,?,?,?,?,?,?)`, [
+    'asset-database-import', 'migration-owner', 'database_import', 'intent', metadataJson, metadataHash,
+    '2026-07-20T00:00:01.000Z', '2026-07-20T00:00:01.000Z'
+  ]));
 });

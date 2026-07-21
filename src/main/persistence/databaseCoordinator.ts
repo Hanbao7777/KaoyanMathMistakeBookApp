@@ -40,10 +40,17 @@ interface CoordinatorCapabilityState {
   readonly mode: 'business' | 'control';
 }
 
+interface MutationTrackerState {
+  readonly tableNamesKey: string;
+  readonly trackerSchemaKey: string;
+  readonly tempSchemaVersion: number;
+}
+
 type WriteMode = 'legacy' | CoordinatorCapabilityState['mode'];
 
 const mutationScopes = new WeakMap<object, MutationScopeState>();
 const coordinatorCapabilities = new WeakMap<object, CoordinatorCapabilityState>();
+const mutationTrackers = new WeakMap<Database, MutationTrackerState>();
 const activeCoordinator = new AsyncLocalStorage<DatabaseCoordinator>();
 
 export function assertDatabaseMutationScope(scope: DatabaseMutationScope, database: Database): void {
@@ -163,13 +170,15 @@ function tableNames(database: Database): string[] {
   return (result[0]?.values ?? []).map((row) => row[0]).filter((name): name is string => typeof name === 'string');
 }
 
-function prepareMutationTracker(database: Database): void {
-  database.exec(`
-    CREATE TEMP TABLE IF NOT EXISTS coordinator_mutation_log (
-      table_name TEXT PRIMARY KEY
-    );
-    DELETE FROM coordinator_mutation_log;
-  `);
+function mutationTrackerSchemaKey(database: Database): string {
+  const table = database.exec('PRAGMA temp.table_info(coordinator_mutation_log)')[0]?.values ?? [];
+  const ownedTriggerResult = database.exec(
+    "SELECT name, tbl_name, sql FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE 'coordinator_track_%' ORDER BY name"
+  );
+  return JSON.stringify({ table, triggers: ownedTriggerResult[0]?.values ?? [] });
+}
+
+function rebuildMutationTracker(database: Database, trackedTables: readonly string[]): MutationTrackerState {
   const ownedTriggerResult = database.exec(
     "SELECT name FROM sqlite_temp_master WHERE type = 'trigger' AND name LIKE 'coordinator_track_%' ORDER BY name"
   );
@@ -177,7 +186,16 @@ function prepareMutationTracker(database: Database): void {
     .map((row) => row[0])
     .filter((name): name is string => typeof name === 'string');
   for (const triggerName of ownedTriggers) database.exec(`DROP TRIGGER temp.${quoteIdentifier(triggerName)}`);
-  tableNames(database).forEach((tableName, index) => {
+
+  const mutationLogTable = database.exec(
+    "SELECT name FROM sqlite_temp_master WHERE type = 'table' AND name = 'coordinator_mutation_log'"
+  )[0]?.values ?? [];
+  if (mutationLogTable.length > 0) database.exec('DROP TABLE temp.coordinator_mutation_log');
+  database.exec(`CREATE TEMP TABLE coordinator_mutation_log (
+    table_name TEXT PRIMARY KEY
+  )`);
+
+  trackedTables.forEach((tableName, index) => {
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       database.exec(`
         CREATE TEMP TRIGGER coordinator_track_${index}_${operation.toLowerCase()}
@@ -188,6 +206,33 @@ function prepareMutationTracker(database: Database): void {
       `);
     }
   });
+
+  const state = Object.freeze({
+    tableNamesKey: JSON.stringify(trackedTables),
+    trackerSchemaKey: mutationTrackerSchemaKey(database),
+    tempSchemaVersion: pragmaInteger(database, 'temp.schema_version')
+  });
+  mutationTrackers.set(database, state);
+  return state;
+}
+
+function prepareMutationTracker(database: Database): void {
+  const trackedTables = tableNames(database);
+  const tableNamesKey = JSON.stringify(trackedTables);
+  let state = mutationTrackers.get(database);
+  if (!state || state.tableNamesKey !== tableNamesKey) {
+    state = rebuildMutationTracker(database, trackedTables);
+  } else {
+    const tempSchemaVersion = pragmaInteger(database, 'temp.schema_version');
+    if (tempSchemaVersion !== state.tempSchemaVersion) {
+      const trackerSchemaKey = mutationTrackerSchemaKey(database);
+      state = trackerSchemaKey === state.trackerSchemaKey
+        ? Object.freeze({ ...state, tempSchemaVersion })
+        : rebuildMutationTracker(database, trackedTables);
+      mutationTrackers.set(database, state);
+    }
+  }
+  clearMutationTracker(database);
 }
 
 function readMutationTables(database: Database): string[] {
@@ -286,6 +331,14 @@ export class DatabaseCoordinator {
 
   get pendingWrites(): number {
     return this.admittedWrites;
+  }
+
+  get writeActivityVersion(): number {
+    return this.nextAdmissionId;
+  }
+
+  whenWritesIdle(): Promise<void> {
+    return this.queueTail;
   }
 
   currentVersion(): DataVersion {
