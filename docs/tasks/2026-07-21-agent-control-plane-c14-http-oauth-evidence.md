@@ -97,10 +97,11 @@ explicit test fixtures are present in durable/test evidence; no raw OAuth value
 or private-key material is logged or persisted. Static scans also found no
 `Cert:\\LocalMachine\\Root` implementation path.
 
-The requested code-review-graph build/update and change detection could not run:
-the graph MCP tools were not available in this worker session. Direct source
-caller inspection and focused runtime tests were used instead; this is not a
-substitute for the coordinator's graph review.
+The commit hook rebuilt the code-review graph to 2,898 indexed rows and analyzed
+the staged C14 change set: 249 nodes, 1,939 edges, 161 changed functions/classes,
+zero affected flows, and risk score 0.60. It reported test gaps for broad existing
+bootstrap/query helpers; the focused lifecycle and encrypted-PFX startup path is
+covered by the direct HTTPS transport test above.
 
 CurrentUser Root cleanup verification used one disposable short-lived
 certificate and the exact thumbprint `49668E6546D5526CBE3220A850B415F20AB8614F`:
