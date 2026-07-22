@@ -139,7 +139,9 @@ const api: AppApi = {
     prepareDirectHttpsRemoval: () => invoke('agentControl:prepareDirectHttpsRemoval'),
     confirmDirectHttpsRemoval: (intentId, confirmed) => invoke('agentControl:confirmDirectHttpsRemoval', intentId, confirmed),
     listOAuthConsent: () => invoke('agentControl:listOAuthConsent'),
-    decideOAuthConsent: (requestId, decision) => invoke('agentControl:decideOAuthConsent', requestId, decision)
+    decideOAuthConsent: (requestId, decision) => invoke('agentControl:decideOAuthConsent', requestId, decision),
+    previewDiagnostics: () => invoke('agentControl:previewDiagnostics'),
+    exportDiagnostics: () => invoke('agentControl:exportDiagnostics')
   } satisfies AgentControlApi,
   knowledge: {
     listNodes: (parentNodeId?: string, subject?: string) => invoke('knowledge:listNodes', parentNodeId, subject),

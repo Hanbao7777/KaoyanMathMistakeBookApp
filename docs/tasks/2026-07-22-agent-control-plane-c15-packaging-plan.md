@@ -2,6 +2,12 @@
 
 ## Status and authority
 
+**Implementation status: COMPLETE (2026-07-22).** Validation and artifact
+evidence is recorded in
+`docs/tasks/2026-07-22-agent-control-plane-c15-evidence.md`; the Phase C closure
+decision is recorded in
+`docs/tasks/2026-07-22-agent-control-plane-phase-c-completion.md`.
+
 This plan closes the remaining Phase C delivery work after C14 landed on
 `main`. It preserves the accepted single-Gateway, local-first, CurrentUser-only
 trust, and standalone-launcher boundaries. The 2026-07-22 product decision makes

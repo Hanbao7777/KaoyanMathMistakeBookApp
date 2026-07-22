@@ -126,6 +126,8 @@ export interface AgentControlPrivacyDisclosure { readonly revision: number; read
 export interface AgentControlVerification { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string; }
 export interface AgentControlTrustIntent { readonly intentId: string; readonly thumbprint: string; readonly expiresAt: string; readonly authority: string; readonly resource?: string; readonly subject?: string; }
 export interface AgentControlOAuthConsent { readonly requestId: string; readonly clientId: string; readonly product: 'codex' | 'claude_code'; readonly clientDisplayName: string; readonly scopes: readonly string[]; readonly resource: string; readonly redirectDisplay: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentDiagnosticPreview { readonly schemaVersion: 1; readonly generatedAt: string; readonly files: readonly { readonly name: string; readonly bytes: number; readonly sha256: string }[]; readonly totalBytes: number; }
+export interface AgentDiagnosticExportResult { readonly schemaVersion: 1; readonly generatedAt: string; readonly fileName: string; readonly bytes: number; readonly sha256: string; }
 
 export interface AgentControlApi {
   getStatus: () => Promise<AgentControlStatus>;
@@ -162,6 +164,8 @@ export interface AgentControlApi {
   confirmDirectHttpsRemoval: (intentId: string, confirmed: boolean) => Promise<void>;
   listOAuthConsent: () => Promise<readonly AgentControlOAuthConsent[]>;
   decideOAuthConsent: (requestId: string, decision: 'approve' | 'deny') => Promise<void>;
+  previewDiagnostics: () => Promise<AgentDiagnosticPreview>;
+  exportDiagnostics: () => Promise<AgentDiagnosticExportResult>;
 }
 
 export interface AppApi {

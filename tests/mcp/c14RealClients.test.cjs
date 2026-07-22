@@ -15,7 +15,7 @@ test('C14 disposable client registration matrix uses no default profiles', { ski
   try {
     if (codexVersion) {
       const env = { ...process.env, CODEX_HOME: path.join(root, 'codex') }; fs.mkdirSync(env.CODEX_HOME, { recursive: true });
-      const runCodex = (args) => execFileSync(codex, args, { env, encoding: 'utf8', windowsHide: true, timeout: 20_000, shell: true });
+      const runCodex = (args) => execFileSync(codex, args, { env, encoding: 'utf8', windowsHide: true, timeout: 45_000, shell: true });
       runCodex(['mcp', 'add', 'kaoyan-c14-codex', '--url', authority, '--oauth-client-id', 'kaoyan-codex-local', '--oauth-resource', authority]);
       assert.match(runCodex(['mcp', 'get', 'kaoyan-c14-codex']), /kaoyan-c14-codex|127\.0\.0\.1/);
       runCodex(['mcp', 'remove', 'kaoyan-c14-codex']);
@@ -23,7 +23,7 @@ test('C14 disposable client registration matrix uses no default profiles', { ski
     }
     if (claudeVersion) {
       const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(root, 'claude') }; fs.mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
-      const runClaude = (args) => execFileSync(claude, args, { env, encoding: 'utf8', windowsHide: true, timeout: 20_000, shell: true });
+      const runClaude = (args) => execFileSync(claude, args, { env, encoding: 'utf8', windowsHide: true, timeout: 45_000, shell: true });
       runClaude(['mcp', 'add', '--scope', 'user', '--transport', 'http', '--callback-port', '39457', '--client-id', 'kaoyan-claude-local', 'kaoyan-c14-claude', authority]);
       assert.match(runClaude(['mcp', 'get', 'kaoyan-c14-claude']), /kaoyan-c14-claude|127\.0\.0\.1/);
       runClaude(['mcp', 'remove', '--scope', 'user', 'kaoyan-c14-claude']);

@@ -33,6 +33,7 @@ export interface LauncherArtifact {
   readonly version: typeof LAUNCHER_VERSION;
   readonly sha256: string;
   readonly compatibility: { readonly pairingApiVersion: typeof pairingApiVersion; readonly launcherVersion: typeof LAUNCHER_VERSION };
+  readonly release?: { readonly appVersion: string; readonly sdkVersion: string; readonly mcpProtocolVersion: '2025-11-25' };
 }
 
 export interface PairingRunResult { readonly stdout: string; readonly stderr: string; readonly exitCode?: number; }
@@ -211,13 +212,15 @@ export function loadPackagedLauncherArtifact(resourcesPath: string): LauncherArt
   const manifestPath = path.join(root, 'launcher-manifest.json'); assertExistingSegments(root, manifestPath, false);
   const bytes = readFileSyncBounded(manifestPath, 16 * 1024); let parsed: unknown;
   try { parsed = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('Packaged launcher manifest is corrupt'); }
-  const value = exact(parsed, ['manifestVersion', 'launcherVersion', 'file', 'sha256', 'compatibility'], [], 'launcherManifest');
+  const value = exact(parsed, ['manifestVersion', 'launcherVersion', 'file', 'sha256', 'compatibility'], ['release'], 'launcherManifest');
   if (value.manifestVersion !== MANIFEST_VERSION || value.launcherVersion !== LAUNCHER_VERSION || value.file !== 'kaoyan-mcp.exe') throw new Error('Packaged launcher manifest is incompatible');
   hashValue(value.sha256, 'launcherManifest.sha256');
   const compatibility = exact(value.compatibility, ['pairingApiVersion', 'launcherVersion'], [], 'launcherManifest.compatibility');
   if (compatibility.pairingApiVersion !== pairingApiVersion || compatibility.launcherVersion !== LAUNCHER_VERSION) throw new Error('Packaged launcher compatibility mismatch');
+  const release = value.release === undefined ? undefined : exact(value.release, ['appVersion', 'sdkVersion', 'mcpProtocolVersion'], [], 'launcherManifest.release');
+  if (release && (typeof release.appVersion !== 'string' || typeof release.sdkVersion !== 'string' || release.mcpProtocolVersion !== '2025-11-25')) throw new Error('Packaged launcher release metadata is incompatible');
   const launcherPath = path.join(root, value.file as string); assertExistingSegments(root, launcherPath, false);
-  return Object.freeze({ root, path: launcherPath, version: LAUNCHER_VERSION, sha256: value.sha256, compatibility: { pairingApiVersion, launcherVersion: LAUNCHER_VERSION } }) as LauncherArtifact;
+  return Object.freeze({ root, path: launcherPath, version: LAUNCHER_VERSION, sha256: value.sha256, compatibility: { pairingApiVersion, launcherVersion: LAUNCHER_VERSION }, ...(release ? { release: { appVersion: release.appVersion, sdkVersion: release.sdkVersion, mcpProtocolVersion: '2025-11-25' as const } } : {}) }) as LauncherArtifact;
 }
 
 function readFileSyncBounded(filePath: string, maximum: number): Buffer {
@@ -464,7 +467,7 @@ export class PairingService {
   async health(value: unknown): Promise<PairingStatus> { return this.serialize(async () => { validatePairingTargetRequest(value); return this.healthInternal(await this.readyState(), value); }); }
   private async healthInternal(state: PairingState, target: PairingTargetRequest): Promise<PairingStatus> {
     const record = state.records[this.key(target.product, target.clientId)]; if (!record) return this.disconnected(target);
-    try { assertExistingSegments(this.installRoot, record.launcher.path, false); const launcher = await stat(record.launcher.path); if (!launcher.isFile() || sha256(await readFile(record.launcher.path)) !== record.launcher.sha256) return this.status(record, 'repairing', '启动器缺失或校验失败');
+    try { if (!existsSync(record.launcher.path)) return this.status(record, 'repairing', '启动器缺失或校验失败'); assertExistingSegments(this.installRoot, record.launcher.path, false); const launcher = await stat(record.launcher.path); if (!launcher.isFile() || sha256(await readFile(record.launcher.path)) !== record.launcher.sha256) return this.status(record, 'repairing', '启动器缺失或校验失败');
       await this.validateCurrentLauncher(record); await this.selfTest(record.launcher.path); const config = await this.config.inspect(record); if (config === 'owned') return this.status(record, 'healthy', '配置、启动器与授权状态一致');
       return this.status(record, config === 'conflict' ? 'conflict' : 'repairing', config === 'conflict' ? 'App-owned 配置名称已被外部修改' : 'App-owned 配置缺失');
     } catch (error) { return this.status(record, 'failed', normalizeError(error)); }

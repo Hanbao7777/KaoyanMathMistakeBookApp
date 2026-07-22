@@ -86,6 +86,27 @@
 3. App 本地 OCR 识别文字 → DeepSeek AI 结构化 → 自动填入表单。
 4. 人工校对后保存到错题库。
 
+## 外部智能体与 MCP
+
+App 提供本地 MCP 控制面，所有外部请求仍由 Electron 主进程通过统一
+Agent Gateway 执行，不允许客户端直接打开数据库。当前正式验收客户端为
+Codex CLI；Claude Code 的 OAuth token exchange 仍是已知兼容性缺口，
+DeepTutor 尚未进入适配范围。
+
+在“设置 → 外部智能体控制中心”中可以：
+
+- 启用或紧急关闭外部控制；
+- 连接 Codex CLI 的独立 stdio launcher；
+- 经明确确认安装仅限 `CurrentUser` 的本地 HTTPS 根证书，并使用
+  `https://127.0.0.1:39458/mcp` 完成 OAuth；
+- 按客户端管理 Scope、信任级别、会话、审批和撤权；
+- 验证本地审计账本，预览并导出仅含版本、状态、计数和构建 hash 的脱敏诊断 ZIP。
+
+新客户端默认只有 `system.read`。扩大读取或写入 Scope 需要在控制中心中
+另行确认。关闭外部控制、撤销客户端或移除本地根证书会立即使相关新请求
+失效。诊断 ZIP 不包含错题内容、图片、数据库、API Key、OAuth 凭据、
+私钥或本地绝对路径。
+
 ## 安装与运行
 
 项目技术栈：Electron + React + TypeScript + Vite + SQLite(sql.js)。

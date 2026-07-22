@@ -2,6 +2,13 @@
 
 ## Status and authority
 
+**Completion status: COMPLETE (2026-07-22).** The committed completion record is
+`docs/tasks/2026-07-22-agent-control-plane-phase-c-completion.md`. This closes
+Phase C for the accepted personal-build scope with Codex CLI as the required
+client. Claude Code OAuth token exchange remains an explicit compatibility gap,
+DeepTutor is deferred, and public distribution still requires Windows code
+signing.
+
 This is the executable Phase C plan confirmed by the user on 2026-07-16 after a
 decision-by-decision grilling session. It refines the sequencing in
 `docs/design/agent-control-plane.md` without weakening the accepted Phase A/B

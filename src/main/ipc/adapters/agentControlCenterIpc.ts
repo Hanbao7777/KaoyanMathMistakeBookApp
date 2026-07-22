@@ -33,6 +33,7 @@ import { validatePairingRequest, validatePairingStatus, validatePairingTargetReq
 import path from 'node:path';
 import { app } from 'electron';
 import type { DirectHttpsOAuthController, RendererTrustContext } from '../../mcp/runtime/directHttpsOAuthController';
+import { AgentDiagnosticBundle, type AgentDiagnosticSnapshot } from '../../mcp/diagnostics/diagnosticBundle';
 
 const MAX_PAGE_SIZE = 100;
 const SAFE_REDACTION = Object.freeze({
@@ -173,8 +174,10 @@ function mapVerification(value: AuditVerificationValue): AgentControlVerificatio
   return Object.freeze({ ...value });
 }
 
-export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane, loadPairingService?: () => Promise<PairingService>): AgentControlCenterRuntimeApi {
+export function createAgentControlCenterIpc(loadControlPlane: () => Promise<ControlPlane> = getAgentControlPlane, loadPairingService?: () => Promise<PairingService>, injectedDiagnostics?: AgentDiagnosticBundle): AgentControlCenterRuntimeApi {
   let pairingService: Promise<PairingService> | undefined;
+  let diagnosticService = injectedDiagnostics;
+  const diagnostics = () => diagnosticService ??= new AgentDiagnosticBundle(path.join(app.getPath('documents'), 'KaoyanMathMistakeBook', 'diagnostics'));
   const pairing = () => pairingService ??= (loadPairingService ? loadPairingService() : (async () => {
     const controlPlane = await loadControlPlane();
     const localAppData = process.env.LOCALAPPDATA;
@@ -216,6 +219,20 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     return outcome.result.value;
   }
 
+  async function diagnosticSnapshot(): Promise<AgentDiagnosticSnapshot> {
+    const status = mapStatus(await query({ type: 'agent.status.get', payload: {} }) as { readonly settings: ControlSettings; readonly runtimeState: string; readonly directHttps?: DirectHttpsStatus | null });
+    const audit = mapVerification(await query({ type: 'agent.audit.verify', payload: {} }) as AuditVerificationValue);
+    const injectedResources = !app.isPackaged ? process.env.KAOYAN_MCP_DEV_RESOURCES_PATH : undefined;
+    let launcher: AgentDiagnosticSnapshot['launcher']; let sdkVersion = '1.29.0';
+    try { const artifact = loadPackagedLauncherArtifact(injectedResources ?? process.resourcesPath); launcher = Object.freeze({ version: artifact.version, sha256: artifact.sha256 }); sdkVersion = artifact.release?.sdkVersion ?? sdkVersion; } catch { launcher = undefined; }
+    return Object.freeze({
+      appVersion: app.getVersion(), electronVersion: process.versions.electron, nodeVersion: process.versions.node,
+      mcpSdkVersion: sdkVersion, mcpProtocolVersion: '2025-11-25', ...(launcher ? { launcher } : {}),
+      runtime: Object.freeze({ externalControlEnabled: status.settings.externalControlEnabled, runtimeState: status.runtimeState, directHttpsState: status.directHttps?.state ?? (status.directHttps?.enabled ? 'stopped' : 'disabled'), ...(status.directHttps?.reason ? { directHttpsReason: status.directHttps.reason } : {}) }),
+      audit: Object.freeze({ valid: audit.valid, segments: audit.segments, events: audit.events })
+    });
+  }
+
   return Object.freeze({
     async getStatus() { return mapStatus(await query({ type: 'agent.status.get', payload: {} }) as { readonly settings: ControlSettings; readonly runtimeState: string; readonly directHttps?: DirectHttpsStatus | null }); },
     async setExternalControlEnabled(enabled: boolean) {
@@ -254,7 +271,9 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     async prepareDirectHttpsRemoval(context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); return directHttpsController.prepareTrustRemoval(context); },
     async confirmDirectHttpsRemoval(intentId: string, confirmed: boolean, context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.confirmTrustRemoval(intentId, confirmed, context); },
     async listOAuthConsent() { if (!directHttpsController) return Object.freeze([]); return directHttpsController.listPendingConsent(); },
-    async decideOAuthConsent(requestId: string, decision: 'approve' | 'deny', context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.decideConsent(requestId, decision, context); }
+    async decideOAuthConsent(requestId: string, decision: 'approve' | 'deny', context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.decideConsent(requestId, decision, context); },
+    async previewDiagnostics() { return diagnostics().preview(await diagnosticSnapshot()); },
+    async exportDiagnostics() { return diagnostics().export(await diagnosticSnapshot()); }
   } as AgentControlCenterRuntimeApi);
 /*
   } satisfies AgentControlApi);
