@@ -15,6 +15,11 @@ Revision 2 replaces unavailable Claude Desktop with the installed Claude Code CL
 as the second hard client. Claude Desktop becomes an optional compatibility target
 and cannot block Phase C.
 
+Revision 3 records the 2026-07-22 product decision after packaged C14 evidence:
+Codex CLI remains the required real client. Claude Code's browser authorization
+works but its token exchange is waived as a non-blocking compatibility gap.
+DeepTutor is deferred to a separate product decision and does not enter Phase C.
+
 Phase C turns the accepted `AgentGateway` into a real, installable MCP product.
 It does not add a second business path: every external request authenticates into
 an immutable `AgentPrincipal` and then calls only `AgentGateway.execute` or
@@ -28,8 +33,9 @@ personal use.
 
 1. **Transport order:** ship stdio first over an App-owned loopback service;
    implement direct HTTP OAuth in the second half of Phase C.
-2. **Hard clients:** Codex CLI and Claude Code CLI are the first two real-client
-   acceptance targets.
+2. **Hard client:** Codex CLI is the required real-client acceptance target.
+   Claude Code remains an optional compatibility target with its C14 token-exchange
+   gap recorded explicitly; DeepTutor is outside Phase C.
 3. **Pairing:** pairing starts in the App control center. The App installs a
    stable launcher and requests a per-client identity, while the launcher creates
    and owns the private key in Windows secure storage. The App registers only the
@@ -664,9 +670,9 @@ token stores, browser/control-center consent route, protocol compatibility tests
   and cross-client session use deny immediately.
 - Raw OAuth material never reaches Gateway or ordinary logs/database fields.
 
-**Gate:** official OAuth discovery/conformance plus both hard clients. Codex CLI
-and Claude Code HTTP/OAuth are mandatory. Claude Desktop remains optional and is
-not credited for Claude Code behavior. Code replay, PKCE mismatch,
+**Gate:** official OAuth discovery/conformance plus the required Codex CLI
+HTTP/OAuth matrix. Claude Code and Claude Desktop are optional compatibility
+targets and are credited only for their exact passing behavior. Code replay, PKCE mismatch,
 wrong resource/audience, invalid certificate, redirect mismatch, refresh reuse,
 stale instance, and token/session mixing all deny.
 
@@ -781,9 +787,10 @@ with `D:\KaoyanMathMistakeBook` before opening paths or spawning Electron.
 
 Phase C is complete only when:
 
-1. Codex CLI and Claude Code pass the stdio and direct HTTPS OAuth matrices for
-   their accepted versions. Claude Desktop is optional and credited only for its
-   own exact matrix; unsupported combinations are documented rather than silently
+1. Codex CLI passes the stdio and direct HTTPS OAuth matrices for its accepted
+   version. Claude Code's failed C14 token exchange is an explicit product waiver,
+   not a passing result; Claude Desktop and DeepTutor are not credited toward this
+   gate. Unsupported combinations remain documented rather than silently
    substituted products.
 2. The first 19-operation slice and every subsequently declared Phase C domain
    wave pass the migration gate; undeclared/unmigrated operations remain absent.
