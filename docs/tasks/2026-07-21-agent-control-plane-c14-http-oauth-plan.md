@@ -456,6 +456,21 @@ C14 is not accepted unless these pass:
 - C14 implementation lands in the owned files only, with any scope expansion
   explicitly justified.
 - Codex CLI and Claude Code pass direct HTTPS OAuth real-client matrices.
+
+## Scope Decision (2026-07-22)
+
+The product scope is revised after the packaged interactive run. Codex CLI is
+the current required direct HTTPS OAuth client. Claude Code is explicitly
+waived from the C14 acceptance gate because its browser authorization completes
+but its token exchange remains incompatible with this server; that result is
+recorded in the companion evidence document. Existing Claude registration and
+transport code remains in place for a later compatibility fix, but Claude is no
+longer a release blocker.
+
+DeepTutor is the next planned external client. Its OAuth registration,
+least-privilege scope mapping, and real-client MCP call evidence will be a
+separate follow-up task; this decision does not authorize adding DeepTutor
+implementation to C14.
 - Full repository validation passes.
 - C14 evidence document is committed.
 - Working tree contains only reviewed project changes and explicitly excluded

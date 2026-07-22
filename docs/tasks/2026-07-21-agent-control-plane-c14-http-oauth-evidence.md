@@ -255,3 +255,11 @@ Final validation after the interactive run:
 - Post-removal counts: `CurrentUser\Root=0`, `CurrentUser\My=0`,
   `LocalMachine\Root=0`, and the exact CNG key does not exist. The persisted
   direct HTTPS authority is disabled with all certificate/key handles cleared.
+
+## Product scope decision
+
+Per the 2026-07-22 product decision, Codex is the current required OAuth
+client. Claude Code's failed token exchange is retained as a documented
+compatibility gap rather than a C14 release blocker. DeepTutor will be handled
+as a separate future client-adaptation task with its own registration and
+least-privilege MCP evidence.
