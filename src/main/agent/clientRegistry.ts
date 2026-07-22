@@ -366,6 +366,30 @@ export class ClientRegistry {
     return Object.freeze({ ...registration, allowedScopes: scopes });
   }
 
+  async ensureHttpClient(registration: HttpOAuthClientRegistration): Promise<void> {
+    validateHttpOAuthClientRegistration(registration);
+    const scopes = normalizeScopes(registration.allowedScopes);
+    const timestamp = this.timestamp();
+    await this.write(`agent-http-client-ensure-${registration.clientId}`, (database) => {
+      const existing = one(database, 'SELECT * FROM agent_http_clients WHERE client_id = ?', [registration.clientId]);
+      if (existing) {
+        if (typeof existing.revoked_at === 'string') return { changed: false, value: undefined };
+        const exact = existing.product === registration.product && existing.version_evidence === registration.versionEvidence && existing.redirect_mode === registration.redirectMode
+          && (existing.exact_redirect_uri ?? undefined) === registration.exactRedirectUri && existing.resource === registration.resource && existing.issuer === registration.issuer
+          && existing.scopes_json === canonicalizeJson(scopes) && existing.trust === registration.trust && existing.refresh_tokens_allowed === (registration.refreshTokensAllowed ? 1 : 0)
+          && (existing.metadata_hash ?? undefined) === registration.metadataHash;
+        if (!exact) throw new AgentError('RECOVERY_FENCE');
+        return { changed: false, value: undefined };
+      }
+      const credentialFingerprint = hashCanonicalJson({ kind: 'http-oauth-client', clientId: registration.clientId });
+      executeOAuthSql(database, 'INSERT INTO agent_clients (client_id, subject_id, display_name, credential_fingerprint, trust, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)', [registration.clientId, `http-${registration.clientId}`, registration.product === 'codex' ? 'Codex CLI' : 'Claude Code', credentialFingerprint, registration.trust, timestamp, timestamp]);
+      executeOAuthSql(database, `INSERT INTO agent_http_clients (client_id, product, version_evidence, redirect_mode, exact_redirect_uri, resource, issuer, scopes_json, trust, refresh_tokens_allowed, metadata_hash, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [registration.clientId, registration.product, registration.versionEvidence, registration.redirectMode, registration.exactRedirectUri ?? null, registration.resource, registration.issuer, canonicalizeJson(scopes), registration.trust, registration.refreshTokensAllowed ? 1 : 0, registration.metadataHash ?? null, timestamp, timestamp]);
+      for (const scope of scopes) executeOAuthSql(database, 'INSERT INTO agent_client_scopes (client_id, scope, catalog_version, created_at) VALUES (?, ?, ?, ?)', [registration.clientId, scope, this.catalog.version, timestamp]);
+      return { changed: true, value: undefined };
+    });
+  }
+
   async getHttpClient(clientId: string): Promise<HttpOAuthClientRegistration | null> {
     assertSafeIdentifier(clientId, 'clientId');
     return this.read(`agent-http-client-${clientId}`, (database) => {

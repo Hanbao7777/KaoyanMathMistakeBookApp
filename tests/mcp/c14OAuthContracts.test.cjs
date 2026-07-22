@@ -28,6 +28,12 @@ test('C14 metadata and authority values are exact and secret-free', () => {
   assert.equal(JSON.stringify(metadata).match(/privateKey|code_verifier|client_secret/i), null);
 });
 
+test('C14 metadata can advertise a bounded initial OAuth scope lane', () => {
+  const metadata = metadataModule.createOAuthMetadata({ authority, scopes: ['system.read'] });
+  assert.deepEqual(metadata.protectedResource.scopes_supported, ['system.read']);
+  assert.deepEqual(metadata.authorizationServer.scopes_supported, ['system.read']);
+});
+
 test('C14 validators reject unknown fields, duplicate scopes, weak PKCE, missing resource, and malformed redirects', () => {
   const base = { response_type: 'code', client_id: client.clientId, redirect_uri: redirect, scope: 'system.read', state: 'state', code_challenge: 'A'.repeat(43), code_challenge_method: 'S256', resource: authority.resource };
   assert.doesNotThrow(() => contracts.validateAuthorizationRequest(base));

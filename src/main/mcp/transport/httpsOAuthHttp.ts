@@ -51,7 +51,10 @@ export function isSameOriginOAuthContinuation(headers: Readonly<Record<string, s
   if (headers['sec-fetch-site'] !== 'same-origin') return false;
   if (headers.origin !== undefined) return headers.origin === authority;
   if (!headers.referer) return false;
-  try { const referer = new URL(headers.referer); return referer.origin === authority && referer.pathname.startsWith('/oauth/authorize'); } catch { return false; }
+  try {
+    const referer = new URL(headers.referer);
+    return referer.origin === authority && (referer.pathname === oauthAuthorizationEndpointPath || referer.pathname === '/oauth/authorize' || referer.pathname.startsWith('/oauth/authorize/'));
+  } catch { return false; }
 }
 
 export class DirectHttpsOAuthHost {
@@ -64,7 +67,7 @@ export class DirectHttpsOAuthHost {
   private certificateThumbprint: string | undefined;
   private reason: string | undefined;
   private startPromise: Promise<DirectHttpsOAuthHostStatus> | null = null;
-  constructor(private readonly options: DirectHttpsOAuthHostOptions) { this.authority = options.authority ?? directHttpsAuthority(directHttpsDefaultPort); this.metadata = createOAuthMetadata({ authority: this.authority }); this.instanceId = options.appInstanceId; }
+  constructor(private readonly options: DirectHttpsOAuthHostOptions) { this.authority = options.authority ?? directHttpsAuthority(directHttpsDefaultPort); this.metadata = options.oauth.metadata; this.instanceId = options.appInstanceId; }
   status(): DirectHttpsOAuthHostStatus { return Object.freeze({ state: this.state, authority: this.authority, resource: this.authority.resource, issuer: this.authority.issuer, appInstanceId: this.instanceId, ...(this.certificateThumbprint ? { certificateThumbprint: this.certificateThumbprint } : {}), ...(this.reason ? { reason: this.reason } : {}) }); }
   async start(): Promise<DirectHttpsOAuthHostStatus> { if (this.startPromise) return this.startPromise; if (this.state === 'ready') return this.status(); const promise = this.startOnce(); this.startPromise = promise; try { return await promise; } finally { if (this.startPromise === promise) this.startPromise = null; } }
   async stop(): Promise<void> { this.state = 'stopped'; this.handler?.invalidateSessions(); await Promise.resolve(this.options.authenticator.invalidateAll()).catch(() => undefined); const server = this.server; this.server = null; this.handler = null; if (server) await new Promise<void>((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } }); }

@@ -11,6 +11,10 @@ const root = path.resolve(__dirname, '../..');
 const transport = require(path.join(root, 'dist/main/main/mcp/transport/loopbackHttp.js'));
 const httpsTransport = require(path.join(root, 'dist/main/main/mcp/transport/httpsOAuthHttp.js'));
 const hostModule = require(path.join(root, 'dist/main/main/mcp/server.js'));
+const contracts = require(path.join(root, 'dist/main/shared/mcp/v1/oauthContracts.js'));
+const metadataModule = require(path.join(root, 'dist/main/main/mcp/auth/oauthMetadata.js'));
+const oauthModule = require(path.join(root, 'dist/main/main/mcp/auth/oauthAuthorizationServer.js'));
+const tokenModule = require(path.join(root, 'dist/main/main/mcp/auth/oauthTokenStore.js'));
 
 function unusedPort() {
   const server = http.createServer();
@@ -106,11 +110,33 @@ test('C14 direct HTTPS host passes the transient PFX passphrase to Node TLS', ()
 
 test('C14 OAuth continuation accepts browser GET headers without Origin and rejects cross-origin referers', () => {
   const authority = 'https://127.0.0.1:39458';
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: `${authority}/authorize?client_id=test` }, authority), true);
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: `${authority}/oauth/authorize?client_id=test` }, authority), true);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: `${authority}/oauth/authorize/status/request-id` }, authority), true);
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', origin: authority }, authority), true);
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: 'https://example.invalid/oauth/authorize' }, authority), false);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin', referer: `${authority}/authorize-extra` }, authority), false);
+  assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'none', referer: `${authority}/authorize` }, authority), false);
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'cross-site', origin: authority }, authority), false);
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin' }, authority), false);
+});
+
+test('C14 direct transport publishes the exact OAuth server metadata scope lane', async () => {
+  const authority = contracts.directHttpsAuthority(await unusedPort());
+  const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority, scopes: ['system.read'] }), tokenStore: new tokenModule.OAuthTokenStore(), clients: { getHttpClient: async () => null, isHttpClientActive: async () => false }, appInstanceId: 'scope-lane-test' });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-c14-scope-lane-'));
+  const passphrase = 'test-only-passphrase-that-is-long-enough';
+  const certificate = { pfx: encryptedPfx(directory, passphrase), passphrase, thumbprint: 'A'.repeat(40), notAfter: new Date(Date.now() + 60_000).toISOString(), dnsNames: ['localhost'], ipAddresses: ['127.0.0.1'] };
+  const host = new httpsTransport.DirectHttpsOAuthHost({ authority, appInstanceId: 'scope-lane-test', externalControlEnabled: () => true, authenticatedReady: () => true, authenticator: { invalidateAll: async () => {}, admitInitialize: async () => null, validateSession: async () => null }, certificate, oauth });
+  try {
+    await host.start();
+    const metadata = await new Promise((resolve, reject) => {
+      const request = https.get({ host: '127.0.0.1', port: authority.port, path: '/.well-known/oauth-authorization-server', rejectUnauthorized: false }, (response) => {
+        const chunks = []; response.on('data', (chunk) => chunks.push(chunk)); response.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+      }); request.once('error', reject);
+    });
+    assert.deepEqual(metadata.scopes_supported, ['system.read']);
+  } finally { await host.stop(); fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('C14 configured direct HTTPS lifecycle verifies the CNG handle and starts Node TLS with an encrypted PFX', { skip: process.platform !== 'win32' }, async () => {

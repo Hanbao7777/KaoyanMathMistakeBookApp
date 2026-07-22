@@ -20,3 +20,16 @@ test('C14 HTTP client registration persists exact product bindings and rejects s
   await composition.registry.initializeHttpOAuthAuthority({ appInstanceId: 'c14-registry' });
   assert.equal((await composition.registry.getHttpOAuthAuthority()).port, 39458);
 });
+
+test('C14 fixed HTTP client registration is idempotent and never revives revoked clients', async () => {
+  const composition = await bootstrap.bootstrapAgentB3({ coordinator: await environment.databaseService.getDatabaseCoordinator(), appInstanceId: 'c14-fixed-registry', credentialVerifier: { verify: () => ({ credentialFingerprint: 'sha256-v1:' + 'a'.repeat(64), sessionFingerprint: 'sha256-v1:' + 'b'.repeat(64) }) }, cursorSecret: 'x'.repeat(32), now: () => '2026-07-21T00:00:00.000Z' });
+  const authority = contracts.directHttpsAuthority(39458);
+  const registration = { clientId: 'kaoyan-claude-local', product: 'claude_code', versionEvidence: '2.1.216 (Claude Code)', redirectMode: 'claude-exact', exactRedirectUri: 'http://localhost:39457/callback', resource: authority.resource, issuer: authority.issuer, allowedScopes: ['system.read'], trust: 'observer', refreshTokensAllowed: true };
+  await composition.registry.ensureHttpClient(registration);
+  await composition.registry.ensureHttpClient(registration);
+  assert.deepEqual(await composition.registry.getHttpClient(registration.clientId), registration);
+  await assert.rejects(composition.registry.ensureHttpClient({ ...registration, exactRedirectUri: 'http://localhost:39456/callback' }), (error) => error.code === 'RECOVERY_FENCE');
+  await composition.registry.revokeClient(registration.clientId);
+  await composition.registry.ensureHttpClient(registration);
+  assert.equal(await composition.registry.getHttpClient(registration.clientId), null);
+});

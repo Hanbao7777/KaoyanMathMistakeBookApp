@@ -45,7 +45,7 @@ class PowerShellCurrentUserCngBackend implements CurrentUserKeyStoreBackend {
     const output = await invoke("$n=$env:KAOYAN_HTTP_CNG_KEY; $p=[Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider; if(-not [Security.Cryptography.CngKey]::Exists($n,$p)){throw 'missing'}; $k=[Security.Cryptography.CngKey]::Open($n,$p); try{$rsa=[Security.Cryptography.RSACng]::new($k); @{provider=$p.Provider;scope='CurrentUser';algorithm='RSA';exportable=($k.ExportPolicy -ne [Security.Cryptography.CngExportPolicies]::None);publicKey=([Convert]::ToBase64String($rsa.ExportSubjectPublicKeyInfo()).TrimEnd('=').Replace('+','-').Replace('/','_'))}|ConvertTo-Json -Compress} finally {if($rsa){$rsa.Dispose()};$k.Dispose()}", keyName);
     return parseHandle(output, keyName);
   }
-  async remove(keyName: string): Promise<void> { await invoke("$n=$env:KAOYAN_HTTP_CNG_KEY; $p=[Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider; if([Security.Cryptography.CngKey]::Exists($n,$p)){$k=[Security.Cryptography.CngKey]::Open($n,$p);try{$k.Delete()}finally{$k.Dispose()}}", keyName); }
+  async remove(keyName: string): Promise<void> { await invoke("$n=$env:KAOYAN_HTTP_CNG_KEY; $p=[Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider; if([Security.Cryptography.CngKey]::Exists($n,$p)){$k=[Security.Cryptography.CngKey]::Open($n,$p);try{$k.Delete()}finally{$k.Dispose()}};if([Security.Cryptography.CngKey]::Exists($n,$p)){throw 'CurrentUser CNG key removal verification failed'}", keyName); }
 }
 
 export class CurrentUserKeyStore {

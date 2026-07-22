@@ -19,12 +19,14 @@ export interface DirectHttpsOAuthControllerDependencies {
   readonly updateAuthorityInTransaction?: (database: Database, scope: DatabaseMutationScope, value: Partial<HttpOAuthAuthorityState> & { readonly appInstanceId: string }) => void;
   readonly executeControlWrite: AgentControlWriteExecutor;
   readonly audit: AuditLedger;
-  readonly keyStore: Pick<CurrentUserKeyStore, 'create' | 'verify'> & Partial<Pick<CurrentUserKeyStore, 'remove'>>;
-  readonly issuer: Pick<CurrentUserRootIssuer, 'issue' | 'verify'> & Partial<Pick<CurrentUserRootIssuer, 'remove'>>;
+  readonly keyStore: Pick<CurrentUserKeyStore, 'create' | 'verify' | 'remove'>;
+  readonly issuer: Pick<CurrentUserRootIssuer, 'issue' | 'verify' | 'remove'>;
   readonly roots: Pick<CurrentUserRootCaLifecycle, 'install' | 'remove' | 'count'>;
   readonly oauth: LocalOAuthAuthorizationServer;
   readonly oauthTokenRecovery?: () => Promise<void>;
   readonly refreshAuthenticator?: (authority: HttpOAuthAuthorityState) => void;
+  readonly ensureClients?: (authority: HttpOAuthAuthorityState) => Promise<void>;
+  readonly oauthScopes?: readonly string[];
   readonly createHost: (authority: HttpOAuthAuthorityState) => DirectHttpsOAuthHost | undefined;
   readonly now?: () => Date;
   readonly randomUUID?: () => string;
@@ -163,8 +165,8 @@ export class DirectHttpsOAuthController {
     const expires = new Date(now.getTime() + 5 * 60_000).toISOString();
     await this.deps.executeControlWrite({ requestId: `c14-trust-remove-prepare-${intentId}`, execute: (db, scope) => {
       sqlRun(db, `INSERT INTO agent_https_trust_intents
-        (intent_id,kind,status,renderer_web_contents_id,navigation_generation,thumbprint,authority,expires_at,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`, [intentId, 'remove', 'pending', context.webContentsId, context.navigationGeneration, thumbprint, authority.authority, expires, now.toISOString(), now.toISOString()]);
+        (intent_id,kind,status,renderer_web_contents_id,navigation_generation,key_name,thumbprint,authority,expires_at,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`, [intentId, 'remove', 'pending', context.webContentsId, context.navigationGeneration, authority.currentUserKeyHandle, thumbprint, authority.authority, expires, now.toISOString(), now.toISOString()]);
       this.deps.audit.appendAdmissionInTransaction(db, scope, { clientId: controlClientId, requestId: intentId, summary: { event: 'https_trust_removal_intent_created', intentId, thumbprint, authority: authority.authority } });
       return { changed: true, value: undefined };
     }});
@@ -180,9 +182,8 @@ export class DirectHttpsOAuthController {
     await this.stop();
     this.deps.oauth.invalidatePending();
     try {
-      await this.deps.roots.remove(thumbprint);
-      if (await this.deps.roots.count(thumbprint) !== 0) throw new Error('root_removal_verification_failed');
       const authority = await this.deps.authority();
+      await this.removeAuthorityMaterial(thumbprint, authority.currentUserKeyHandle);
       await this.finalizeIntent(intentId, 'completed', 'https_root_removed', { ...authority, rootCaThumbprint: null as unknown as string, currentUserKeyHandle: null as unknown as string, certificateThumbprint: null as unknown as string, certificateNotAfter: null as unknown as string, enabled: false });
     } catch (error) {
       await this.completeFailure(intentId, 'recovery_required', 'https_root_removal_recovery_required');
@@ -196,7 +197,7 @@ export class DirectHttpsOAuthController {
     validContext(context);
     const authority = await this.deps.authority();
     if (!authority.enabled || !this.host) throw new Error('https_disabled');
-    this.deps.oauth.setMetadata(createOAuthMetadata({ authority }));
+    this.deps.oauth.setMetadata(createOAuthMetadata({ authority, scopes: this.deps.oauthScopes }));
     await this.deps.oauth.decidePending(requestId, decision);
   }
 
@@ -216,7 +217,8 @@ export class DirectHttpsOAuthController {
       await this.status();
       return;
     }
-    this.deps.oauth.setMetadata(createOAuthMetadata({ authority }));
+    this.deps.oauth.setMetadata(createOAuthMetadata({ authority, scopes: this.deps.oauthScopes }));
+    await this.deps.ensureClients?.(authority);
     this.deps.refreshAuthenticator?.(authority);
     await this.stop();
     this.host = this.deps.createHost(authority);
@@ -240,7 +242,7 @@ export class DirectHttpsOAuthController {
       try { if (intent.kind === 'install' && typeof intent.thumbprint === 'string') await this.deps.issuer.remove?.(intent.thumbprint); if (intent.kind === 'install' && typeof intent.key_name === 'string') await this.deps.keyStore.remove?.(intent.key_name); } catch { cleaned = false; }
       await this.invalidatePersistedIntent(String(intent.intent_id), cleaned ? 'expired' : 'recovery_required');
     }
-    const intents = (await this.deps.executeControlWrite({ requestId: 'c14-trust-reconcile-read', execute: (db) => ({ changed: false, value: rows(db, "SELECT * FROM agent_https_trust_intents WHERE status IN ('install_pending','removal_pending')") }) })).value;
+    const intents = (await this.deps.executeControlWrite({ requestId: 'c14-trust-reconcile-read', execute: (db) => ({ changed: false, value: rows(db, "SELECT * FROM agent_https_trust_intents WHERE status IN ('install_pending','removal_pending') OR (kind = 'remove' AND status = 'recovery_required')") }) })).value;
     for (const intent of intents) {
       try {
         if (intent.status === 'install_pending') {
@@ -254,16 +256,34 @@ export class DirectHttpsOAuthController {
           await this.finalizeIntent(String(intent.intent_id), 'completed', 'https_root_install_reconciled', { ...authority, rootCaThumbprint: material.thumbprint, currentUserKeyHandle: String(intent.key_name), enabled: true });
         } else {
           const thumbprint = String(intent.thumbprint);
-          const count = await this.deps.roots.count(thumbprint);
-          if (count > 1) { await this.completeFailure(String(intent.intent_id), 'recovery_required', 'https_root_removal_ambiguous_after_restart'); continue; }
-          if (count === 1) { await this.deps.roots.remove(thumbprint); if (await this.deps.roots.count(thumbprint) !== 0) throw new Error('root_removal_reconcile_failed'); }
           const authority = await this.deps.authority();
-          await this.finalizeIntent(String(intent.intent_id), 'completed', 'https_root_removal_reconciled', { ...authority, rootCaThumbprint: null as unknown as string, currentUserKeyHandle: null as unknown as string, enabled: false });
+          const keyName = typeof intent.key_name === 'string' && intent.key_name
+            ? intent.key_name
+            : authority.currentUserKeyHandle ?? await this.resolveLegacyRemovalKey(thumbprint);
+          await this.removeAuthorityMaterial(thumbprint, keyName);
+          await this.finalizeIntent(String(intent.intent_id), 'completed', 'https_root_removal_reconciled', { ...authority, rootCaThumbprint: null as unknown as string, currentUserKeyHandle: null as unknown as string, enabled: false }, intent.status === 'recovery_required');
         }
       } catch {
         await this.completeFailure(String(intent.intent_id), 'recovery_required', 'https_trust_reconcile_failed');
       }
     }
+  }
+
+  private async resolveLegacyRemovalKey(thumbprint: string): Promise<string | undefined> {
+    const result = (await this.deps.executeControlWrite({ requestId: `c14-trust-legacy-key-${thumbprint}`, execute: (db) => ({
+      changed: false,
+      value: rows(db, `SELECT DISTINCT key_name FROM agent_https_trust_intents
+        WHERE kind = 'install' AND status = 'completed' AND thumbprint = ? AND key_name IS NOT NULL`, [thumbprint])
+    }) })).value;
+    return result.length === 1 && typeof result[0].key_name === 'string' ? result[0].key_name : undefined;
+  }
+
+  private async removeAuthorityMaterial(thumbprint: string, keyName: string | null | undefined): Promise<void> {
+    if (!keyName) throw new Error('current_user_key_handle_missing');
+    await this.deps.roots.remove(thumbprint);
+    if (await this.deps.roots.count(thumbprint) !== 0) throw new Error('root_removal_verification_failed');
+    await this.deps.issuer.remove(thumbprint);
+    await this.deps.keyStore.remove(keyName);
   }
 
   private async invalidatePersistedConsents(): Promise<void> {
@@ -317,11 +337,12 @@ export class DirectHttpsOAuthController {
     }})).value;
   }
 
-  private async finalizeIntent(intentId: string, status: IntentStatus, event: string, authority: HttpOAuthAuthorityState): Promise<void> {
+  private async finalizeIntent(intentId: string, status: IntentStatus, event: string, authority: HttpOAuthAuthorityState, allowRemovalRecovery = false): Promise<void> {
     await this.deps.executeControlWrite({ requestId: `c14-intent-finalize-${intentId}-${status}`, execute: (db, scope) => {
       if (this.deps.updateAuthorityInTransaction) this.deps.updateAuthorityInTransaction(db, scope, authority);
       else throw new Error('authority_transaction_boundary_unavailable');
-      sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status IN (?, ?)', [status, this.now().toISOString(), intentId, 'install_pending', 'removal_pending']);
+      const recoverable = allowRemovalRecovery ? 'recovery_required' : 'removal_pending';
+      sqlRun(db, 'UPDATE agent_https_trust_intents SET status = ?, updated_at = ? WHERE intent_id = ? AND status IN (?, ?)', [status, this.now().toISOString(), intentId, 'install_pending', recoverable]);
       if ((db as unknown as { getRowsModified(): number }).getRowsModified() !== 1) throw new Error('trust_intent_finalize_replay');
       this.deps.audit.appendTerminalSuccessInTransaction(db, scope, { clientId: controlClientId, requestId: intentId, summary: { event, intentId, status } });
       return { changed: true, value: undefined };

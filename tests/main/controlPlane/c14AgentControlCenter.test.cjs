@@ -14,3 +14,9 @@ test('C14 control center publishes only non-secret authority and certificate ide
   assert.doesNotMatch(rendererSource, /access_token|refresh_token|code_verifier|privateKey|client_secret/i);
   assert.doesNotMatch(ipcSource, /authorization_code|code_verifier|refresh_token|access_token/i);
 });
+
+test('C14 external-control toggle captures the checked value before async confirmation', () => {
+  assert.match(rendererSource, /const enabled = event\.currentTarget\.checked;/);
+  assert.match(rendererSource, /setExternalControlEnabled\(enabled\)/);
+  assert.doesNotMatch(rendererSource, /setExternalControlEnabled\(event\.(?:currentTarget|target)\.checked\)/);
+});

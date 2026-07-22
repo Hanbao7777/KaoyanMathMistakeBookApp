@@ -213,3 +213,45 @@ Final coordinator validation:
 - `git diff --check` and production LocalMachine/secret scans: PASS.
 - Updated graph: 2,973 indexed nodes; risk 0.60; no stored affected flows.
   Dynamic CommonJS tests are not associated by graph `tests_for` edges.
+
+## Interactive HTTPS OAuth follow-up (2026-07-22)
+
+The packaged Windows host was rebuilt after correcting the browser continuation
+origin check. The waiting page is served from `/authorize`, while continuation
+polls use `/oauth/authorize/status/<request-id>` and
+`/oauth/authorize/continue/<request-id>`; same-origin referers now accept the
+exact `/authorize` page and only the exact `/oauth/authorize` path or its
+continuation descendants. Cross-site, `sec-fetch-site: none`, and look-alike
+paths remain denied. Focused transport and continuation tests pass 9/9.
+
+Real-client observations used disposable profiles only:
+
+- Codex CLI `0.144.3`: PASS. Browser consent completed, the callback returned
+  successfully, `codex mcp login` reported `Successfully logged in`, and
+  `codex mcp get` shows the enabled Streamable HTTP server at the fixed
+  resource. No default Codex profile was touched.
+- Claude Code `2.1.216`: browser authorization and callback page complete, but
+  the CLI rejects the subsequent token exchange twice. The server durably
+  records an authorization code for `kaoyan-claude-local`, while the disposable
+  Claude credential file contains an empty access token. This lane is therefore
+  **not accepted** as end-to-end evidence; no success is claimed.
+
+The remaining Claude failure is isolated to client/token-exchange
+compatibility after consent (not trust installation, fixed authority,
+registration, or browser continuation). The temporary Codex and Claude roots
+remain disposable and the default client profiles were not modified.
+
+Final validation after the interactive run:
+
+- `npm test`: PASS, 695 tests; 694 passed, 0 failed, 1 opt-in Windows CNG
+  association test skipped.
+- The two environment-sensitive real-client/launcher tests were first observed
+  failing while the packaged interactive host was still running, then passed
+  8/8 after the disposable host was stopped; the clean full-suite rerun above
+  is the accepted result.
+- User-approved removal completed for root thumbprint
+  `53EA3342C6CFC1DE798F7E14F63944C3691FF801` and CNG key
+  `kaoyan-http-root-0bbdb768a15a46f689cbd4c39647c2a6`.
+- Post-removal counts: `CurrentUser\Root=0`, `CurrentUser\My=0`,
+  `LocalMachine\Root=0`, and the exact CNG key does not exist. The persisted
+  direct HTTPS authority is disabled with all certificate/key handles cleared.

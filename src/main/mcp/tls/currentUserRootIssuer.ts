@@ -39,7 +39,8 @@ class PowerShellCurrentUserRootIssuer implements CurrentUserRootIssuerPort {
   }
   async remove(thumbprint: string): Promise<void> {
     if (!/^[0-9A-Fa-f]{40,128}$/.test(thumbprint)) throw new TypeError('Invalid root certificate thumbprint');
-    await execFileAsync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', "$ErrorActionPreference='Stop';$t=$env:KAOYAN_HTTP_ROOT_THUMBPRINT.ToUpperInvariant();@(Get-ChildItem -Path 'Cert:\\CurrentUser\\My' | Where-Object {$_.Thumbprint -eq $t}) | ForEach-Object { Remove-Item -LiteralPath $_.PSPath -Force }"], { windowsHide: true, timeout: 15_000, maxBuffer: 32 * 1024, env: { ...process.env, KAOYAN_HTTP_ROOT_THUMBPRINT: thumbprint.toUpperCase() } });
+    const script = "$ErrorActionPreference='Stop';$t=$env:KAOYAN_HTTP_ROOT_THUMBPRINT.ToUpperInvariant();$certs=@(Get-ChildItem -Path 'Cert:\\CurrentUser\\My' | Where-Object {$_.Thumbprint -eq $t});if($certs.Count -gt 1){throw 'ambiguous exact My certificate'};$certs | ForEach-Object { Remove-Item -LiteralPath $_.PSPath -Force };if(@(Get-ChildItem -Path 'Cert:\\CurrentUser\\My' | Where-Object {$_.Thumbprint -eq $t}).Count -ne 0){throw 'CurrentUser My certificate removal verification failed'}";
+    await execFileAsync('pwsh.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15_000, maxBuffer: 32 * 1024, env: { ...process.env, KAOYAN_HTTP_ROOT_THUMBPRINT: thumbprint.toUpperCase() } });
   }
 }
 

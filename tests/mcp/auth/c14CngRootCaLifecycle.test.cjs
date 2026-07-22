@@ -5,6 +5,7 @@ const test = require('node:test');
 const root = path.resolve(__dirname, '../../..');
 const keyModule = require(path.join(root, 'dist/main/main/mcp/tls/currentUserKeyStore.js'));
 const caModule = require(path.join(root, 'dist/main/main/mcp/tls/currentUserRootCa.js'));
+const rootCaSource = require('node:fs').readFileSync(path.join(root, 'src/main/mcp/tls/currentUserRootCa.ts'), 'utf8');
 
 test('C14 CurrentUser CNG lifecycle fails closed for non-CNG, exportable, or wrong-scope handles', async () => {
   const backend = {
@@ -18,6 +19,12 @@ test('C14 CurrentUser CNG lifecycle fails closed for non-CNG, exportable, or wro
   await assert.rejects(store.create('not-safe'), /Invalid CurrentUser CNG key name/);
 });
 
+test('C14 production Root removal uses exact CurrentUser certutil deletion and does not swallow failures', () => {
+  assert.match(rootCaSource, /runCertutil\(\['-user', '-delstore', 'Root', thumbprint\(value\)\]\)/);
+  assert.doesNotMatch(rootCaSource, /async remove\(value: string\)[\s\S]{0,500}\.catch\(\(\) => undefined\)/);
+  assert.doesNotMatch(rootCaSource, /Cert:\\\LocalMachine/);
+});
+
 test('C14 CurrentUser Root consent, exact-thumbprint install/remove, rotation rollback, and stale-root denial are enforced', async () => {
   const counts = new Map(); const installed = [];
   const backend = {
@@ -26,7 +33,7 @@ test('C14 CurrentUser Root consent, exact-thumbprint install/remove, rotation ro
     async count(value) { return counts.get(value) || 0; }
   };
   const lifecycle = new caModule.CurrentUserRootCaLifecycle(backend);
-  const material = { der: Buffer.from('certificate'), thumbprint: 'a'.repeat(40), notAfter: '2026-07-22T00:00:00.000Z', subject: 'kaoyan C14' };
+  const material = { der: Buffer.from('certificate'), thumbprint: 'a'.repeat(40), notAfter: '2099-07-22T00:00:00.000Z', subject: 'kaoyan C14' };
   await assert.rejects(lifecycle.install(material, false), /consent/i);
   await lifecycle.install(material, true);
   assert.deepEqual(installed, ['6365727469666963617465']);

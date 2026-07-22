@@ -42,13 +42,15 @@ function auditStub() {
 test('C14 trust saga persists issued metadata, finalizes atomically, and removes the exact root', async () => {
   const controlPlane = await composition();
   const authority = await controlPlane.registry.getHttpOAuthAuthority();
-  const keyName = 'kaoyan-http-root-00000000000040008000000000000001';
+  let createdKeyName = '';
   const thumbprint = 'A'.repeat(40);
   const material = { der: Buffer.alloc(256, 7), thumbprint, notAfter: '2099-01-01T00:00:00.000Z', subject: 'CN=Kaoyan Local HTTPS Root 00000000' };
   let rootCount = 0;
   let started = 0;
   let stopped = 0;
-  const key = { keyName, provider: 'Microsoft Software Key Storage Provider', scope: 'CurrentUser', algorithm: 'RSA', exportable: false };
+  const removedMyCertificates = [];
+  const removedKeys = [];
+  const key = () => ({ keyName: createdKeyName, provider: 'Microsoft Software Key Storage Provider', scope: 'CurrentUser', algorithm: 'RSA', exportable: false });
   await controlPlane.registry.registerHttpClient({ clientId: 'kaoyan-codex-local', product: 'codex', versionEvidence: 'test', redirectMode: 'codex-loopback', resource: authority.resource, issuer: authority.issuer, allowedScopes: ['system.read'], trust: 'observer', refreshTokensAllowed: false });
   const tokenStore = new tokenModule.OAuthTokenStore({ persistAuthorizationCode: (code) => controlPlane.registry.persistOAuthAuthorizationCode(code), deleteAuthorizationCode: (codeHash) => controlPlane.registry.deleteOAuthAuthorizationCode(codeHash) });
   const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority }), tokenStore, appInstanceId: authority.appInstanceId, clients: { getHttpClient: (clientId) => controlPlane.registry.getHttpClient(clientId), isHttpClientActive: (clientId) => controlPlane.registry.isHttpClientActive(clientId) } });
@@ -58,8 +60,8 @@ test('C14 trust saga persists issued metadata, finalizes atomically, and removes
     updateAuthorityInTransaction: (db, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(db, scope, value),
     executeControlWrite: controlPlane.executeControlWrite,
     audit: auditStub(),
-    keyStore: { async create() { return key; }, async verify() { return key; } },
-    issuer: { async issue() { return material; }, async verify() {} },
+    keyStore: { async create(value) { createdKeyName = value; return key(); }, async verify() { return key(); }, async remove(value) { removedKeys.push(value); } },
+    issuer: { async issue() { return material; }, async verify() {}, async remove(value) { removedMyCertificates.push(value); } },
     roots: { async install() { rootCount += 1; }, async remove() { rootCount -= 1; }, async count() { return rootCount; } },
     oauth,
     createHost: () => ({ async start() { started += 1; }, async stop() { stopped += 1; }, status() { return { state: 'ready', authority, resource: authority.resource, issuer: authority.issuer, appInstanceId: authority.appInstanceId }; } })
@@ -90,8 +92,90 @@ test('C14 trust saga persists issued metadata, finalizes atomically, and removes
   const removal = await controller.prepareTrustRemoval(context);
   await controller.confirmTrustRemoval(removal.intentId, true, context);
   assert.equal(rootCount, 0);
+  assert.deepEqual(removedMyCertificates, [thumbprint]);
+  assert.deepEqual(removedKeys, [createdKeyName]);
   assert.equal((await controlPlane.registry.getHttpOAuthAuthority()).enabled, false);
   assert.ok(stopped >= 1);
+});
+
+test('C14 trust removal fails closed when My or CNG cleanup fails', async () => {
+  const controlPlane = await composition();
+  const initial = await controlPlane.registry.getHttpOAuthAuthority();
+  const thumbprint = 'E'.repeat(40);
+  const keyName = 'kaoyan-http-root-removal-failure';
+  await controlPlane.registry.updateHttpOAuthAuthority({ ...initial, rootCaThumbprint: thumbprint, currentUserKeyHandle: keyName, enabled: true });
+  const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority: initial }), tokenStore: controlPlane.httpOAuthTokens, appInstanceId: initial.appInstanceId, clients: { getHttpClient: () => null } });
+  let failKeyCleanup = true;
+  const removedKeys = [];
+  const controller = new controllerModule.DirectHttpsOAuthController({
+    authority: () => controlPlane.registry.getHttpOAuthAuthority(),
+    updateAuthority: (value) => controlPlane.registry.updateHttpOAuthAuthority(value),
+    updateAuthorityInTransaction: (db, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(db, scope, value),
+    executeControlWrite: controlPlane.executeControlWrite,
+    audit: auditStub(),
+    keyStore: { async create() { throw new Error('unused'); }, async verify() { throw new Error('unused'); }, async remove(value) { if (failKeyCleanup) throw new Error('cng_cleanup_failed'); removedKeys.push(value); } },
+    issuer: { async issue() { throw new Error('unused'); }, async verify() {}, async remove() {} },
+    roots: { async install() {}, async remove() {}, async count() { return 0; } },
+    oauth,
+    createHost: () => undefined
+  });
+  const context = { webContentsId: 11, navigationGeneration: 0 };
+  const removal = await controller.prepareTrustRemoval(context);
+  await assert.rejects(controller.confirmTrustRemoval(removal.intentId, true, context), /cng_cleanup_failed/);
+  const authority = await controlPlane.registry.getHttpOAuthAuthority();
+  assert.equal(authority.enabled, true);
+  assert.equal(authority.rootCaThumbprint, thumbprint);
+  assert.equal(authority.currentUserKeyHandle, keyName);
+  const database = await environment.databaseService.getDatabase();
+  assert.equal(database.exec(`SELECT status FROM agent_https_trust_intents WHERE intent_id = '${removal.intentId}'`)[0].values[0][0], 'recovery_required');
+
+  failKeyCleanup = false;
+  await controller.reconcile();
+  const recoveredAuthority = await controlPlane.registry.getHttpOAuthAuthority();
+  assert.equal(recoveredAuthority.enabled, false);
+  assert.equal(recoveredAuthority.rootCaThumbprint ?? null, null);
+  assert.equal(recoveredAuthority.currentUserKeyHandle ?? null, null);
+  assert.deepEqual(removedKeys, [keyName]);
+  const recoveredDatabase = await environment.databaseService.getDatabase();
+  assert.equal(recoveredDatabase.exec(`SELECT status FROM agent_https_trust_intents WHERE intent_id = '${removal.intentId}'`)[0].values[0][0], 'completed');
+});
+
+test('C14 recovery resolves one legacy removal key only from the completed install with the same thumbprint', async () => {
+  const controlPlane = await composition();
+  const initial = await controlPlane.registry.getHttpOAuthAuthority();
+  const thumbprint = 'F'.repeat(40);
+  const keyName = 'kaoyan-http-root-legacy-recovery';
+  const now = '2026-01-01T00:00:00.000Z';
+  await controlPlane.executeControlWrite({ requestId: 'legacy-removal-fixture', execute: (db) => {
+    db.run(`INSERT INTO agent_https_trust_intents
+      (intent_id,kind,status,renderer_web_contents_id,navigation_generation,key_name,thumbprint,authority,expires_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, ['10000000-0000-4000-8000-000000000001', 'install', 'completed', 1, 0, keyName, thumbprint, initial.authority, '2099-01-01T00:00:00.000Z', now, now]);
+    db.run(`INSERT INTO agent_https_trust_intents
+      (intent_id,kind,status,renderer_web_contents_id,navigation_generation,key_name,thumbprint,authority,expires_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?)`, ['10000000-0000-4000-8000-000000000002', 'remove', 'recovery_required', 1, 0, null, thumbprint, initial.authority, '2099-01-01T00:00:00.000Z', now, now]);
+    return { changed: true, value: undefined };
+  }});
+  await controlPlane.registry.updateHttpOAuthAuthority({ ...initial, rootCaThumbprint: null, currentUserKeyHandle: null, enabled: false });
+  const removedKeys = [];
+  const removedMy = [];
+  const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority: initial }), tokenStore: controlPlane.httpOAuthTokens, appInstanceId: initial.appInstanceId, clients: { getHttpClient: () => null } });
+  const controller = new controllerModule.DirectHttpsOAuthController({
+    authority: () => controlPlane.registry.getHttpOAuthAuthority(),
+    updateAuthority: (value) => controlPlane.registry.updateHttpOAuthAuthority(value),
+    updateAuthorityInTransaction: (db, scope, value) => controlPlane.registry.updateHttpOAuthAuthorityInTransaction(db, scope, value),
+    executeControlWrite: controlPlane.executeControlWrite,
+    audit: auditStub(),
+    keyStore: { async create() { throw new Error('unused'); }, async verify() { throw new Error('unused'); }, async remove(value) { removedKeys.push(value); } },
+    issuer: { async issue() { throw new Error('unused'); }, async verify() {}, async remove(value) { removedMy.push(value); } },
+    roots: { async install() {}, async remove() {}, async count() { return 0; } },
+    oauth,
+    createHost: () => undefined
+  });
+  await controller.reconcile();
+  assert.deepEqual(removedMy, [thumbprint]);
+  assert.deepEqual(removedKeys, [keyName]);
+  const database = await environment.databaseService.getDatabase();
+  assert.equal(database.exec(`SELECT status FROM agent_https_trust_intents WHERE intent_id = '10000000-0000-4000-8000-000000000002'`)[0].values[0][0], 'completed');
 });
 
 test('C14 trust confirmation rejects a stale navigation generation before any root mutation', async () => {
