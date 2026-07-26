@@ -129,6 +129,13 @@ timeout 6s node --test --test-name-pattern="host closes and removes discovery" t
 
 独立 Windows CI 结果在下一次 branch push 后补录。
 
+### Workflow 表达式修正
+
+提交 `bf3d7c5` 触发的 run `30187544438` 没有创建 job。GitHub 将其判定为
+workflow file issue：`runner` 上下文不能用于 job 顶层 `env`。因此把
+`TEMP`、`TMP` 的覆盖移动到 `Run tests` step；测试执行期间仍使用同一个
+`${{ runner.temp }}`，但表达式位于 GitHub 支持的上下文。
+
 ## GitHub 总 Issue 草稿
 
 > 状态：已按本草稿创建 GitHub Issue #1。下文保留创建时的正文快照，后续远端

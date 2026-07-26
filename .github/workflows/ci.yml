@@ -10,9 +10,6 @@ jobs:
   verify:
     runs-on: windows-latest
     timeout-minutes: 30
-    env:
-      TEMP: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -27,6 +24,9 @@ jobs:
         run: npm ci
 
       - name: Run tests
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: npm test
 
       - name: Run typecheck
