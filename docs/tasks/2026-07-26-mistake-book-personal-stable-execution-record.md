@@ -93,6 +93,42 @@ timeout 6s node --test --test-name-pattern="host closes and removes discovery" t
 3. 明确标记已识别的 Windows 专属测试，不再让 Ubuntu 误执行。
 4. Windows ACL 测试使用 `try/finally`，断言失败时也保证关闭 host。
 
+## Batch 2 第二次 CI 诊断
+
+| 项目 | 记录 |
+| --- | --- |
+| CI run | `30187226175` |
+| run commit | `f9c021e63c50abf47fee8a2ef517b23b92a581a2` |
+| runner | `windows-latest` |
+| 结果 | `npm test` 在约 77.7 秒后明确失败；309 pass，383 fail，8 skip |
+
+这次失败不是业务逻辑回归，而是两个干净环境问题：
+
+1. GitHub Windows runner 的默认临时目录使用 `RUNNER~1` 形式的 8.3 短路径。
+   测试从 `os.tmpdir()` 创建受控临时根，而安全边界会用 `realpath` 展开成长路径并
+   拒绝非规范路径。日志中有 324 个 `RECOVERY_FENCE`，其余大量失败为
+   `Launcher root`、`LocalAppData`、`Discovery root` 等路径
+   `is not canonical`，属于同一根因的级联结果。
+2. `npm test` 原先只构建 main 和 launcher，不构建 renderer。开发机已有
+   `dist/renderer` 时测试通过，但全新 CI checkout 的 Electron smoke fixture
+   报 `Built Electron outputs are required`。
+
+秒级路径复现使用 Windows 现有短路径别名验证：短路径经 `realpath` 展开后与输入
+不相等，普通长路径相等。修复不放宽任何路径安全检查，而是：
+
+- CI job 将 `TEMP` 和 `TMP` 指向 `${{ runner.temp }}`；
+- `npm test` 改为先执行完整 `npm run build`，确保 renderer 产物来自当前 commit。
+
+### 第二次修复后的本地验证
+
+| 命令 | 结果 | 证据摘要 |
+| --- | --- | --- |
+| `npm test` | 通过 | 先完成 Vite renderer build；700 tests；699 pass；0 fail；1 skip；约 188.4 秒 |
+| `npm run typecheck` | 通过 | exit code 0 |
+| `npm run build` | 通过 | Vite 处理 1797 modules；exit code 0 |
+
+独立 Windows CI 结果在下一次 branch push 后补录。
+
 ## GitHub 总 Issue 草稿
 
 > 状态：已按本草稿创建 GitHub Issue #1。下文保留创建时的正文快照，后续远端
@@ -255,7 +291,9 @@ signing, installer, auto-update, and public release work.
 1. 创建 GitHub 总 Issue #1。
 2. 创建并推送 `stabilization/personal-stable-2026-07-26`。
 3. 创建面向 `main` 的草稿 PR #2。
-4. 首次 CI 异常 run 已经用户授权取消，修复后的 CI 待重新验证。
+4. 首次 Ubuntu CI 异常 run 已经用户授权取消。
+5. 第二次 Windows CI 已明确暴露临时目录短路径和缺失 renderer 构建问题；
+   修复后的 CI 待重新验证。
 
 草稿 PR 的创建和分支推送不授权合并。同步 `main`、把 PR 转为 ready 或合并 PR
 必须在个人稳定版完成后另行确认。

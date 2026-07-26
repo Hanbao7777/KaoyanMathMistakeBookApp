@@ -10,6 +10,9 @@ jobs:
   verify:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      TEMP: ${{ runner.temp }}
+      TMP: ${{ runner.temp }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
