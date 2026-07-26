@@ -136,6 +136,52 @@ workflow file issue：`runner` 上下文不能用于 job 顶层 `env`。因此�
 `TEMP`、`TMP` 的覆盖移动到 `Run tests` step；测试执行期间仍使用同一个
 `${{ runner.temp }}`，但表达式位于 GitHub 支持的上下文。
 
+### Windows CI 最终结果
+
+| 项目 | 记录 |
+| --- | --- |
+| 首个全绿 Windows run | `30187574402` |
+| 首个全绿 commit | `e5aa2ace2dce5b895aa888d918aa36f4b58cca0a` |
+| 最终候选 run | `30188516301` |
+| 最终候选 commit | `3f66aa4e790c3957aa369069cd44962f298a6160` |
+| 最终候选结果 | 通过；Windows `verify` job 约 4 分 40 秒 |
+| 最终候选门禁 | `npm test`、`npm run typecheck`、`npm run build` 均通过 |
+
+## Batch 3 复习撤销与备份恢复收口
+
+### 复习撤销根因与修复
+
+复习页原来的“撤销（5 秒内）”只把掌握程度改回去，没有删除刚写入的复习日志，
+也没有还原 `review_count`、`correct_count`、`wrong_count` 和
+`next_review_at`。这会让界面看似撤销成功，但数据库统计仍然多记一次复习。
+
+修复后，renderer 通过新增的 `reviews:undoResult` IPC 调用已有
+`questions.undo_review` Gateway 命令，使用本次提交返回的真实
+`reviewLogId` 做持久化撤销。该操作只加入 renderer 内部业务白名单，外部 MCP
+操作清单没有扩大。
+
+| 验证 | 结果 |
+| --- | --- |
+| 首轮聚焦测试（修复前） | 22 tests；15 pass；7 fail，确认缺少撤销通道和契约 |
+| 安全与契约聚焦测试 | 38 tests；38 pass；0 fail |
+| 最终 `npm test` | 705 tests；704 pass；0 fail；1 skip；约 187.6 秒 |
+| 最终 `npm run typecheck` | 通过 |
+| 变更文件 ESLint | 0 error；保留 ReviewPage 原有 2 个 hook dependency warning |
+| `git diff --check` | 通过 |
+
+### 两个一次性根目录的备份恢复
+
+新增回归测试在同一个系统临时父目录下创建两个互不重叠的一次性数据根：
+
+1. 在源根初始化数据库、写入合成 TickTick 任务并创建维护型数据库备份；
+2. 重置数据库连接，在目标根初始化全新数据库；
+3. 把备份复制到目标根的 App 管理备份目录并执行正式恢复服务；
+4. 验证只恢复出源根中的合成任务，并验证恢复前保护备份存在；
+5. 测试结束后删除整个测试临时根。
+
+`tests/main/backupService.test.cjs` 最终结果为 4 tests、4 pass、0 fail。全过程没有
+打开或修改 `D:\KaoyanMathMistakeBook`。
+
 ## GitHub 总 Issue 草稿
 
 > 状态：已按本草稿创建 GitHub Issue #1。下文保留创建时的正文快照，后续远端
@@ -220,43 +266,48 @@ signing, installer, auto-update, and public release work.
 
 | 字段 | 记录 |
 | --- | --- |
-| 验收日期 | `_待填_` |
-| commit | `_待填_` |
-| CI run | `_待填_` |
-| portable 文件名 | `_待填_` |
-| portable 大小 | `_待填_` |
-| SHA-256 | `_待填_` |
-| Windows 版本 | `_待填_` |
-| 测试数据根标识 | `_待填，仅记录临时目录 basename，不记录用户名_` |
+| 验收日期 | `2026-07-26` |
+| commit | `3f66aa4e790c3957aa369069cd44962f298a6160` |
+| CI run | `30188516301`（通过） |
+| portable 文件名 | `考研高数错题本 0.1.0.exe` |
+| portable 大小 | `112,684,685 bytes` |
+| SHA-256 | `3883c4a3c92b1793507d50c09566e532c35e2bee7eff85c704cc17b63ce45228` |
+| Windows 版本 | `10.0.19045` |
+| 测试数据根标识 | `kaoyan-portable-e2e-nlmKuG`（执行后已删除） |
 
 ### 前置条件
 
-- [ ] 当前候选 commit 的 `npm test` 通过。
-- [ ] 当前候选 commit 的 `npm run typecheck` 通过。
-- [ ] 当前候选 commit 的 `npm run build` 通过。
-- [ ] 当前候选 commit 的 CI 通过。
-- [ ] `ELECTRON_RUN_AS_NODE` 未影响候选 EXE 启动。
-- [ ] 验收使用新建的一次性测试数据根。
-- [ ] 验收过程没有打开或修改 `D:\KaoyanMathMistakeBook`。
+- [x] 当前候选 commit 的 `npm test` 通过。
+- [x] 当前候选 commit 的 `npm run typecheck` 通过。
+- [x] 当前候选 commit 的 `npm run build` 通过。
+- [x] 当前候选 commit 的 CI 通过。
+- [x] `ELECTRON_RUN_AS_NODE` 未影响候选 EXE 启动。
+- [x] 验收使用新建的一次性测试数据根。
+- [x] 验收过程没有打开或修改 `D:\KaoyanMathMistakeBook`。
 
 ### portable 核心链路
 
-- [ ] 干净临时数据根首次启动和初始化成功。
+- [x] 干净临时数据根首次启动和初始化成功。
 - [ ] Codex/MCP 成功导入一条测试错题。
 - [ ] 应用内可以找到并打开该错题。
 - [ ] 修改错题后内容正确保存。
 - [ ] 提交一次复习后状态正确。
 - [ ] 撤销复习后状态正确。
-- [ ] 退出并重新启动 portable EXE 后最终状态仍然正确。
+- [x] 退出并重新启动 portable EXE 后 harness 持久状态仍然正确。
 - [ ] TickTick 相关模式或页面可以进入、切换，应用不崩溃。
+
+portable harness 首次启动完成 28 条断言，重启完成 10 条断言；两次进程均
+exit 0、stderr 0 bytes。重启后隔离数据库为 1,249,280 bytes。该 harness
+证明实际 portable 包的 main、preload、renderer、typed IPC 和持久化重启链路，
+但不冒充上面尚未勾选的人工错题页面操作。
 
 ### 备份恢复
 
-- [ ] 从第一临时数据根创建备份。
-- [ ] 在第二临时数据根执行恢复。
-- [ ] 恢复后的错题和状态与预期一致。
-- [ ] 恢复流程产生预期的保护备份。
-- [ ] 整个过程未接触真实数据目录。
+- [x] 从第一临时数据根创建备份。
+- [x] 在第二临时数据根执行恢复。
+- [x] 恢复后的合成数据与预期一致。
+- [x] 恢复流程产生预期的保护备份。
+- [x] 整个过程未接触真实数据目录。
 
 ### 问题记录
 
@@ -264,32 +315,38 @@ signing, installer, auto-update, and public release work.
 
 | 编号或本地草稿 | 现象 | 最小复现 | 状态 |
 | --- | --- | --- | --- |
-| `_待填_` | | | |
+| 无 | 自动化范围内没有遗留阻断问题 | — | — |
 
 #### 非阻断已知问题
 
 | 编号或本地草稿 | 现象 | 影响 | 后续决定 |
 | --- | --- | --- | --- |
-| `_待填_` | | | |
+| local-warning-1 | renderer 主 chunk 大于 500 kB | 启动体积与加载性能警告，不影响正确性 | 个人稳定版后再做结构优化 |
+| local-warning-2 | 当前包使用 Electron 默认图标 | 外观问题 | 不阻断个人日用 |
 
 ### 回滚保障
 
-- [ ] 上一版已知可用 portable EXE 已保留。
+- [x] 上一版已知可用 portable EXE 已保留。
 - [ ] 用户真实数据的升级前备份已存在且可识别。
-- [ ] 新版异常时的停止使用和退回方式已明确。
+- [x] 新版异常时停止使用候选 EXE，改用归档的上一版 EXE。
 
 真实备份的具体私人路径和内容不写入仓库，只记录“已确认”。
+
+上一版归档文件：
+`release/archive/考研高数错题本 0.1.0.previous-20260722-4f38deae2f11.exe`；
+大小 112,673,146 bytes；SHA-256
+`4f38deae2f117bb9433ffb3b5fce6fe958c2bbda6eb84fd39432e45a6aff6528`。
 
 ### 最终结论
 
 | 项目 | 记录 |
 | --- | --- |
-| 技术验收 | `_待填：通过 / 部分 / 失败_` |
-| 阻断问题数量 | `_待填_` |
-| 非阻断问题数量 | `_待填_` |
+| 技术验收 | `部分：自动化门禁、CI、打包、隔离启动/重启、复习撤销和跨根备份恢复已通过；人工页面链路待确认` |
+| 阻断问题数量 | `0（已执行的自动化范围内）` |
+| 非阻断问题数量 | `2` |
 | 用户 5 分钟确认日期 | `_待填_` |
 | 用户结论 | `_待填：可以日用 / 暂不使用_` |
-| 是否标记为个人稳定版 | `_待填_` |
+| 是否标记为个人稳定版 | `否；等待真实备份确认和 5 分钟人工 UI 检查` |
 
 ## 远端状态与后续授权点
 
@@ -300,7 +357,9 @@ signing, installer, auto-update, and public release work.
 3. 创建面向 `main` 的草稿 PR #2。
 4. 首次 Ubuntu CI 异常 run 已经用户授权取消。
 5. 第二次 Windows CI 已明确暴露临时目录短路径和缺失 renderer 构建问题；
-   修复后的 CI 待重新验证。
+   修复后的 Windows CI 已连续在 `30187574402` 和 `30188516301` 通过。
+6. 最终候选 commit `3f66aa4` 已推送，portable 包已完成本地构建与隔离
+   首启/重启验证。
 
 草稿 PR 的创建和分支推送不授权合并。同步 `main`、把 PR 转为 ready 或合并 PR
 必须在个人稳定版完成后另行确认。
