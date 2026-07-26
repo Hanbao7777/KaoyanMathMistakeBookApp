@@ -592,7 +592,7 @@ test('App startup election ignores a dead stale claim without deleting it', asyn
   } finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); }
 });
 
-test('root overlap and link or junction boundaries reject before journal writes', () => {
+test('root overlap and link or junction boundaries reject before journal writes', { skip: process.platform !== 'win32' }, () => {
   const temporaryRoot = root();
   const outside = root();
   try {
@@ -603,7 +603,7 @@ test('root overlap and link or junction boundaries reject before journal writes'
   } finally { fs.rmSync(temporaryRoot, { recursive: true, force: true }); fs.rmSync(outside, { recursive: true, force: true }); }
 });
 
-test('built standalone launcher keeps stdout protocol-only for malformed and oversized frames', { skip: !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
+test('built standalone launcher keeps stdout protocol-only for malformed and oversized frames', { skip: process.platform !== 'win32' || !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
   const temporaryRoot = root();
   try {
     const executable = path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe');
@@ -623,7 +623,7 @@ test('launcher control modes reject mixed, missing, duplicated, and extra argume
   }
 });
 
-test('standalone launcher self-test is exact and mixed control modes fail closed', { skip: !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
+test('standalone launcher self-test is exact and mixed control modes fail closed', { skip: process.platform !== 'win32' || !fs.existsSync(path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe')) }, () => {
   const executable = path.join(process.cwd(), 'dist', 'mcp-stdio', 'kaoyan-mcp.exe');
   const selfTest = spawnSync(executable, ['--self-test'], { encoding: 'utf8', timeout: 10_000 });
   assert.equal(selfTest.status, 0, selfTest.stderr); assert.equal(selfTest.stderr, '');

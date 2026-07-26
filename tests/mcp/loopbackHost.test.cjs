@@ -74,7 +74,7 @@ test('malformed stale and failed-handshake discovery is removed and never truste
   assert.equal(fs.existsSync(discovery.getMcpDiscoveryPath(discoveryRoot)), false);
 });
 
-test('host closes and removes discovery when Windows ACL validation cannot establish safe ownership', async () => {
+test('host closes and removes discovery when Windows ACL validation cannot establish safe ownership', { skip: process.platform !== 'win32' }, async () => {
   const discoveryRoot = root('unsafe-acl');
   const host = new hostModule.McpLoopbackHost({
     discoveryRoot,
@@ -83,10 +83,13 @@ test('host closes and removes discovery when Windows ACL validation cannot estab
     authenticator: authenticator(),
     discoveryOwnershipCheck: () => false
   });
-  await assert.rejects(host.start(), /publication failed security validation/);
-  assert.equal(host.status().state, 'stopped');
-  assert.equal(fs.existsSync(discovery.getMcpDiscoveryPath(discoveryRoot)), false);
-  await host.stop();
+  try {
+    await assert.rejects(host.start(), /publication failed security validation/);
+    assert.equal(host.status().state, 'stopped');
+    assert.equal(fs.existsSync(discovery.getMcpDiscoveryPath(discoveryRoot)), false);
+  } finally {
+    await host.stop();
+  }
 });
 
 test('strict boundary rejects Host Origin content type size and unauthenticated business messages', async () => {

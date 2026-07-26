@@ -85,7 +85,7 @@ test('rejects arbitrary and real-data roots before Electron can spawn', () => {
   );
 });
 
-test('launches installed Electron with isolated userData and a structured harness result', async (context) => {
+test('launches installed Electron with isolated userData and a structured harness result', { skip: process.platform !== 'win32' }, async (context) => {
   environment.prepareAgentTestEnvironment();
   writeHarnessFixture();
   for (const target of [testRoot, userDataDir, resultFile, fixturePath]) assertSafePath(target);
@@ -104,7 +104,7 @@ test('launches installed Electron with isolated userData and a structured harnes
   assert.deepEqual(secondTermination, firstTermination);
 });
 
-test('reports early Electron exit state and captured stderr', async () => {
+test('reports early Electron exit state and captured stderr', { skip: process.platform !== 'win32' }, async () => {
   environment.prepareAgentTestEnvironment();
   const exitFixture = writeFixture('exit', `
 const { app } = require('electron');
@@ -123,7 +123,7 @@ app.whenReady().then(() => {
   });
 });
 
-test('times out explicitly and terminates the Electron process', async () => {
+test('times out explicitly and terminates the Electron process', { skip: process.platform !== 'win32' }, async () => {
   environment.prepareAgentTestEnvironment();
   const timeoutFixture = writeFixture('timeout', `
 const { app } = require('electron');

@@ -54,9 +54,49 @@
 - build 报告主 renderer chunk 超过 500 kB。这是非阻断构建警告，本阶段不为此
   开展结构重构。
 
+## Batch 2 首次 CI 诊断
+
+### 远端对象
+
+| 项目 | 记录 |
+| --- | --- |
+| GitHub 总 Issue | `#1 Personal stable closure: portable daily-use acceptance` |
+| 草稿 PR | `#2 docs: define personal stable closure plan` |
+| 首次 CI run | `30185609677` |
+| 首次 run commit | `0e4b08cf21d8af3f99cf67796ed6b1d33e84fb74` |
+| 首次 run 结果 | 用户授权取消；取消前长期停在 `npm test` |
+
+### 根因
+
+首次 workflow 使用 `ubuntu-latest`，但完整测试包含 Windows Electron、PowerShell、
+portable EXE、Windows ACL、junction 和 `D:\` 路径语义。日志显示：
+
+- Electron harness 的 3 项测试因 Linux SUID sandbox 配置失败；
+- HTTPS metadata 测试因 `pwsh.exe` 不存在失败；
+- Linux 逐文件复现进一步发现 diagnostic bundle、launcher 和 C0 spike 的
+  Windows 路径或 EXE 假设失败；
+- `loopbackHost.test.cjs` 的 Windows ACL 用例在 Linux 上断言失败，且失败路径没有
+  执行 `host.stop()`，留下监听器，使 Node 测试进程不退出。
+
+最小挂起复现：
+
+```text
+timeout 6s node --test --test-name-pattern="host closes and removes discovery" tests/mcp/loopbackHost.test.cjs
+```
+
+结果先产生 `Missing expected rejection`，随后由 `timeout` 以 exit 124 终止。
+
+### 修复决策
+
+1. CI runner 改为 `windows-latest`，与产品和测试的真实平台一致。
+2. CI job 添加 30 分钟超时，避免活动句柄泄漏占用 runner 数小时。
+3. 明确标记已识别的 Windows 专属测试，不再让 Ubuntu 误执行。
+4. Windows ACL 测试使用 `try/finally`，断言失败时也保证关闭 host。
+
 ## GitHub 总 Issue 草稿
 
-> 状态：仅本地草稿。创建 Issue 前必须重新取得用户明确授权。
+> 状态：已按本草稿创建 GitHub Issue #1。下文保留创建时的正文快照，后续远端
+> 编辑仍需保持在已授权的稳定化范围内。
 
 建议标题：
 
@@ -208,12 +248,14 @@ signing, installer, auto-update, and public release work.
 | 用户结论 | `_待填：可以日用 / 暂不使用_` |
 | 是否标记为个人稳定版 | `_待填_` |
 
-## 后续授权点
+## 远端状态与后续授权点
 
-完成 Batch 1 后，继续执行以下动作前必须取得用户明确授权：
+当前已完成：
 
-1. 创建上述 GitHub 总 Issue。
-2. 创建并推送独立稳定化分支。
-3. 由远端 GitHub Actions 验证同一 commit。
+1. 创建 GitHub 总 Issue #1。
+2. 创建并推送 `stabilization/personal-stable-2026-07-26`。
+3. 创建面向 `main` 的草稿 PR #2。
+4. 首次 CI 异常 run 已经用户授权取消，修复后的 CI 待重新验证。
 
-同步 `main` 不包含在上述授权中，必须在稳定化完成后另行确认。
+草稿 PR 的创建和分支推送不授权合并。同步 `main`、把 PR 转为 ready 或合并 PR
+必须在个人稳定版完成后另行确认。

@@ -85,7 +85,7 @@ test('journal prototype bounds crash cleanup at each durable phase', () => {
   assert.deepEqual(afterReplace.records.map((record) => record.requestId).sort(), ['after-replace', 'request-1']);
 });
 
-test('stdio probe keeps stdout newline-delimited JSON-RPC only', () => {
+test('stdio probe keeps stdout newline-delimited JSON-RPC only', { skip: process.platform !== 'win32' }, () => {
   const child = spawnSync(process.execPath, [path.resolve(__dirname, '../../../tools/mcp-spikes/stdioProbeLauncher.cjs')], {
     cwd: root,
     env: { ...process.env, KAOYAN_C0_ROOT: root },

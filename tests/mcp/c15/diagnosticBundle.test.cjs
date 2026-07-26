@@ -39,7 +39,7 @@ test('C15 diagnostic preview and ZIP contain only generated allowlisted summarie
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('C15 diagnostics reject protected data-root output before creating a file', async () => {
+test('C15 diagnostics reject protected data-root output before creating a file', { skip: process.platform !== 'win32' }, async () => {
   const bundle = new diagnostics.AgentDiagnosticBundle('D:\\KaoyanMathMistakeBook\\diagnostics');
   await assert.rejects(bundle.export(snapshot()), /protected data root/);
 });

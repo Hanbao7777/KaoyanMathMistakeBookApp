@@ -121,7 +121,7 @@ test('C14 OAuth continuation accepts browser GET headers without Origin and reje
   assert.equal(httpsTransport.isSameOriginOAuthContinuation({ 'sec-fetch-site': 'same-origin' }, authority), false);
 });
 
-test('C14 direct transport publishes the exact OAuth server metadata scope lane', async () => {
+test('C14 direct transport publishes the exact OAuth server metadata scope lane', { skip: process.platform !== 'win32' }, async () => {
   const authority = contracts.directHttpsAuthority(await unusedPort());
   const oauth = new oauthModule.LocalOAuthAuthorizationServer({ metadata: metadataModule.createOAuthMetadata({ authority, scopes: ['system.read'] }), tokenStore: new tokenModule.OAuthTokenStore(), clients: { getHttpClient: async () => null, isHttpClientActive: async () => false }, appInstanceId: 'scope-lane-test' });
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kaoyan-c14-scope-lane-'));
