@@ -7,11 +7,13 @@ const {
   cleanupTestRoot,
   databaseService,
   requireMain,
-  resetTestDatabase
+  resetTestDatabase,
+  testRoot
 } = require('./helpers/mainTestEnv.cjs');
 
 const backupService = requireMain('services/backupService.js');
 const ticktickService = requireMain('services/ticktickService.js');
+const pathService = requireMain('services/pathService.js');
 
 test.after(cleanupTestRoot);
 
@@ -64,6 +66,34 @@ test('restoreDatabaseBackup restores readable database data', async () => {
   const tasks = await ticktickService.listTickTickTasks({ includeCompleted: true });
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].title, '恢复前任务');
+});
+
+test('backup created in one disposable root restores into a separate disposable root', async () => {
+  const sourceRoot = path.join(testRoot, 'backup-source-root');
+  const restoreRoot = path.join(testRoot, 'backup-restore-root');
+
+  databaseService.resetDatabaseConnection();
+  pathService.setDataRoot(sourceRoot);
+  await databaseService.initializeDatabase();
+  const list = await ticktickService.createTickTickList({ name: '跨目录恢复清单' });
+  await ticktickService.createTickTickTask({ list_id: list.id, title: '来自源目录的任务' });
+  const backup = await backupService.createDatabaseBackupMaintained('manual');
+
+  databaseService.resetDatabaseConnection();
+  pathService.setDataRoot(restoreRoot);
+  await databaseService.initializeDatabase();
+  const restorePaths = pathService.getPaths();
+  const importedBackup = path.join(restorePaths.backups, path.basename(backup.filePath));
+  fs.copyFileSync(backup.filePath, importedBackup);
+
+  const restored = await backupService.restoreDatabaseBackup(path.basename(importedBackup));
+
+  assert.equal(restored.restored, true);
+  assert.equal(path.dirname(restored.restoredFrom), restorePaths.backups);
+  assert.equal(fs.existsSync(restored.beforeRestoreBackup), true);
+  const tasks = await ticktickService.listTickTickTasks({ includeCompleted: true });
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].title, '来自源目录的任务');
 });
 
 test('deleteDatabaseBackup journals quarantine and advances one database revision', async () => {

@@ -86,6 +86,7 @@ export const migratedRendererBusinessOperations = Object.freeze([
   'questions.remove_image',
   'questions.mark_mastery',
   'questions.submit_review',
+  'questions.undo_review',
   'questions.list',
   'questions.get',
   'questions.review_logs',

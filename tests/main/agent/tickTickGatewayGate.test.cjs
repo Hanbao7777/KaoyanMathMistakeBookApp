@@ -10,7 +10,7 @@ const authentication = fs.readFileSync(path.join(projectRoot, 'src/main/agent/cl
 
 const b6Operations = [
   'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
-  'questions.mark_mastery', 'questions.submit_review', 'questions.list', 'questions.get',
+  'questions.mark_mastery', 'questions.submit_review', 'questions.undo_review', 'questions.list', 'questions.get',
   'questions.review_logs', 'questions.review_buckets'
 ];
 const b7Operations = [

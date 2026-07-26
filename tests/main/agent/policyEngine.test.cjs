@@ -63,7 +63,7 @@ test('renderer admits only migrated B6-B7 operations while preserving the recove
     assert.notEqual(evaluate(composition, renderer, operation, { settings }).disposition, 'deny', operation);
   }
   for (const operation of [
-    'questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge',
+    'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge',
     'questions.bulk_upsert', 'questions.import', 'questions.replace_all', 'questions.clear_all'
   ]) {
     assert.equal(evaluate(composition, renderer, operation, { settings }).disposition, 'deny', operation);

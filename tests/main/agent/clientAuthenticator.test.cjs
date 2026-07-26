@@ -101,7 +101,7 @@ test('renderer adapter returns one fixed first-party identity and accepts no cal
 test('renderer business allowlist is exact, frozen, and module-owned', () => {
   assert.deepEqual(authentication.migratedRendererBusinessOperations, [
     'questions.create', 'questions.update', 'questions.delete', 'questions.remove_image',
-    'questions.mark_mastery', 'questions.submit_review',
+    'questions.mark_mastery', 'questions.submit_review', 'questions.undo_review',
     'questions.list', 'questions.get', 'questions.review_logs', 'questions.review_buckets',
     'tasks.create', 'tasks.update', 'tasks.complete', 'tasks.uncomplete', 'tasks.delete',
     'tasks.list', 'tasks.get', 'focus.sessions.create', 'focus.sessions.list',
@@ -117,5 +117,5 @@ test('renderer business allowlist is exact, frozen, and module-owned', () => {
   assert.equal(Object.isFrozen(authentication.migratedRendererBusinessOperations), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('questions.create'), true);
   assert.equal(authentication.isMigratedRendererBusinessOperation('tasks.create'), true);
-  assert.equal(authentication.isMigratedRendererBusinessOperation('questions.undo_review'), false);
+  assert.equal(authentication.isMigratedRendererBusinessOperation('questions.undo_review'), true);
 });

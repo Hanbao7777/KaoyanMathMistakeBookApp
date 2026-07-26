@@ -30,7 +30,7 @@ const rendererOperations = [
 ];
 
 test('migrated Renderer question writes have one authenticated Gateway path and no fallback', () => {
-  for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult']) {
+  for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult', 'reviews:undoResult']) {
     assert.match(register, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));
   }
   assert.match(adapter, /getAgentControlPlane/);
@@ -58,10 +58,15 @@ test('versioned external MCP manifest preserves C6 parity and adds only the revi
   const externalBlock = manifest.match(/businessOperations: Object\.freeze\(\[([\s\S]*?)\]\s+as const\)/);
   assert.ok(externalBlock, 'Missing immutable versioned MCP business manifest');
   const externalAllowlist = [...externalBlock[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(rendererAllowlist, [...rendererOperations, 'backups.list', 'backups.create', 'exports.create', 'exports.get']);
+  assert.deepEqual(rendererAllowlist, [
+    ...rendererOperations.slice(0, 6),
+    'questions.undo_review',
+    ...rendererOperations.slice(6),
+    'backups.list', 'backups.create', 'exports.create', 'exports.get'
+  ]);
   assert.deepEqual(externalAllowlist, [...rendererOperations, 'backups.list', 'backups.create', 'exports.create', 'exports.get', 'backups.delete', 'database.restore', 'database.replace_from_import', 'database.clear_all', 'imports.delete_batch', 'data_root.migrate']);
   for (const operation of rendererOperations.slice(0, 10)) assert.equal(adapter.includes(`type: '${operation}'`), true, operation);
-  for (const operation of ['questions.undo_review', 'questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge']) {
+  for (const operation of ['questions.link_knowledge', 'questions.migrate_categories', 'questions.rematch_knowledge']) {
     assert.doesNotMatch(adapter, new RegExp(`type: '${operation.replace('.', '\\.')}'`));
   }
 });

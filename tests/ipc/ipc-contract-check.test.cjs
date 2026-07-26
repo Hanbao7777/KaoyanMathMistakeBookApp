@@ -124,7 +124,7 @@ test('contract scan detects intentional mismatch', () => {
 test('question IPC channels retain their public registrations', () => {
   for (const channel of [
     'questions:list', 'questions:get', 'questions:create', 'questions:update', 'questions:delete',
-    'questions:markMastery', 'images:remove', 'reviews:list', 'reviews:add', 'reviews:submitResult', 'review:buckets'
+    'questions:markMastery', 'images:remove', 'reviews:list', 'reviews:add', 'reviews:submitResult', 'reviews:undoResult', 'review:buckets'
   ]) {
     assert.equal(registeredChannels.has(channel), true, `missing question channel: ${channel}`);
   }

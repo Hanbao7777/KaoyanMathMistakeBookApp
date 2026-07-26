@@ -58,6 +58,11 @@ test('renderer adapter preserves CRUD, review, and image payloads', async () => 
   const submitted = await adapter.submitReviewResultFromRenderer({ questionId: created.id, result: 'correct', note: 'submitted' });
   assert.equal(submitted.question.id, created.id);
   assert.equal((await adapter.listReviewLogsFromRenderer(created.id)).length, 2);
+  const undone = await adapter.undoReviewResultFromRenderer(created.id, submitted.log.id);
+  assert.equal(undone.question.review_count, 1);
+  assert.equal(undone.question.correct_count, 0);
+  assert.equal(undone.question.wrong_count, 1);
+  assert.equal((await adapter.listReviewLogsFromRenderer(created.id)).length, 1);
 
   assert.equal(await adapter.removeImageFromRenderer(created.question_images[0].id, true), true);
   assert.equal((await adapter.getQuestionFromRenderer(created.id)).question_images.length, 0);
@@ -67,7 +72,7 @@ test('renderer adapter preserves CRUD, review, and image payloads', async () => 
 });
 
 test('listed renderer writers dispatch only through the authenticated Gateway', () => {
-  for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult']) {
+  for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult', 'reviews:undoResult']) {
     assert.match(registerSource, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));
   }
   assert.match(adapterSource, /controlPlane\.gateway\.execute\(/);

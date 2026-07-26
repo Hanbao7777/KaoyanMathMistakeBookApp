@@ -100,6 +100,10 @@ export async function submitReviewResultFromRenderer(input: ReviewSubmitInput, r
   return executeWrite({ type: 'questions.submit_review', payload: input }, requestId);
 }
 
+export async function undoReviewResultFromRenderer(questionId: number, reviewLogId: number, requestId?: string) {
+  return executeWrite({ type: 'questions.undo_review', payload: { questionId, reviewLogId } }, requestId);
+}
+
 export async function listQuestionsFromRenderer(filters: QuestionFilters = {}) {
   return executeQuery({ type: 'questions.list', payload: { filters, limit: RENDERER_QUERY_LIMIT } });
 }

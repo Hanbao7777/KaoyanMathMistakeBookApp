@@ -197,6 +197,7 @@ export interface AppApi {
   listReviewLogs: (questionId: number) => Promise<ReviewLog[]>;
   addReviewLog: (input: ReviewInput) => Promise<Question>;
   submitReviewResult: (input: ReviewSubmitInput) => Promise<ReviewSubmitResult>;
+  undoReviewResult: (questionId: number, reviewLogId: number) => Promise<import('./agent/v1/contracts').QuestionUndoReviewResult>;
   getReviewBuckets: () => Promise<ReviewBuckets>;
   getStats: () => Promise<StatsData>;
   getPaths: () => Promise<AppPaths>;

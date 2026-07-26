@@ -31,6 +31,7 @@ import {
   markMasteryFromRenderer,
   removeImageFromRenderer,
   submitReviewResultFromRenderer,
+  undoReviewResultFromRenderer,
   updateQuestionFromRenderer
 } from './adapters/questionsIpc';
 import { createKnowledgeRendererAdapter } from './adapters/knowledgeIpc';
@@ -510,6 +511,7 @@ export function registerIpc() {
   handle('reviews:list', (questionId: number) => listReviewLogsFromRenderer(questionId));
   handle('reviews:add', (input: ReviewInput) => addReviewFromRenderer(input));
   handle('reviews:submitResult', (input: ReviewSubmitInput) => submitReviewResultFromRenderer(input));
+  handle('reviews:undoResult', (questionId: number, reviewLogId: number) => undoReviewResultFromRenderer(questionId, reviewLogId));
   handle('review:buckets', () => getReviewBucketsFromRenderer());
   handle('stats:get', () => getStats());
   handle('paths:get', () => getCurrentPaths());

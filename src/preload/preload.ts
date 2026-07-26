@@ -170,6 +170,7 @@ const api: AppApi = {
   listReviewLogs: (questionId: number) => invoke<ReviewLog[]>('reviews:list', questionId),
   addReviewLog: (input: ReviewInput) => invoke<Question>('reviews:add', input),
   submitReviewResult: (input: ReviewSubmitInput) => invoke<ReviewSubmitResult>('reviews:submitResult', input),
+  undoReviewResult: (questionId: number, reviewLogId: number) => invoke<import('../shared/agent/v1/contracts').QuestionUndoReviewResult>('reviews:undoResult', questionId, reviewLogId),
   getReviewBuckets: () => invoke<ReviewBuckets>('review:buckets'),
   getStats: () => invoke<StatsData>('stats:get'),
   getPaths: () => invoke<AppPaths>('paths:get'),

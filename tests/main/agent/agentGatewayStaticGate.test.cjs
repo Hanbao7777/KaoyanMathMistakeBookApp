@@ -24,6 +24,7 @@ const migratedWrites = [
   'questions.remove_image',
   'questions.mark_mastery',
   'questions.submit_review',
+  'questions.undo_review',
   'tasks.create',
   'tasks.update',
   'tasks.complete',
