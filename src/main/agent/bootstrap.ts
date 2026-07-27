@@ -1016,9 +1016,14 @@ export async function bootstrapAgentGateway(options: AgentGatewayBootstrapOption
   });
   if (await jobs.hasQueued()) jobExecutor.start();
 
+  const authenticateRegistryPrincipal = createRegistryPrincipalAuthenticator(registry);
   const stdioAuthenticator = new StdioPublicKeyAuthenticator({
     registry,
-    authenticatePrincipal: createRegistryPrincipalAuthenticator(registry),
+    authenticatePrincipal: async (credentialFingerprint, sessionFingerprint) => {
+      const principal = await authenticateRegistryPrincipal(credentialFingerprint, sessionFingerprint);
+      liveBindings.set(principal, Object.freeze({ credentialFingerprint, sessionFingerprint }));
+      return principal;
+    },
     appInstanceId: options.appInstanceId,
     now: () => new Date(now()),
     randomUUID: uuid

@@ -71,6 +71,37 @@ test('renderer adapter preserves CRUD, review, and image payloads', async () => 
   assert.equal(await adapter.getQuestionFromRenderer(deletable.id), null);
 });
 
+test('renderer adapter accepts the Library page empty-filter model', async () => {
+  await adapter.createQuestionFromRenderer(input({ title: 'Library empty-filter question' }));
+  const listed = await adapter.listQuestionsFromRenderer({
+    search: '',
+    subject: '',
+    category: '',
+    questionType: '',
+    errorReason: '',
+    masteryLevel: '',
+    difficulty: '',
+    source: '',
+    tag: '',
+    sortBy: 'created_at',
+    sortOrder: 'desc',
+    weakOnly: false
+  });
+  assert.equal(listed.length, 1);
+});
+
+test('Library page can load a dashboard filter and total count concurrently', async () => {
+  await adapter.createQuestionFromRenderer(input({ title: 'Dashboard library question', subject: '线性代数' }));
+
+  const [filtered, all] = await Promise.all([
+    adapter.listQuestionsFromRenderer({ subject: '线性代数' }),
+    adapter.listQuestionsFromRenderer({})
+  ]);
+
+  assert.equal(filtered.length, 1);
+  assert.equal(all.length, 1);
+});
+
 test('listed renderer writers dispatch only through the authenticated Gateway', () => {
   for (const channel of ['questions:create', 'questions:update', 'questions:delete', 'questions:markMastery', 'images:remove', 'reviews:add', 'reviews:submitResult', 'reviews:undoResult']) {
     assert.match(registerSource, new RegExp(`handle\\('${channel}'[^\\n]*FromRenderer`));

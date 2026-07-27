@@ -17,7 +17,7 @@ import { createInternalExecutionContext } from './application/executionContext';
 import { killOcrProcess } from './services/ocrService';
 import { initializePaths } from './services/pathService';
 import { registerIpc } from './ipc/registerIpc';
-import { configureDirectHttpsStatus, configureExternalControlLifecycle, configureDirectHttpsController } from './ipc/adapters/agentControlCenterIpc';
+import { agentPairingRuntimePaths, configureDirectHttpsStatus, configureExternalControlLifecycle, configureDirectHttpsController } from './ipc/adapters/agentControlCenterIpc';
 import { seedImportKnowledgeMap } from './services/knowledgeMapService';
 import { initializeStudySupervisor } from './services/studySupervisorService';
 import { initializeTickTickService } from './services/ticktickService';
@@ -420,8 +420,10 @@ const defaultMainStartupDependencies: MainStartupDependencies = {
     }, refreshAuthenticator: (authority) => controlPlane.httpAuthenticator.setAuthority(authority, appInstanceId), createHost: (authority) => createConfiguredDirectHttpsOAuthResourceHost({ controlPlane, authority, oauth }) });
     directHttpsController = controller;
     await controller.reconcile();
+    const pairingRuntimePaths = agentPairingRuntimePaths(app.getPath('userData'));
     const host = new McpLoopbackHost({
-      discoveryRoot: path.join(app.getPath('userData'), 'agent-mcp'),
+      discoveryRoot: pairingRuntimePaths.discoveryRoot,
+      instanceId: appInstanceId,
       externalControlEnabled: controlPlane.externalControlEnabled,
       authenticatedReady: () => controlPlane.stdioAuthenticator.ready(),
       authenticator: controlPlane.stdioAuthenticator,

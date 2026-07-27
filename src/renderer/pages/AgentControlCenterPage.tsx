@@ -50,8 +50,9 @@ export function AgentControlCenterPage({ onBack }: { onBack: () => void }) {
       const [nextStatus, nextClients, nextSessions, nextGrants, nextApprovals, nextChanges, nextAudit, nextPolicy, nextCatalog, nextPrivacy, nextConsent] = await Promise.all([
         window.api.agentControl.getStatus(), window.api.agentControl.listClients({ pageSize: 100 }), window.api.agentControl.listSessions({ pageSize: 100 }), window.api.agentControl.listR4Grants({ pageSize: 100 }), window.api.agentControl.listApprovals({ pageSize: 100 }), window.api.agentControl.listChangeSets({ pageSize: 100 }), window.api.agentControl.searchAudit({ pageSize: 100 }), window.api.agentControl.getPolicy(), window.api.agentControl.getCatalog(), window.api.agentControl.getPrivacyDisclosure(), window.api.agentControl.listOAuthConsent()
       ]);
-      setStatus(nextStatus); setClients(nextClients.items); setSessions(nextSessions.items); setGrants(nextGrants.items); setApprovals(nextApprovals.items); setChangeSets(nextChanges.items); setAudit(nextAudit.items); setPolicy(nextPolicy); setCatalog(nextCatalog); setPrivacy(nextPrivacy); setOauthConsent(nextConsent);
-      setDrafts(Object.fromEntries(nextClients.items.map((client) => [client.clientId, { scopes: [...client.scopes], trust: client.trust }])));
+      const activeClients = nextClients.items.filter((client) => !client.revokedAt);
+      setStatus(nextStatus); setClients(activeClients); setSessions(nextSessions.items); setGrants(nextGrants.items); setApprovals(nextApprovals.items); setChangeSets(nextChanges.items); setAudit(nextAudit.items); setPolicy(nextPolicy); setCatalog(nextCatalog); setPrivacy(nextPrivacy); setOauthConsent(nextConsent);
+      setDrafts(Object.fromEntries(activeClients.map((client) => [client.clientId, { scopes: [...client.scopes], trust: client.trust }])));
     } catch (nextError) { setError(errorMessage(nextError)); } finally { setLoading(false); }
   }
   useEffect(() => { void load(); }, []);

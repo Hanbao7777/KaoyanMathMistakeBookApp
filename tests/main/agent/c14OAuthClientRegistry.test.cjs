@@ -28,6 +28,16 @@ test('C14 fixed HTTP client registration is idempotent and never revives revoked
   await composition.registry.ensureHttpClient(registration);
   await composition.registry.ensureHttpClient(registration);
   assert.deepEqual(await composition.registry.getHttpClient(registration.clientId), registration);
+  const userConfiguredAccess = {
+    allowedScopes: ['questions.read', 'questions.write', 'system.read'],
+    trust: 'full_control'
+  };
+  await composition.registry.updateClientAccess(registration.clientId, userConfiguredAccess.allowedScopes, userConfiguredAccess.trust);
+  await composition.registry.ensureHttpClient(registration);
+  assert.deepEqual(await composition.registry.getHttpClient(registration.clientId), {
+    ...registration,
+    ...userConfiguredAccess
+  });
   await assert.rejects(composition.registry.ensureHttpClient({ ...registration, exactRedirectUri: 'http://localhost:39456/callback' }), (error) => error.code === 'RECOVERY_FENCE');
   await composition.registry.revokeClient(registration.clientId);
   await composition.registry.ensureHttpClient(registration);

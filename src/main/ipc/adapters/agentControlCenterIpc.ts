@@ -71,6 +71,14 @@ export function configureDirectHttpsStatus(handler?: () => Omit<DirectHttpsStatu
 }
 export function configureDirectHttpsController(controller?: DirectHttpsOAuthController): void { directHttpsController = controller; }
 
+export function agentPairingRuntimePaths(userData: string): { readonly discoveryRoot: string; readonly journalRoot: string } {
+  const root = path.resolve(userData);
+  return Object.freeze({
+    discoveryRoot: path.join(root, 'agent-mcp'),
+    journalRoot: path.join(root, 'mcp-journal')
+  });
+}
+
 function pageSize(value: number | undefined): number {
   if (value === undefined) return 50;
   if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new AgentError('VALIDATION_ERROR', { field: 'pageSize' });
@@ -183,13 +191,19 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     const localAppData = process.env.LOCALAPPDATA;
     if (!localAppData) throw new Error('LOCALAPPDATA is unavailable');
     const userData = app.getPath('userData');
+    const runtimePaths = agentPairingRuntimePaths(userData);
     const injectedResources = !app.isPackaged ? process.env.KAOYAN_MCP_DEV_RESOURCES_PATH : undefined;
     const resourcesPath = injectedResources ?? process.resourcesPath;
     return new PairingService({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(),
       launcherArtifact: loadPackagedLauncherArtifact(resourcesPath), localAppData,
-      discoveryRoot: userData, journalRoot: path.join(userData, 'mcp-journal') });
+      discoveryRoot: runtimePaths.discoveryRoot, journalRoot: runtimePaths.journalRoot });
   })());
   async function pairingResult(result: Promise<PairingStatus>): Promise<PairingStatus> { const value = await result; validatePairingStatus(value, 'pairingResult'); return value; }
+  async function refreshExternalControlRuntime(status: PairingStatus): Promise<void> {
+    if (status.state !== 'healthy') return;
+    const controlPlane = await loadControlPlane();
+    if (await controlPlane.externalControlEnabled()) await externalControlLifecycle?.(true);
+  }
   async function execute(command: GatewayWorkflowCommand): Promise<unknown> {
     const controlPlane = await loadControlPlane();
     const outcome = await controlPlane.gateway.execute({
@@ -241,7 +255,10 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
       return Object.freeze({ enabled: result });
     },
     async listClients(request = {}) { return mapPage(await query({ type: 'agent.clients.list', payload: { ...(request.cursor ? { cursor: request.cursor } : {}), pageSize: pageSize(request.pageSize) } }) as PageValue<AgentControlClientSummary>, mapClient); },
-    async updateClientAccess(clientId: string, scopes: readonly AgentScope[], trust: TrustProfile) { return mapAcknowledgement(await execute({ type: 'agent.clients.update_access', payload: { clientId, scopes, trust } }) as AgentControlMutationAcknowledgement); },
+    async updateClientAccess(clientId: string, scopes: readonly AgentScope[], trust: TrustProfile) {
+      const canonicalScopes = Object.freeze([...scopes].sort());
+      return mapAcknowledgement(await execute({ type: 'agent.clients.update_access', payload: { clientId, scopes: canonicalScopes, trust } }) as AgentControlMutationAcknowledgement);
+    },
     async revokeClient(clientId: string) { return mapAcknowledgement(await execute({ type: 'agent.clients.revoke', payload: { clientId } }) as AgentControlMutationAcknowledgement); },
     async listSessions(request = {}) { return mapPage(await query({ type: 'agent.sessions.list', payload: { ...(request.clientId ? { clientId: request.clientId } : {}), ...(request.cursor ? { cursor: request.cursor } : {}), pageSize: pageSize(request.pageSize) } }) as PageValue<AgentControlSessionSummary>, mapSession); },
     async terminateSession(sessionId: string) { return mapAcknowledgement(await execute({ type: 'agent.sessions.terminate', payload: { sessionId } }) as AgentControlMutationAcknowledgement); },
@@ -261,10 +278,25 @@ export function createAgentControlCenterIpc(loadControlPlane: () => Promise<Cont
     async getPolicy() { const value = await query({ type: 'agent.policy.get', payload: {} }) as ControlSettings; return Object.freeze({ policyVersion: value.policyVersion, externalControlEnabled: value.externalControlEnabled }); },
     async getCatalog() { const value = await query({ type: 'agent.catalog.get', payload: {} }) as { readonly version: string; readonly hash: string }; return Object.freeze({ version: value.version, hash: value.hash }); },
     async getPrivacyDisclosure() { const value = await query({ type: 'agent.privacy.get', payload: {} }) as AgentControlPrivacyDisclosure; return Object.freeze({ ...value }); },
-    async connectClient(request: PairingRequest) { validatePairingRequest(request, 'connectClient'); return pairingResult((await pairing()).connect(request)); },
+    async connectClient(request: PairingRequest) {
+      validatePairingRequest(request, 'connectClient');
+      const status = await pairingResult((await pairing()).connect(request));
+      await refreshExternalControlRuntime(status);
+      return status;
+    },
     async getClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'getClientConnection'); return pairingResult((await pairing()).health(request)); },
-    async repairClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'repairClientConnection'); return pairingResult((await pairing()).repair(request)); },
-    async rotateClientKey(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'rotateClientKey'); return pairingResult((await pairing()).rotate(request)); },
+    async repairClientConnection(request: PairingTargetRequest) {
+      validatePairingTargetRequest(request, 'repairClientConnection');
+      const status = await pairingResult((await pairing()).repair(request));
+      await refreshExternalControlRuntime(status);
+      return status;
+    },
+    async rotateClientKey(request: PairingTargetRequest) {
+      validatePairingTargetRequest(request, 'rotateClientKey');
+      const status = await pairingResult((await pairing()).rotate(request));
+      await refreshExternalControlRuntime(status);
+      return status;
+    },
     async disconnectClientConnection(request: PairingTargetRequest) { validatePairingTargetRequest(request, 'disconnectClientConnection'); return pairingResult((await pairing()).disconnect(request)); },
     async prepareDirectHttpsTrust(context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); return directHttpsController.prepareTrustInstall(context); },
     async confirmDirectHttpsTrust(intentId: string, confirmed: boolean, context: RendererTrustContext) { if (!directHttpsController) throw new Error('direct_https_controller_unavailable'); await directHttpsController.confirmTrustInstall(intentId, confirmed, context); },

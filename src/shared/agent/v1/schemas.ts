@@ -106,7 +106,9 @@ function questionInput(value: unknown, path: string): void {
 function questionFilters(value: unknown, path: string): void {
   const keys = ['search', 'subject', 'category', 'questionType', 'errorReason', 'masteryLevel', 'difficulty', 'source', 'tag', 'sortBy', 'sortOrder', 'weakOnly'];
   const result = exact(value, keys, path);
-  for (const key of keys.slice(0, 9)) optionalString(result[key], `${path}.${key}`, 500);
+  for (const key of keys.slice(0, 9)) {
+    if (result[key] !== '') optionalString(result[key], `${path}.${key}`, 500);
+  }
   if (result.sortBy !== undefined) oneOf(result.sortBy, ['created_at', 'last_reviewed_at', 'review_count'], `${path}.sortBy`);
   if (result.sortOrder !== undefined) oneOf(result.sortOrder, ['asc', 'desc'], `${path}.sortOrder`);
   if (result.weakOnly !== undefined) boolean(result.weakOnly, `${path}.weakOnly`);

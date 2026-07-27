@@ -452,6 +452,7 @@ async function queryGateway(
 
 export class AgentGateway implements AgentGatewayContract {
   readonly #runtime: GatewayRuntime;
+  #queryTail: Promise<void> = Promise.resolve();
 
   constructor(dependencies: AgentGatewayDependencies) {
     this.#runtime = Object.freeze({
@@ -467,6 +468,11 @@ export class AgentGateway implements AgentGatewayContract {
   }
 
   query(envelope: AgentQueryEnvelope, principal: AgentPrincipal): Promise<AgentQueryOutcome> {
-    return queryGateway(this.#runtime, envelope, principal);
+    const run = this.#queryTail.then(() => queryGateway(this.#runtime, envelope, principal));
+    this.#queryTail = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 }

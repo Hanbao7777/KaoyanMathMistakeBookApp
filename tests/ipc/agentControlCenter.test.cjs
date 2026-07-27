@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const path = require('node:path');
 const test = require('node:test');
 const environment = require('../main/helpers/controlPlaneTestEnv.cjs');
 
@@ -194,6 +195,53 @@ test('external-control mutations drive the composed MCP host lifecycle after dur
   assert.equal((await current.api.setExternalControlEnabled(false)).enabled, false);
   assert.deepEqual(transitions, [true, false]);
   assert.equal((await current.api.getStatus()).settings.externalControlEnabled, false);
+});
+
+test('control-center access updates canonicalize hidden and selected scopes before Gateway validation', async () => {
+  const current = await runtime();
+  await current.register('b8-scope-order-client', ['system.read']);
+  await current.api.updateClientAccess(
+    'b8-scope-order-client',
+    ['system.read', 'questions.read', 'questions.write'],
+    'collaborator'
+  );
+  const client = (await current.api.listClients({ pageSize: 100 })).items
+    .find((item) => item.clientId === 'b8-scope-order-client');
+  assert.deepEqual(client.scopes, ['questions.read', 'questions.write', 'system.read']);
+  assert.equal(client.trust, 'collaborator');
+});
+
+test('healthy pairing changes refresh an already-enabled external-control runtime', async () => {
+  const current = await runtime();
+  await current.api.setExternalControlEnabled(true);
+  const transitions = [];
+  adapterModule.configureExternalControlLifecycle(async (enabled) => { transitions.push(enabled); });
+  const status = (request) => ({
+    apiVersion: 'kaoyan-pairing-v1@1', product: request.product, clientId: request.clientId, state: 'healthy',
+    message: 'ok', requestedScopes: ['system.read'], requestedTrust: 'observer',
+    grantedScopes: ['system.read'], grantedTrust: 'observer', generation: 1
+  });
+  const service = {
+    async connect(request) { return status(request); },
+    async health(request) { return status(request); },
+    async repair(request) { return status(request); },
+    async rotate(request) { return status(request); },
+    async disconnect(request) { return { ...status(request), state: 'disconnected', generation: 0 }; }
+  };
+  const api = adapterModule.createAgentControlCenterIpc(async () => current.plane, async () => service);
+  const target = { product: 'codex', clientId: 'codex-runtime-refresh' };
+  await api.connectClient({ ...target, requestedScopes: ['system.read'], trust: 'observer', disclosureAccepted: true, authorityConfirmed: false });
+  await api.repairClientConnection(target);
+  await api.rotateClientKey(target);
+  assert.deepEqual(transitions, [true, true, true]);
+});
+
+test('pairing runtime paths share the MCP host discovery directory', () => {
+  const userData = path.resolve('C:\\kaoyan-test\\user-data');
+  assert.deepEqual(adapterModule.agentPairingRuntimePaths(userData), {
+    discoveryRoot: path.join(userData, 'agent-mcp'),
+    journalRoot: path.join(userData, 'mcp-journal')
+  });
 });
 
 test('built adapter creates server-owned R4 grants and maps only safe audit DTOs', async () => {

@@ -325,6 +325,43 @@ test('query data is returned only after durable audit and audit failure replaces
   assert.equal(outcome.error.code, 'AUDIT_UNAVAILABLE');
 });
 
+test('concurrent queries do not mistake another query audit for maintenance', async () => {
+  const trace = [];
+  let dispatches = 0;
+  let auditPending = false;
+  let firstAuditEnteredResolve;
+  const firstAuditEntered = new Promise((resolve) => {
+    firstAuditEnteredResolve = resolve;
+  });
+  const gateway = new AgentGateway(fakeDependencies(trace, {
+    async dispatchQuery() {
+      dispatches += 1;
+      if (dispatches === 2) await firstAuditEntered;
+      if (auditPending) throw new agent.AgentError('MAINTENANCE_FENCE');
+      return {
+        value: { exact: `query-${dispatches}` },
+        dataVersion: { dataEpoch: 'epoch-gateway', dataRevision: 2 }
+      };
+    },
+    audit: {
+      async denial() {},
+      async query() {
+        auditPending = true;
+        firstAuditEnteredResolve();
+        await new Promise((resolve) => setImmediate(resolve));
+        auditPending = false;
+      }
+    }
+  }));
+
+  const outcomes = await Promise.all([
+    gateway.query(queryEnvelope(), fakePrincipal()),
+    gateway.query(queryEnvelope(), fakePrincipal())
+  ]);
+
+  assert.deepEqual(outcomes.map((outcome) => outcome.kind), ['completed', 'completed']);
+});
+
 test('production composition replays exact terminal results and rechecks revocation on every call', async () => {
   const current = await realComposition();
   const version = current.coordinator.currentVersion();
@@ -744,7 +781,10 @@ test('public-key registration and rotation are durable Gateway mutations and inv
     headers: { 'x-kaoyan-challenge-id': challenge.challengeId, 'x-kaoyan-challenge-signature': signature }
   });
   assert.ok(admission);
-  assert.equal((await current.stdioAuthenticator.validateSession(admission.sessionId, '2025-11-25')).clientId, 'stdio-client');
+  const stdioPrincipal = await current.stdioAuthenticator.validateSession(admission.sessionId, '2025-11-25');
+  assert.equal(stdioPrincipal.clientId, 'stdio-client');
+  const stdioStatus = await current.gateway.query(managementQuery('agent.status.get', {}), stdioPrincipal);
+  assert.equal(stdioStatus.kind, 'completed');
 
   const secondPair = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const secondPublicKey = secondPair.publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');

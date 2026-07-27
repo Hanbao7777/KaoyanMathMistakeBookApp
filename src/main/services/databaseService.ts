@@ -85,7 +85,7 @@ const retiredCoordinatorHandles = new WeakSet<Database>();
 let initializationPromise: Promise<DatabaseInitializationResult> | null = null;
 let initializationResult: DatabaseInitializationResult | null = null;
 let shutdownPromise: Promise<void> | null = null;
-const defaultAgentInstanceId = `app-${randomUUID()}`;
+const defaultAgentInstanceId = randomUUID();
 
 export const databaseLifecycleStages = [
   'candidate_recovery_started',

@@ -64,6 +64,32 @@ test('ready host binds IPv4 dynamically only after authenticated readiness and p
   assert.equal(fs.existsSync(discovery.getMcpDiscoveryPath(discoveryRoot)), false);
 });
 
+test('ready host renews discovery before its TTL expires', async () => {
+  const discoveryRoot = root('renewal');
+  const host = new hostModule.McpLoopbackHost({
+    discoveryRoot,
+    externalControlEnabled: () => true,
+    authenticatedReady: () => true,
+    authenticator: authenticator(),
+    discoveryOwnershipCheck: () => true,
+    discoveryTtlMs: 1_000
+  });
+  try {
+    const status = await host.start();
+    const initial = JSON.parse(fs.readFileSync(discovery.getMcpDiscoveryPath(discoveryRoot), 'utf8'));
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const renewed = await discovery.readValidatedMcpDiscovery({
+      root: discoveryRoot,
+      ownershipCheck: () => true,
+      handshake: async (candidate) => candidate.instanceId === status.instanceId && candidate.port === status.port
+    });
+    assert.equal(renewed.port, status.port);
+    assert.notEqual(renewed.createdAt, initial.createdAt);
+  } finally {
+    await host.stop();
+  }
+});
+
 test('malformed stale and failed-handshake discovery is removed and never trusted', async () => {
   const discoveryRoot = root('discovery');
   fs.writeFileSync(discovery.getMcpDiscoveryPath(discoveryRoot), '{broken', 'utf8');

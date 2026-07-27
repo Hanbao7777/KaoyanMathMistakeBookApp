@@ -132,6 +132,8 @@ export class McpLoopbackHost {
   private lifecycle = 0;
   private startPromise: Promise<McpLoopbackHostStatus> | null = null;
   private stopPromise: Promise<void> | null = null;
+  private discoveryRefreshTimer: NodeJS.Timeout | null = null;
+  private discoveryRefreshInFlight = false;
 
   constructor(private readonly options: McpLoopbackHostOptions) {
     this.instanceId = options.instanceId ?? randomUUID();
@@ -159,6 +161,7 @@ export class McpLoopbackHost {
     const token = ++this.lifecycle;
     this.state = 'disabled';
     this.port = undefined;
+    this.clearDiscoveryRefresh();
     removeMcpDiscovery(this.options.discoveryRoot, this.instanceId);
     this.handler?.invalidateSessions();
     await Promise.resolve(this.authenticator.invalidateAll()).catch(() => undefined);
@@ -180,6 +183,7 @@ export class McpLoopbackHost {
     ++this.lifecycle;
     this.state = 'stopped';
     this.port = undefined;
+    this.clearDiscoveryRefresh();
     removeMcpDiscovery(this.options.discoveryRoot, this.instanceId);
     this.handler?.invalidateSessions();
     await Promise.resolve(this.authenticator.invalidateAll()).catch(() => undefined);
@@ -240,34 +244,16 @@ export class McpLoopbackHost {
       boundPort = address.port;
       this.port = boundPort;
       if (token !== this.lifecycle || !await this.options.externalControlEnabled() || !await this.options.authenticatedReady()) throw new StartCancelledError();
-      const now = (this.options.now ?? (() => new Date()))();
       const ttl = this.options.discoveryTtlMs ?? 5 * 60_000;
       if (!Number.isSafeInteger(ttl) || ttl < 1_000 || ttl > 10 * 60_000) throw new Error('Discovery TTL is invalid');
-      const record: McpDiscoveryRecord = Object.freeze({
-        schemaVersion: 1,
-        pid: process.pid,
-        instanceId: this.instanceId,
-        port: boundPort,
-        createdAt: now.toISOString(),
-        expiresAt: new Date(now.getTime() + ttl).toISOString(),
-        protocolVersions: Object.freeze([...mcpProtocolVersions]),
-        launcherRange: this.options.launcherRange ?? '>=1 <2'
-      });
-      publishMcpDiscovery(this.options.discoveryRoot, record, { now });
-      const published = await readValidatedMcpDiscovery({
-        root: this.options.discoveryRoot,
-        now: this.options.now,
-        handshake: probeDiscoveryPort,
-        ownershipCheck: this.options.discoveryOwnershipCheck
-      });
-      if (!published || published.instanceId !== this.instanceId || published.port !== boundPort) {
-        throw new Error('MCP discovery publication failed security validation');
-      }
+      await this.publishAndValidateDiscovery(boundPort, ttl);
       if (token !== this.lifecycle) throw new StartCancelledError();
       this.state = 'ready';
+      this.startDiscoveryRefresh(token, boundPort, ttl);
       if (this.options.directHttps) await this.options.directHttps.start().catch(() => undefined);
       return this.status();
     } catch (error) {
+      this.clearDiscoveryRefresh();
       this.server = this.server === server ? null : this.server;
       this.handler = this.handler === handler ? null : this.handler;
       this.port = undefined;
@@ -281,6 +267,48 @@ export class McpLoopbackHost {
       }
       this.state = 'stopped';
       throw error;
+    }
+  }
+
+  private clearDiscoveryRefresh(): void {
+    if (this.discoveryRefreshTimer) clearInterval(this.discoveryRefreshTimer);
+    this.discoveryRefreshTimer = null;
+  }
+
+  private startDiscoveryRefresh(token: number, port: number, ttl: number): void {
+    this.clearDiscoveryRefresh();
+    const interval = Math.max(500, Math.floor(ttl / 2));
+    this.discoveryRefreshTimer = setInterval(() => {
+      if (this.discoveryRefreshInFlight || token !== this.lifecycle || this.state !== 'ready' || this.port !== port) return;
+      this.discoveryRefreshInFlight = true;
+      void this.publishAndValidateDiscovery(port, ttl)
+        .catch(() => this.stop())
+        .finally(() => { this.discoveryRefreshInFlight = false; });
+    }, interval);
+    this.discoveryRefreshTimer.unref();
+  }
+
+  private async publishAndValidateDiscovery(port: number, ttl: number): Promise<void> {
+    const now = (this.options.now ?? (() => new Date()))();
+    const record: McpDiscoveryRecord = Object.freeze({
+      schemaVersion: 1,
+      pid: process.pid,
+      instanceId: this.instanceId,
+      port,
+      createdAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + ttl).toISOString(),
+      protocolVersions: Object.freeze([...mcpProtocolVersions]),
+      launcherRange: this.options.launcherRange ?? '>=1 <2'
+    });
+    publishMcpDiscovery(this.options.discoveryRoot, record, { now });
+    const published = await readValidatedMcpDiscovery({
+      root: this.options.discoveryRoot,
+      now: this.options.now,
+      handshake: probeDiscoveryPort,
+      ownershipCheck: this.options.discoveryOwnershipCheck
+    });
+    if (!published || published.instanceId !== this.instanceId || published.port !== port) {
+      throw new Error('MCP discovery publication failed security validation');
     }
   }
 }
