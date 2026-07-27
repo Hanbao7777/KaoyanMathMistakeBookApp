@@ -1,8 +1,21 @@
 ﻿import fs from 'node:fs';
 import path from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
 import { shell } from 'electron';
 import { getPaths } from './pathService';
-import { persistDatabase, resetDatabaseConnection } from './databaseService';
+import {
+  createVerifiedDatabaseSnapshot,
+  createVerifiedDatabaseSnapshotSync,
+  getDatabaseCoordinator,
+  restoreDatabaseFromFile,
+  type MaintenanceOperationDependencies
+} from './databaseService';
+import {
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
+  OperationManifestStore
+} from '../persistence/operationJournal';
 import type { DatabaseBackupInfo, DatabaseBackupKind, DatabaseBackupResult, RestoreDatabaseBackupResult } from '../../shared/types';
 
 function pad(value: number) {
@@ -46,17 +59,14 @@ function safeBackupPath(fileName: string) {
   return target;
 }
 
-function copyDatabase(prefix: string): DatabaseBackupResult {
+function backupTarget(prefix: string) {
   const paths = ensureBackupsDir();
-  persistDatabase();
-  if (!fs.existsSync(paths.database)) throw new Error(`数据库文件不存在：${paths.database}`);
   const fileName = `${prefix}_${timestamp()}.db`;
   const filePath = path.join(paths.backups, fileName);
-  fs.copyFileSync(paths.database, filePath);
   return { fileName, filePath, createdAt: new Date().toISOString() };
 }
 
-function cleanupAutoBackups() {
+async function cleanupAutoBackups() {
   const paths = ensureBackupsDir();
   const autoBackups = fs.readdirSync(paths.backups)
     .filter((name) => name.startsWith('mistakes_auto_') && name.endsWith('.db'))
@@ -68,7 +78,7 @@ function cleanupAutoBackups() {
 
   for (const item of autoBackups.slice(30)) {
     try {
-      fs.unlinkSync(item.filePath);
+      await deleteDatabaseBackup(item.name);
     } catch {
       // 自动清理失败不应影响启动。
     }
@@ -83,20 +93,57 @@ export function createDatabaseBackup(type: DatabaseBackupKind = 'manual') {
       : type === 'before_delete_import'
         ? 'mistakes_before_delete_import'
         : 'mistakes_backup';
-  return copyDatabase(prefix);
+  const target = backupTarget(prefix);
+  const paths = ensureBackupsDir();
+  if (!fs.existsSync(paths.database)) throw new Error(`数据库文件不存在：${paths.database}`);
+  createVerifiedDatabaseSnapshotSync(target.filePath);
+  return target;
 }
 
-export function ensureDailyAutoBackup(): DatabaseBackupResult | null {
+export async function createDatabaseBackupMaintained(
+  type: DatabaseBackupKind = 'manual',
+  dependencies: MaintenanceOperationDependencies = {}
+): Promise<DatabaseBackupResult> {
+  const prefix = type === 'auto'
+    ? 'mistakes_auto'
+    : type === 'before_restore'
+      ? 'mistakes_before_restore'
+      : type === 'before_delete_import'
+        ? 'mistakes_before_delete_import'
+        : 'mistakes_backup';
+  const target = backupTarget(prefix);
+  await createVerifiedDatabaseSnapshot(target.filePath, dependencies);
+  return target;
+}
+
+/** Internal C13 seam: caller supplies only an App-owned staging location. */
+export async function createDatabaseBackupAt(filePath: string, dependencies: MaintenanceOperationDependencies = {}): Promise<void> {
+  const paths = ensureBackupsDir();
+  const normalized = path.normalize(filePath);
+  const allowedRoot = path.normalize(paths.temp);
+  const relative = path.relative(allowedRoot, normalized);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('Backup staging path is not App-owned');
+  fs.mkdirSync(path.dirname(normalized), { recursive: true });
+  await createVerifiedDatabaseSnapshot(normalized, dependencies);
+}
+
+async function ensureDailyAutoBackupOnce(): Promise<DatabaseBackupResult | null> {
   const paths = ensureBackupsDir();
   const today = datePrefix();
   const exists = fs.readdirSync(paths.backups).some((name) => name.startsWith(`mistakes_auto_${today}_`) && name.endsWith('.db'));
   if (exists) {
-    cleanupAutoBackups();
+    await cleanupAutoBackups();
     return null;
   }
-  const result = createDatabaseBackup('auto');
-  cleanupAutoBackups();
+  const result = await createDatabaseBackupMaintained('auto');
+  await cleanupAutoBackups();
   return result;
+}
+
+export function ensureDailyAutoBackup(): Promise<DatabaseBackupResult | null> {
+  const operation = ensureDailyAutoBackupOnce();
+  operation.catch((error) => console.warn('[AutoBackup]', error));
+  return operation;
 }
 
 export function listDatabaseBackups(): DatabaseBackupInfo[] {
@@ -118,38 +165,85 @@ export function listDatabaseBackups(): DatabaseBackupInfo[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-export function restoreDatabaseBackup(fileName: string): RestoreDatabaseBackupResult {
+export async function restoreDatabaseBackup(
+  fileName: string,
+  dependencies: MaintenanceOperationDependencies = {}
+): Promise<RestoreDatabaseBackupResult> {
   const paths = ensureBackupsDir();
   const backupPath = safeBackupPath(fileName);
   if (!fs.existsSync(backupPath)) throw new Error(`备份文件不存在：${backupPath}`);
-  if (!fs.existsSync(paths.database)) throw new Error(`当前数据库文件不存在：${paths.database}`);
-
-  const beforeRestore = createDatabaseBackup('before_restore');
-  try {
-    fs.copyFileSync(backupPath, paths.database);
-    resetDatabaseConnection();
-    return {
-      restored: true,
-      restoredFrom: backupPath,
-      beforeRestoreBackup: beforeRestore.filePath,
-      message: '恢复完成，请重启 App 以确保所有页面重新加载最新数据。'
-    };
-  } catch (error) {
-    try {
-      fs.copyFileSync(beforeRestore.filePath, paths.database);
-    } catch {
-      // 如果回滚也失败，保留原始错误给用户。
-    }
-    resetDatabaseConnection();
-    throw error;
-  }
+  const restored = await restoreDatabaseFromFile(backupPath, dependencies);
+  return {
+    restored: true,
+    restoredFrom: backupPath,
+    beforeRestoreBackup: restored.recoveryDatabasePath,
+    message: '恢复完成，请重启 App 以确保所有页面重新加载最新数据。'
+  };
 }
 
-export function deleteDatabaseBackup(fileName: string) {
+export async function deleteDatabaseBackup(fileName: string) {
   const target = safeBackupPath(fileName);
   if (!fs.existsSync(target)) return false;
-  fs.unlinkSync(target);
-  return true;
+  const paths = ensureBackupsDir();
+  const coordinator = await getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
+  const versionAfter = { dataEpoch: versionBefore.dataEpoch, dataRevision: versionBefore.dataRevision + 1 };
+  if (!Number.isSafeInteger(versionAfter.dataRevision)) throw new Error('Backup deletion requires an epoch rotation');
+  const operationId = randomUUID().replace(/[^A-Za-z0-9_-]/g, '');
+  const manifestRoot = path.normalize(path.join(paths.data, 'operation-journal'));
+  const quarantineRoot = path.normalize(path.join(paths.backups, '.quarantine'));
+  fs.mkdirSync(manifestRoot, { recursive: true });
+  fs.mkdirSync(quarantineRoot, { recursive: true });
+  const bytes = fs.readFileSync(target);
+  const manifest = createOperationManifest({
+    operationId,
+    requestId: operationId,
+    commandType: 'backup.delete',
+    source: 'internal',
+    clientId: 'maintenance-kernel',
+    traceId: operationId,
+    inputHash: createHash('sha256').update(fileName).digest('hex'),
+    storage: 'data_root',
+    versionBefore,
+    versionAfter,
+    affectedEntities: [{ entityType: 'database_backup', entityId: fileName }],
+    roots: { manifestRoot, managedRoots: [path.normalize(paths.root)], sourceRoots: [path.normalize(paths.root)] },
+    files: [{
+      fileId: 'backup-file',
+      kind: 'quarantine_delete',
+      targetPath: path.normalize(target),
+      quarantinePath: path.normalize(path.join(quarantineRoot, `${operationId}-${path.basename(target)}.quarantine`)),
+      content: evidenceForBytes(bytes),
+      status: 'pending'
+    }],
+    createdAt: new Date().toISOString()
+  });
+  const store = new OperationManifestStore(manifestRoot);
+  const journal = new OperationJournal(store);
+  const staged = await journal.stage(await journal.prepare(manifest));
+  try {
+    await coordinator.executeWrite({
+      requestId: operationId,
+      concurrency: 'strict',
+      expectedVersion: versionBefore,
+      execute: () => ({ changed: true, value: true })
+    });
+    try {
+      await journal.commitFiles(await journal.markDatabaseCommitted(staged));
+    } catch (finalizationError) {
+      const latest = await store.read(operationId) ?? staged;
+      const recovered = await journal.recover(latest, coordinator.currentVersion());
+      if (recovered.terminalState !== 'completed') throw finalizationError;
+    }
+    return true;
+  } catch (error) {
+    if (coordinator.currentVersion().dataEpoch === versionBefore.dataEpoch && coordinator.currentVersion().dataRevision === versionBefore.dataRevision) {
+      await journal.compensate(staged, { code: 'backup_delete_failed', phase: 'database', message: error instanceof Error ? error.message : String(error) });
+    } else {
+      await journal.needsRecovery(staged, { code: 'backup_delete_indeterminate', phase: 'database', message: 'Backup deletion database outcome is indeterminate' });
+    }
+    throw error;
+  }
 }
 
 export async function openBackupsFolder() {

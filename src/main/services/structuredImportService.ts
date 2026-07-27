@@ -1,21 +1,33 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { dialog } from 'electron';
 import AdmZip from 'adm-zip';
 import * as XLSX from 'xlsx';
-import { createQuestion, inferSubjectFromCategory, linkQuestionKnowledgePoints, normalizeSubject } from './databaseService';
+import { createInternalExecutionContext } from '../application/executionContext';
+import {
+  createOperationManifest,
+  evidenceForBytes,
+  OperationJournal,
+  OperationManifestStore,
+  sameDataVersion,
+  type OperationManifest,
+  type OperationManifestError
+} from '../persistence/operationJournal';
+import { getDatabaseCoordinator, getImportsApplication, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
 import { getPaths } from './pathService';
-import { createImportBatch, finalizeImportBatch, recordImportAsset, recordImportBatchItem } from './importBatchService';
-import { getDatabase, persistDatabase } from './databaseService';
 import type {
   Difficulty,
+  MathSubject,
   MasteryLevel,
+  Question,
   QuestionInput,
   StructuredImportKind,
   StructuredImportPreview,
   StructuredImportResult,
   StructuredImportRow
 } from '../../shared/types';
+import type { ImportsAddDraftImageCommand, ImportsApplyDraftCommand, ImportsCreateDraftCommand, ImportsValidateDraftCommand } from '../../shared/imports/v1';
 
 const TEMPLATE_HEADERS = [
   'title',
@@ -37,6 +49,7 @@ const TEMPLATE_HEADERS = [
 
 const ALLOWED_IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp']);
 const DIFFICULTY_VALUES = new Set(['简单', '中等', '困难', '压轴']);
+const SUBJECT_VALUES = new Set<MathSubject>(['高等数学', '线性代数', '概率论', '其他']);
 const MASTERY_MAP = new Map<string, MasteryLevel>([
   ['未掌握', '未掌握'],
   ['有点懂', '较弱'],
@@ -51,6 +64,34 @@ const MASTERY_MAP = new Map<string, MasteryLevel>([
 interface ImportSession {
   preview: StructuredImportPreview;
   tempDir?: string;
+}
+
+interface TemporaryFile {
+  absolutePath: string;
+  relativePath: string;
+  content: ReturnType<typeof evidenceForBytes>;
+}
+
+type RowStatus = 'pending' | 'invalid' | 'failed' | 'partial' | 'succeeded';
+
+interface DurableRowOutcome {
+  rowNumber: number;
+  title: string;
+  status: RowStatus;
+  questionId?: number;
+  imageStatus: 'not_requested' | 'pending' | 'committed' | 'failed';
+  knowledgeStatus: 'not_requested' | 'pending' | 'committed' | 'failed';
+  reason?: string;
+  warnings: string[];
+}
+
+interface StructuredBatchMetadata {
+  schemaVersion: 1;
+  kind: StructuredImportKind;
+  totalRows: number;
+  phase: 'processing' | 'completed' | 'cleanup_failed';
+  cleanup: 'pending' | 'completed' | 'failed';
+  rows: DurableRowOutcome[];
 }
 
 const sessions = new Map<string, ImportSession>();
@@ -83,6 +124,18 @@ function normalizeDifficulty(value: unknown): Difficulty {
 function normalizeMastery(value: unknown): MasteryLevel {
   const text = withDefault(value, '未掌握');
   return MASTERY_MAP.get(text) ?? '未掌握';
+}
+
+function inferSubjectFromCategory(category: unknown): MathSubject {
+  const text = asText(category);
+  if (text === '线性代数' || text === '行列式与矩阵' || text === '线性方程组与向量' || text === '特征值与二次型') return '线性代数';
+  if (text === '概率论') return '概率论';
+  return '高等数学';
+}
+
+function normalizeSubject(value: unknown, fallback: MathSubject): MathSubject {
+  const text = asText(value) as MathSubject;
+  return SUBJECT_VALUES.has(text) ? text : fallback;
 }
 
 function parseTags(value: unknown) {
@@ -258,7 +311,7 @@ export async function prepareZipImport() {
     sessions.set(sessionId, { preview, tempDir });
     return preview;
   } catch (error) {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    await cleanupTemporaryDirectory(sessionId, tempDir);
     throw error;
   }
 }
@@ -286,10 +339,313 @@ function toQuestionInput(row: StructuredImportRow, batchId?: string): QuestionIn
   };
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function operationError(error: unknown, phase: string): OperationManifestError {
+  return {
+    code: typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+      ? error.code.slice(0, 200)
+      : 'structured_import_cleanup_failed',
+    phase,
+    message: error instanceof Error ? error.message.slice(0, 1_000) || 'Structured import cleanup failed' : 'Structured import cleanup failed'
+  };
+}
+
+function listTemporaryFiles(tempDir: string): TemporaryFile[] {
+  const files: TemporaryFile[] = [];
+  const visit = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const absolutePath = path.normalize(path.join(directory, entry.name));
+      if (entry.isSymbolicLink()) throw new Error(`临时导入目录包含不安全的符号链接：${absolutePath}`);
+      if (entry.isDirectory()) visit(absolutePath);
+      else if (entry.isFile()) {
+        files.push({
+          absolutePath,
+          relativePath: path.relative(tempDir, absolutePath),
+          content: evidenceForBytes(fs.readFileSync(absolutePath))
+        });
+      } else {
+        throw new Error(`临时导入目录包含不支持的文件类型：${absolutePath}`);
+      }
+    }
+  };
+  visit(tempDir);
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+function removeEmptyDirectories(directory: string) {
+  if (!fs.existsSync(directory)) return;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory() && !entry.isSymbolicLink()) removeEmptyDirectories(path.join(directory, entry.name));
+  }
+  try {
+    fs.rmdirSync(directory);
+  } catch {
+    // Preserve non-empty directories so untracked content cannot be lost.
+  }
+}
+
+function cleanupJournal() {
+  const manifestRoot = path.normalize(path.join(getPaths().data, 'operation-journal'));
+  const store = new OperationManifestStore(manifestRoot);
+  return { manifestRoot, store, journal: new OperationJournal(store) };
+}
+
+async function fenceCleanupRecovery(coordinator: Awaited<ReturnType<typeof getDatabaseCoordinator>>) {
+  if (coordinator.state !== 'writable') return;
+  const lease = await coordinator.beginMaintenance();
+  coordinator.finishMaintenance(lease, 'needs_recovery');
+}
+
+async function finishCommittedCleanup(journal: OperationJournal, manifest: OperationManifest) {
+  const committed = manifest.state === 'files_staged'
+    ? await journal.markDatabaseCommitted(manifest)
+    : manifest;
+  return journal.commitFiles(committed);
+}
+
+async function cleanupTemporaryDirectory(sessionId: string, tempDir: string) {
+  const normalizedTempDir = path.normalize(tempDir);
+  if (!fs.existsSync(normalizedTempDir)) return;
+  const temporaryFiles = listTemporaryFiles(normalizedTempDir);
+  if (!temporaryFiles.length) {
+    removeEmptyDirectories(normalizedTempDir);
+    return;
+  }
+
+  const paths = getPaths();
+  const normalizedTempRoot = path.normalize(paths.temp);
+  const relativeTempDir = path.relative(normalizedTempRoot, normalizedTempDir);
+  if (!relativeTempDir || relativeTempDir.startsWith('..') || path.isAbsolute(relativeTempDir)) {
+    throw new Error('临时导入目录不在受管临时目录中');
+  }
+
+  const coordinator = await getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
+  if (versionBefore.dataRevision === Number.MAX_SAFE_INTEGER) throw new Error('Structured import cleanup revision overflow');
+  const requestId = `structured-import-cleanup-${crypto.randomUUID()}`;
+  const quarantineRoot = path.normalize(path.join(normalizedTempRoot, '.structured-import-quarantine', requestId));
+  const { manifestRoot, store, journal } = cleanupJournal();
+  const created = createOperationManifest({
+    operationId: requestId,
+    requestId,
+    commandType: 'structuredImport.cleanupTemporaryExtraction',
+    source: 'internal',
+    clientId: 'structured-import-service',
+    traceId: requestId,
+    inputHash: crypto.createHash('sha256').update(JSON.stringify({
+      sessionId,
+      files: temporaryFiles.map((file) => ({ relativePath: file.relativePath, content: file.content }))
+    })).digest('hex'),
+    storage: 'data_root',
+    versionBefore,
+    versionAfter: { dataEpoch: versionBefore.dataEpoch, dataRevision: versionBefore.dataRevision + 1 },
+    affectedEntities: [{ entityType: 'structured_import_session', entityId: sessionId }],
+    roots: {
+      manifestRoot,
+      managedRoots: [path.normalize(paths.root)],
+      sourceRoots: [normalizedTempRoot]
+    },
+    files: temporaryFiles.map((file, index) => ({
+      fileId: `temporary-file-${index + 1}`,
+      kind: 'quarantine_delete' as const,
+      targetPath: file.absolutePath,
+      quarantinePath: path.normalize(path.join(quarantineRoot, `${file.relativePath}.quarantine`)),
+      content: file.content,
+      status: 'pending' as const
+    })),
+    createdAt: nowIso()
+  });
+
+  let manifest: OperationManifest = created;
+  let databaseCommitted = false;
+  try {
+    manifest = await journal.prepare(manifest);
+    manifest = await journal.stage(manifest);
+    const write = await coordinator.executeWrite({
+      requestId,
+      concurrency: 'strict',
+      expectedVersion: versionBefore,
+      conflicts: [{ entityType: 'structured_import_session', entityId: sessionId }],
+      execute() {
+        return { changed: true, value: null };
+      }
+    });
+    if (!sameDataVersion(write.versionAfter, created.versionAfter)) throw new Error('Structured import cleanup committed an unexpected data version');
+    databaseCommitted = true;
+    await finishCommittedCleanup(journal, manifest);
+    removeEmptyDirectories(normalizedTempDir);
+  } catch (error) {
+    const latest = await store.read(requestId).catch(() => null) ?? manifest;
+    const currentVersion = coordinator.currentVersion();
+    if (databaseCommitted || sameDataVersion(currentVersion, created.versionAfter)) {
+      try {
+        await finishCommittedCleanup(journal, latest);
+        removeEmptyDirectories(normalizedTempDir);
+        return;
+      } catch (recoveryError) {
+        const current = await store.read(requestId).catch(() => null) ?? latest;
+        await journal.needsRecovery(current, operationError(recoveryError, 'file_finalization')).catch(() => undefined);
+        await fenceCleanupRecovery(coordinator);
+        throw recoveryError;
+      }
+    }
+    try {
+      await journal.compensate(latest, operationError(error, 'cleanup_prepare'));
+    } catch (compensationError) {
+      const current = await store.read(requestId).catch(() => null) ?? latest;
+      await journal.needsRecovery(current, operationError(compensationError, 'compensation')).catch(() => undefined);
+      await fenceCleanupRecovery(coordinator);
+      throw compensationError;
+    }
+    throw error;
+  }
+}
+
+function createBatchId() {
+  return `wrong_questions-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function commandContext(traceId: string) {
+  return createInternalExecutionContext({
+    concurrency: 'none',
+    requestId: crypto.randomUUID(),
+    traceId
+  });
+}
+
+function readMetadata(database: import('sql.js').Database, batchId: string): StructuredBatchMetadata {
+  const statement = database.prepare('SELECT metadata_json FROM import_batches WHERE id = ?');
+  try {
+    statement.bind([batchId]);
+    if (!statement.step()) throw new Error('结构化导入批次不存在');
+    const value = statement.getAsObject().metadata_json;
+    if (typeof value !== 'string') throw new Error('结构化导入批次元数据无效');
+    return JSON.parse(value) as StructuredBatchMetadata;
+  } finally {
+    statement.free();
+  }
+}
+
+async function createStructuredBatch(session: ImportSession) {
+  const coordinator = await getDatabaseCoordinator();
+  const batchId = createBatchId();
+  const metadata: StructuredBatchMetadata = {
+    schemaVersion: 1,
+    kind: session.preview.kind,
+    totalRows: session.preview.totalRows,
+    phase: 'processing',
+    cleanup: 'pending',
+    rows: session.preview.rows.map((row) => ({
+      rowNumber: row.rowNumber,
+      title: row.title,
+      status: 'pending',
+      imageStatus: row.hasImage ? 'pending' : 'not_requested',
+      knowledgeStatus: row.knowledge_points.length ? 'pending' : 'not_requested',
+      warnings: []
+    }))
+  };
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      database.run(
+        `INSERT INTO import_batches (
+          id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+        ) VALUES (?, 'local-renderer-management', 'wrong_questions', ?, ?, '', ?, 0, 0, 'active', ?, NULL)`,
+        [batchId, path.basename(session.preview.sourceFile), path.basename(session.preview.sourceFile), nowIso(), JSON.stringify(metadata)]
+      );
+      return { changed: true, value: batchId };
+    }
+  });
+  return batchId;
+}
+
+async function recordRowOutcome(batchId: string, outcome: DurableRowOutcome, question?: Question) {
+  const coordinator = await getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      const metadata = readMetadata(database, batchId);
+      const index = metadata.rows.findIndex((row) => row.rowNumber === outcome.rowNumber);
+      if (index < 0) throw new Error(`结构化导入行不存在：${outcome.rowNumber}`);
+      metadata.rows[index] = outcome;
+      if (question) {
+        database.run(
+          'INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, ?, ?, ?, ?)',
+          [batchId, 'questions', String(question.id), 'created', nowIso()]
+        );
+        for (const image of [...question.question_images, ...question.solution_images]) {
+          const absolutePath = path.join(getPaths().root, image.file_path.replaceAll('/', path.sep));
+          database.run(
+            'INSERT INTO import_assets (batch_id, asset_type, file_path, created_at, deleted_at) VALUES (?, ?, ?, ?, NULL)',
+            [batchId, 'question_image', absolutePath, nowIso()]
+          );
+        }
+      }
+      database.run('UPDATE import_batches SET metadata_json = ? WHERE id = ?', [JSON.stringify(metadata), batchId]);
+      return { changed: true, value: null };
+    }
+  });
+}
+
+async function resolveKnowledgePoints(values: readonly string[]) {
+  const database = await getReadOnlyDatabase();
+  const nodeIds: string[] = [];
+  const warnings: string[] = [];
+  for (const token of values) {
+    const byNodeId = database.select<{ node_id: string }>('SELECT node_id FROM knowledge_points WHERE node_id = ?', [token]);
+    const matches = byNodeId.length
+      ? byNodeId
+      : database.select<{ node_id: string }>('SELECT node_id FROM knowledge_points WHERE title = ? ORDER BY level ASC, sort_order ASC', [token]);
+    if (!matches.length) warnings.push(`未匹配到知识点：${token}`);
+    else {
+      if (!byNodeId.length && matches.length > 1) warnings.push(`知识点标题重复，已使用第一个匹配项：${token}`);
+      nodeIds.push(matches[0].node_id);
+    }
+  }
+  return { nodeIds, warnings };
+}
+
+async function finalizeStructuredBatch(batchId: string, result: StructuredImportResult, cleanup: 'completed' | 'failed') {
+  const coordinator = await getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database) {
+      const metadata = readMetadata(database, batchId);
+      const unresolved = metadata.rows.filter((row) => row.status === 'pending').length;
+      metadata.cleanup = cleanup;
+      metadata.phase = cleanup === 'completed' && unresolved === 0 ? 'completed' : 'cleanup_failed';
+      const itemStatement = database.prepare('SELECT COUNT(*) AS count FROM import_batch_items WHERE batch_id = ?');
+      const assetStatement = database.prepare('SELECT COUNT(*) AS count FROM import_assets WHERE batch_id = ?');
+      try {
+        itemStatement.bind([batchId]);
+        assetStatement.bind([batchId]);
+        itemStatement.step();
+        assetStatement.step();
+        const itemCount = Number(itemStatement.getAsObject().count ?? 0);
+        const assetCount = Number(assetStatement.getAsObject().count ?? 0);
+        const status = result.successCount === 0 && result.failCount > 0 ? 'failed' : 'active';
+        database.run(
+          'UPDATE import_batches SET item_count = ?, asset_count = ?, status = ?, metadata_json = ? WHERE id = ?',
+          [itemCount, assetCount, status, JSON.stringify(metadata), batchId]
+        );
+      } finally {
+        itemStatement.free();
+        assetStatement.free();
+      }
+      return { changed: true, value: null };
+    }
+  });
+}
+
 export async function confirmStructuredImport(sessionId: string): Promise<StructuredImportResult> {
   const session = sessions.get(sessionId);
   if (!session) throw new Error('导入会话已失效，请重新选择文件');
-
   const result: StructuredImportResult = {
     successCount: 0,
     failCount: 0,
@@ -297,57 +653,53 @@ export async function confirmStructuredImport(sessionId: string): Promise<Struct
     failures: [],
     warnings: []
   };
-  const batchId = await createImportBatch({
-    type: 'wrong_questions',
-    name: path.basename(session.preview.sourceFile),
-    sourceFileName: path.basename(session.preview.sourceFile),
-    metadata: { kind: session.preview.kind, totalRows: session.preview.totalRows }
-  });
-  const database = await getDatabase();
-
-  try {
-    for (const row of session.preview.rows) {
-      if (!row.isValid) {
-        result.failCount += 1;
-        result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason: row.errors.join('；') });
-        continue;
-      }
-
-      try {
-        const saved = await createQuestion(toQuestionInput(row, batchId));
-        recordImportBatchItem(database, batchId, 'questions', saved.id);
-        if (row.resolved_image_path && row.hasImage) recordImportAsset(database, batchId, 'question_image', row.resolved_image_path);
-        if (row.knowledge_points.length) {
-          const warnings = await linkQuestionKnowledgePoints(saved.id, row.knowledge_points, 'gpt');
-          for (const message of warnings) {
-            result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message });
-          }
-        }
-        result.successCount += 1;
-        if (row.hasImage) result.imageCopiedCount += 1;
-      } catch (error) {
-        result.failCount += 1;
-        result.failures.push({
-          rowNumber: row.rowNumber,
-          title: row.title,
-          reason: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    finalizeImportBatch(database, batchId, result.failCount && !result.successCount ? 'failed' : 'active');
-    persistDatabase();
-  } finally {
-    cleanupStructuredImport(sessionId);
+  const validRows = session.preview.rows.filter((row) => row.isValid).slice(0, 50);
+  for (const row of session.preview.rows.filter((row) => !row.isValid || !validRows.includes(row))) {
+    const reason = row.isValid ? '单次导入最多支持 50 行' : row.errors.join('；');
+    result.failCount += 1;
+    result.failures.push({ rowNumber: row.rowNumber, title: row.title, reason });
   }
-
+  if (validRows.length) {
+    const application = await getImportsApplication();
+    const coordinator = await getDatabaseCoordinator();
+    const nextContext = () => createInternalExecutionContext({ concurrency: 'strict', expectedVersion: coordinator.currentVersion() });
+    const created = await application.execute<ImportsCreateDraftCommand>({ type: 'imports.create_draft', payload: { source: 'structured_file', networkDisclosure: 'none', items: validRows.map((row) => ({
+      itemId: `row-${row.rowNumber}`, title: row.title, content: row.content, wrongThinking: row.wrong_thinking,
+      correctSolution: row.correct_solution, answer: row.answer, subject: row.subject as '高等数学' | '线性代数' | '概率论' | '其他', category: row.category,
+      questionType: row.question_type, errorReason: row.error_reason, difficulty: row.difficulty,
+      masteryLevel: row.mastery_level, source: row.source, tags: row.tags, knowledgePoints: row.knowledge_points
+    })) } }, nextContext());
+    for (const row of validRows.filter((entry) => entry.hasImage && entry.resolved_image_path)) {
+      const [asset] = await application.stageSelectedImages([row.resolved_image_path!], nextContext());
+      await application.execute<ImportsAddDraftImageCommand>({ type: 'imports.add_draft_image', payload: { draftId: created.value.draftId, itemId: `row-${row.rowNumber}`, assetId: asset.assetId, role: 'question' } }, nextContext());
+    }
+    const validation = await application.execute<ImportsValidateDraftCommand>({ type: 'imports.validate_draft', payload: { draftId: created.value.draftId } }, nextContext());
+    if (!validation.value.valid) throw new Error(validation.value.issues.map((issue) => issue.message).join('；'));
+    const applied = await application.execute<ImportsApplyDraftCommand>({ type: 'imports.apply_draft', payload: { draftId: created.value.draftId, previewHash: validation.value.previewHash } }, nextContext());
+    result.successCount = applied.value.createdQuestionIds.length;
+    result.imageCopiedCount = validRows.filter((row) => row.hasImage && !applied.value.skippedItemIds.includes(`row-${row.rowNumber}`)).length;
+    for (const itemId of applied.value.skippedItemIds) {
+      const row = validRows.find((entry) => `row-${entry.rowNumber}` === itemId)!;
+      result.warnings?.push({ rowNumber: row.rowNumber, title: row.title, message: '检测到重复错题，已跳过' });
+    }
+  }
+  try {
+    await cleanupStructuredImport(sessionId);
+  } catch (error) {
+    result.warnings?.push({
+      rowNumber: 0,
+      title: path.basename(session.preview.sourceFile),
+      message: `临时文件清理失败：${error instanceof Error ? error.message : String(error)}`
+    });
+  }
   return result;
 }
 
-export function cleanupStructuredImport(sessionId: string) {
+export async function cleanupStructuredImport(sessionId: string) {
   const session = sessions.get(sessionId);
   if (!session) return true;
   if (session.tempDir) {
-    fs.rmSync(session.tempDir, { recursive: true, force: true });
+    await cleanupTemporaryDirectory(sessionId, session.tempDir);
   }
   sessions.delete(sessionId);
   return true;

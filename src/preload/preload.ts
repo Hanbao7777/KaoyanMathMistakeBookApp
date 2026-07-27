@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { AppApi } from '../shared/api';
+import type { AgentControlApi, AppApi, ManagedBackup, ManagedExport, ManagedGlobalJob } from '../shared/api';
 import type {
   AppPaths,
   AddExternalQuestionToMistakesResult,
@@ -93,11 +93,67 @@ type IpcResponse<T> = { ok: true; data: T } | { ok: false; error: string };
 
 async function invoke<T>(channel: string, ...args: unknown[]) {
   const response = (await ipcRenderer.invoke(channel, ...args)) as IpcResponse<T>;
-  if (!response.ok) throw new Error(response.error);
+  if (!response || typeof response !== 'object' || typeof response.ok !== 'boolean') {
+    throw new Error('Invalid IPC response envelope');
+  }
+  if (!response.ok) {
+    if (typeof response.error !== 'string') throw new Error('Invalid IPC error envelope');
+    throw new Error(response.error);
+  }
+  if (!('data' in response)) throw new Error('Invalid IPC success envelope');
   return response.data;
 }
 
 const api: AppApi = {
+  agentControl: {
+    getStatus: () => invoke('agentControl:getStatus'),
+    setExternalControlEnabled: (enabled) => invoke('agentControl:setExternalControlEnabled', enabled),
+    listClients: (request = {}) => invoke('agentControl:listClients', request),
+    updateClientAccess: (clientId, scopes, trust) => invoke('agentControl:updateClientAccess', { clientId, scopes, trust }),
+    revokeClient: (clientId) => invoke('agentControl:revokeClient', clientId),
+    listSessions: (request = {}) => invoke('agentControl:listSessions', request),
+    terminateSession: (sessionId) => invoke('agentControl:terminateSession', sessionId),
+    listR4Grants: (request = {}) => invoke('agentControl:listR4Grants', request),
+    createR4Grant: (grant) => invoke('agentControl:createR4Grant', grant),
+    revokeR4Grant: (grantId) => invoke('agentControl:revokeR4Grant', grantId),
+    listApprovals: (request = {}) => invoke('agentControl:listApprovals', request),
+    approve: (approvalId) => invoke('agentControl:approve', approvalId),
+    rejectApproval: (approvalId, reasonCode) => invoke('agentControl:rejectApproval', approvalId, reasonCode),
+    listChangeSets: (request = {}) => invoke('agentControl:listChangeSets', request),
+    getChangeSet: (changeSetId) => invoke('agentControl:getChangeSet', changeSetId),
+    applyChangeSet: (changeSetId) => invoke('agentControl:applyChangeSet', changeSetId),
+    rejectChangeSet: (changeSetId, reasonCode) => invoke('agentControl:rejectChangeSet', changeSetId, reasonCode),
+    searchAudit: (request = {}) => invoke('agentControl:searchAudit', request),
+    exportAudit: (request = {}) => invoke('agentControl:exportAudit', request),
+    verifyAudit: (segmentId) => invoke('agentControl:verifyAudit', segmentId),
+    getPolicy: () => invoke('agentControl:getPolicy'),
+    getCatalog: () => invoke('agentControl:getCatalog'),
+    getPrivacyDisclosure: () => invoke('agentControl:getPrivacyDisclosure'),
+    connectClient: (request) => invoke('agentControl:connectClient', request),
+    getClientConnection: (request) => invoke('agentControl:getClientConnection', request),
+    repairClientConnection: (request) => invoke('agentControl:repairClientConnection', request),
+    rotateClientKey: (request) => invoke('agentControl:rotateClientKey', request),
+    disconnectClientConnection: (request) => invoke('agentControl:disconnectClientConnection', request),
+    prepareDirectHttpsTrust: () => invoke('agentControl:prepareDirectHttpsTrust'),
+    confirmDirectHttpsTrust: (intentId, confirmed) => invoke('agentControl:confirmDirectHttpsTrust', intentId, confirmed),
+    prepareDirectHttpsRemoval: () => invoke('agentControl:prepareDirectHttpsRemoval'),
+    confirmDirectHttpsRemoval: (intentId, confirmed) => invoke('agentControl:confirmDirectHttpsRemoval', intentId, confirmed),
+    listOAuthConsent: () => invoke('agentControl:listOAuthConsent'),
+    decideOAuthConsent: (requestId, decision) => invoke('agentControl:decideOAuthConsent', requestId, decision),
+    previewDiagnostics: () => invoke('agentControl:previewDiagnostics'),
+    exportDiagnostics: () => invoke('agentControl:exportDiagnostics')
+  } satisfies AgentControlApi,
+  knowledge: {
+    listNodes: (parentNodeId?: string, subject?: string) => invoke('knowledge:listNodes', parentNodeId, subject),
+    getNode: (nodeId: string) => invoke('knowledge:getNode', nodeId),
+    listLinks: (input: { nodeId?: string; questionId?: number }) => invoke('knowledge:listLinks', input),
+    listTextbooks: (subject?: string) => invoke('textbooks:list', subject),
+    getTextbook: (textbookId: number) => invoke('textbooks:get', textbookId),
+    getWeakAreas: (subject?: string) => invoke('analytics:getWeakAreas', subject),
+    linkQuestion: (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => invoke('knowledge:linkQuestion', questionId, nodeId, matchType),
+    unlinkQuestion: (questionId: number, nodeId: string) => invoke('knowledge:unlinkQuestion', questionId, nodeId),
+    bindTextbook: (nodeId: string, textbookId: number) => invoke('knowledge:bindTextbook', nodeId, textbookId)
+  },
   dashboard: () => invoke<DashboardData>('dashboard:get'),
   listQuestions: (filters: QuestionFilters) => invoke<Question[]>('questions:list', filters),
   getQuestion: (id: number) => invoke<Question | null>('questions:get', id),
@@ -114,6 +170,7 @@ const api: AppApi = {
   listReviewLogs: (questionId: number) => invoke<ReviewLog[]>('reviews:list', questionId),
   addReviewLog: (input: ReviewInput) => invoke<Question>('reviews:add', input),
   submitReviewResult: (input: ReviewSubmitInput) => invoke<ReviewSubmitResult>('reviews:submitResult', input),
+  undoReviewResult: (questionId: number, reviewLogId: number) => invoke<import('../shared/agent/v1/contracts').QuestionUndoReviewResult>('reviews:undoResult', questionId, reviewLogId),
   getReviewBuckets: () => invoke<ReviewBuckets>('review:buckets'),
   getStats: () => invoke<StatsData>('stats:get'),
   getPaths: () => invoke<AppPaths>('paths:get'),
@@ -123,13 +180,15 @@ const api: AppApi = {
   clearAllData: (deleteImages: boolean) => invoke<boolean>('settings:clear', deleteImages),
   chooseRoot: () => invoke<string | null>('settings:chooseRoot'),
   setRoot: (root: string, migrate: boolean) => invoke<AppPaths>('settings:setRoot', root, migrate),
-  createDatabaseBackup: (type?: DatabaseBackupKind) => invoke<DatabaseBackupResult>('backups:create', type),
+  createDatabaseBackup: () => invoke<ManagedGlobalJob>('backups:create'),
   ensureDailyAutoBackup: () => invoke<DatabaseBackupResult | null>('backups:ensureDaily'),
-  listDatabaseBackups: () => invoke<DatabaseBackupInfo[]>('backups:list'),
+  listDatabaseBackups: () => invoke<readonly ManagedBackup[]>('backups:list'),
+  listLegacyDatabaseBackups: () => invoke<DatabaseBackupInfo[]>('backups:listLegacy'),
   restoreDatabaseBackup: (fileName: string) => invoke<RestoreDatabaseBackupResult>('backups:restore', fileName),
   deleteDatabaseBackup: (fileName: string) => invoke<boolean>('backups:delete', fileName),
   openBackupsFolder: () => invoke<boolean>('backups:openFolder'),
-  exportQuestionsToPdf: (options: PdfExportOptions) => invoke<PdfExportResult>('pdfExport:create', options),
+  exportQuestionsToPdf: (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => invoke<ManagedGlobalJob>('pdfExport:create', options),
+  getManagedExport: (assetId: string) => invoke<ManagedExport>('pdfExport:get', assetId),
   openExportedPdf: (filePath: string) => invoke<boolean>('pdfExport:open', filePath),
   openExportsFolder: () => invoke<boolean>('pdfExport:openFolder'),
   createImportTemplate: () => invoke<string>('structuredImport:template'),
@@ -138,6 +197,17 @@ const api: AppApi = {
   prepareZipImport: () => invoke<StructuredImportPreview | null>('structuredImport:prepareZip'),
   confirmStructuredImport: (sessionId: string) => invoke<StructuredImportResult>('structuredImport:confirm', sessionId),
   cancelStructuredImport: (sessionId: string) => invoke<boolean>('structuredImport:cancel', sessionId),
+  imports: {
+    selectImages: () => invoke('imports:selectImages'),
+    createDraft: (payload) => invoke('imports:createDraft', payload),
+    addDraftImage: (payload) => invoke('imports:addDraftImage', payload),
+    validateDraft: (draftId) => invoke('imports:validateDraft', draftId),
+    previewDraft: (draftId) => invoke('imports:previewDraft', draftId),
+    applyDraft: (draftId, previewHash) => invoke('imports:applyDraft', draftId, previewHash),
+    get: (draftId) => invoke('imports:get', draftId),
+    cancel: (draftId) => invoke('imports:cancel', draftId),
+    stageSelectedImages: (selectionToken) => invoke('imports:stageSelectedImages', selectionToken)
+  },
   importKnowledgeMapZip: () => invoke<KnowledgeMapImportResult | null>('knowledgeMap:importZip'),
   importQuestionBankZip: () => invoke<QuestionBankImportResult | null>('questionBank:importZip'),
   listExternalQuestions: (filters: ExternalQuestionFilters) => invoke<ExternalQuestion[]>('questionBank:list', filters),
@@ -186,6 +256,11 @@ const api: AppApi = {
   getDailyReview: (date: string) => invoke<DailyReview | null>('study:reviews:get', date),
   saveDailyReview: (input: DailyReviewInput) => invoke<DailyReview | null>('study:reviews:save', input),
   getStudySupervisorDashboard: (date?: string) => invoke<StudySupervisorDashboard>('study:dashboard', date),
+  getStudyToday: (date?: string) => invoke<import('../shared/agent/v1/contracts').StudyTodaySummary>('study:getToday', date),
+  getStudyWeekSummary: (date?: string) => invoke<import('../shared/agent/v1/contracts').StudyWeekSummary>('study:getWeekSummary', date),
+  createStudyPlanDraft: (date: string, tasks: import('../shared/agent/v1/contracts').StudyCreatePlanDraftCommand['payload']['tasks']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.create_plan_draft']>('study:createPlanDraft', date, tasks),
+  applyStudyPlanAdjustment: (payload: import('../shared/agent/v1/contracts').StudyApplyPlanAdjustmentCommand['payload']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.apply_plan_adjustment']>('study:applyPlanAdjustment', payload),
+  recordStudyManualProgress: (payload: import('../shared/agent/v1/contracts').StudyRecordManualProgressCommand['payload']) => invoke<import('../shared/agent/v1/contracts').StudyCommandValues['study.record_manual_progress']>('study:recordManualProgress', payload),
 
   // TickTick Lists
   listTickTickLists: () => invoke<TickTickList[]>('ticktick:lists:list'),
@@ -285,9 +360,17 @@ const api: AppApi = {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => invoke<AiDiagnosisResult>('deepseek:diagnose', questionId),
-  recordAiImport: (questionId: number) => invoke<{ batchId: string }>('ai:recordImport', questionId),
 
   toFileUrl: (filePath: string) => `mistake-image:///${encodeURIComponent(filePath)}`
 };
 
 contextBridge.exposeInMainWorld('api', api);
+
+if (process.env.KAOYAN_E2E_HARNESS === '1') {
+  contextBridge.exposeInMainWorld('agentControlE2e', Object.freeze({
+    async report(result: { readonly ok: boolean; readonly assertions: readonly string[]; readonly error?: string }) {
+      const response = await ipcRenderer.invoke('agentControl:e2e:writeResult', result) as IpcResponse<void>;
+      if (!response || response.ok !== true || !('data' in response)) throw new Error('Invalid E2E result acknowledgement');
+    }
+  }));
+}

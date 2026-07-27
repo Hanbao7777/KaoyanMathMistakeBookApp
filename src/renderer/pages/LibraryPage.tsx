@@ -1,7 +1,9 @@
 ﻿import { FileDown, Search, SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { CATEGORIES, DIFFICULTIES, ERROR_REASONS, MASTERY_LEVELS, MATH_SUBJECTS, QUESTION_TYPES, SOURCES } from '../../shared/options';
-import type { PdfExportMode, PdfExportResult, Question, QuestionFilters } from '../../shared/types';
+import type { PdfExportMode, Question, QuestionFilters } from '../../shared/types';
+import type { ManagedExport, ManagedGlobalJob } from '../../shared/api';
+import { emptyFilters, hasActiveFilters, activeFilterBadges, computeQuestionSummary } from '../../shared/questionFilters';
 import { EmptyState } from '../components/EmptyState';
 import { useModal } from '../components/Modal';
 import { QuestionCard } from '../components/QuestionCard';
@@ -61,24 +63,10 @@ const T = {
   exporting: '正在生成 PDF，请稍候...',
   exportEmpty: '当前没有可导出的错题',
   exportSuccess: 'PDF 导出成功',
+  exportPending: 'PDF 导出任务仍在后台处理中',
   openPdf: '打开 PDF',
   openFolder: '打开导出文件夹',
   pdfBeta: 'PDF 导出功能目前为 Beta，复杂公式或长图分页可能需要后续优化。'
-};
-
-const emptyFilters: QuestionFilters = {
-  search: '',
-  subject: '',
-  category: '',
-  questionType: '',
-  errorReason: '',
-  masteryLevel: '',
-  difficulty: '',
-  source: '',
-  tag: '',
-  sortBy: 'created_at',
-  sortOrder: 'desc',
-  weakOnly: false
 };
 
 function SelectFilter({ label, value, options, onChange }: { label: string; value?: string; options: string[]; onChange: (value: string) => void }) {
@@ -93,34 +81,6 @@ function SelectFilter({ label, value, options, onChange }: { label: string; valu
   );
 }
 
-function isDue(value?: string | null) {
-  if (!value) return false;
-  return value.slice(0, 10) <= new Date().toISOString().slice(0, 10);
-}
-
-function isWeak(question: Question) {
-  return question.mastery_level === '未掌握' || question.mastery_level === '较弱' || (question.wrong_count || 0) > (question.correct_count || 0) || (question.no_idea_count || 0) > 0;
-}
-
-function hasActiveFilters(filters: QuestionFilters) {
-  return Boolean(filters.search || filters.subject || filters.category || filters.questionType || filters.errorReason || filters.masteryLevel || filters.difficulty || filters.source || filters.tag || filters.weakOnly);
-}
-
-function activeFilterBadges(filters: QuestionFilters) {
-  const badges: Array<{ key: keyof QuestionFilters | 'weakOnly'; label: string }> = [];
-  if (filters.search) badges.push({ key: 'search', label: `关键词：${filters.search}` });
-  if (filters.subject) badges.push({ key: 'subject', label: `学科：${filters.subject}` });
-  if (filters.category) badges.push({ key: 'category', label: `章节：${filters.category}` });
-  if (filters.questionType) badges.push({ key: 'questionType', label: `题型：${filters.questionType}` });
-  if (filters.errorReason) badges.push({ key: 'errorReason', label: `错因：${filters.errorReason}` });
-  if (filters.masteryLevel) badges.push({ key: 'masteryLevel', label: `掌握程度：${filters.masteryLevel}` });
-  if (filters.difficulty) badges.push({ key: 'difficulty', label: `难度：${filters.difficulty}` });
-  if (filters.source) badges.push({ key: 'source', label: `来源：${filters.source}` });
-  if (filters.tag) badges.push({ key: 'tag', label: `标签：${filters.tag}` });
-  if (filters.weakOnly) badges.push({ key: 'weakOnly', label: '薄弱错题' });
-  return badges;
-}
-
 export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: LibraryPageProps) {
   const { toast } = useToast();
   const modal = useModal();
@@ -131,7 +91,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
   const [exportScope, setExportScope] = useState<'current' | 'all'>('current');
   const [exportMode, setExportMode] = useState<PdfExportMode>('full');
   const [exporting, setExporting] = useState(false);
-  const [exportResult, setExportResult] = useState<PdfExportResult | null>(null);
+  const [exportResult, setExportResult] = useState<(ManagedGlobalJob & { readonly export?: ManagedExport; readonly pending: boolean }) | null>(null);
 
   async function load() {
     const [list, all] = await Promise.all([window.api.listQuestions(filters), window.api.listQuestions({})]);
@@ -150,11 +110,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
 
   const activeBadges = useMemo(() => activeFilterBadges(filters), [filters]);
   const active = hasActiveFilters(filters);
-  const summary = useMemo(() => ({
-    unmastered: questions.filter((question) => question.mastery_level === '未掌握').length,
-    weak: questions.filter(isWeak).length,
-    due: questions.filter((question) => isDue(question.next_review_at)).length
-  }), [questions]);
+  const summary = useMemo(() => computeQuestionSummary(questions), [questions]);
 
   async function remove(id: number) {
     const confirmed = await modal.confirm({ title: '操作确认', message: T.deleteConfirm, confirmLabel: '删除', danger: true });
@@ -177,9 +133,16 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
         scope: exportScope === 'all' ? 'all' : 'questionIds',
         mode: exportMode,
         questionIds: exportScope === 'current' ? ids : undefined,
-        title: exportScope === 'all' ? T.allQuestions : T.currentFilterResult
       });
-      setExportResult(result);
+      let exported = await window.api.getManagedExport(result.assetId);
+      for (let attempt = 0; attempt < 12 && (exported.status === 'intent' || exported.status === 'staged'); attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        exported = await window.api.getManagedExport(result.assetId);
+      }
+      if (exported.status === 'failed' || exported.status === 'needs_recovery' || exported.status === 'quarantined') {
+        throw new Error(`导出任务未完成：${exported.status}`);
+      }
+      setExportResult({ ...result, export: exported, pending: exported.status !== 'published' });
     } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error');
     } finally {
@@ -270,7 +233,7 @@ export function LibraryPage({ onOpenQuestion, onEditQuestion, initialFilters }: 
             </div>
             <div className="export-mode-note">{exportMode === 'full' ? T.fullDesc : T.practiceDesc}</div>
             <p className="export-beta-note">{T.pdfBeta}</p>
-            {exportResult ? <div className="success-box export-result"><strong>{T.exportSuccess}</strong><span>{exportResult.filePath}</span><div className="header-actions"><button className="primary-button compact-button" type="button" onClick={() => window.api.openExportedPdf(exportResult.filePath)}>{T.openPdf}</button><button className="secondary-button compact-button" type="button" onClick={() => window.api.openExportsFolder()}>{T.openFolder}</button></div></div> : null}
+            {exportResult ? <div className="success-box export-result"><strong>{exportResult.pending ? T.exportPending : T.exportSuccess}</strong><span>受管导出 {exportResult.assetId} · {exportResult.export?.status ?? exportResult.status}</span><div className="header-actions"><button className="secondary-button compact-button" type="button" onClick={() => window.api.openExportsFolder()}>{T.openFolder}</button></div></div> : null}
             <button className="primary-button" type="button" onClick={exportPdf} disabled={exporting || (exportScope === 'current' && !questions.length)}>{exporting ? T.exporting : T.startExport}</button>
           </section>
         </div>

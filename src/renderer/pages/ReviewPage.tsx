@@ -7,6 +7,12 @@ import { FormulaText } from '../components/FormulaText';
 import { ImageGallery } from '../components/ImageGallery';
 import { useToast } from '../components/Toast';
 import { formatDate } from '../utils/date';
+import {
+  decrementReviewSessionStats,
+  filterKnowledgeReviewStats,
+  reviewSessionAccuracy,
+  type ReviewSessionStats
+} from '../../shared/reviewSession';
 
 interface ReviewPageProps {
   onOpenQuestion: (id: number, reviewMode?: boolean) => void;
@@ -15,12 +21,6 @@ interface ReviewPageProps {
 }
 
 type ReviewMode = 'due' | 'weak' | 'random' | 'knowledge';
-
-interface SessionStats {
-  correct: number;
-  wrong: number;
-  no_idea: number;
-}
 
 interface SessionMeta {
   knowledgeTitle?: string;
@@ -114,7 +114,7 @@ const T = {
   shortcutHint: '快捷键：空格 显示答案 · 1 做对 · 2 做错 · 3 没思路 · N 下一题'
 };
 
-const emptyStats: SessionStats = { correct: 0, wrong: 0, no_idea: 0 };
+const emptyStats: ReviewSessionStats = { correct: 0, wrong: 0, no_idea: 0 };
 
 function resultText(result: ReviewResultV2) {
   if (result === 'correct') return T.correctButton;
@@ -126,12 +126,6 @@ function resultTone(result: ReviewResultV2) {
   if (result === 'correct') return 'success';
   if (result === 'wrong') return 'warning';
   return 'danger';
-}
-
-function accuracy(stats: SessionStats) {
-  const total = stats.correct + stats.wrong + stats.no_idea;
-  if (!total) return 0;
-  return Math.round((stats.correct / total) * 100);
 }
 
 function pickRandom(questions: Question[], count = 12) {
@@ -148,10 +142,6 @@ function masteryTone(value: number | null) {
   if (value <= 60) return 'warning';
   if (value <= 80) return 'primary';
   return 'success';
-}
-
-function knowledgeSearchText(point: KnowledgePointReviewStats) {
-  return [point.title, point.category, ...point.tags, ...point.commonQuestionTypes].join(' ').toLowerCase();
 }
 
 function ModeCard({ title, description, count, icon, tone, actionText, onStart, disabled }: { title: string; description: string; count?: number; icon: ReactNode; tone: 'primary' | 'warning' | 'success' | 'muted'; actionText: string; onStart: () => void; disabled?: boolean; }) {
@@ -192,13 +182,13 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   const [currentIndex, setCurrentIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [feedback, setFeedback] = useState<SubmitFeedback | null>(null);
-  const [undoData, setUndoData] = useState<{ questionId: number; previousMastery: string | null } | null>(null);
+  const [undoData, setUndoData] = useState<{ questionId: number; reviewLogId: number; result: ReviewResultV2 } | null>(null);
   const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const submitRef = useRef(submit);
   submitRef.current = submit;
   const nextQuestionRef = useRef(nextQuestion);
   nextQuestionRef.current = nextQuestion;
-  const [stats, setStats] = useState<SessionStats>(emptyStats);
+  const [stats, setStats] = useState<ReviewSessionStats>(emptyStats);
   const [finished, setFinished] = useState(false);
 
   const current = sessionQuestions[currentIndex] ?? null;
@@ -227,12 +217,10 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
   }, [knowledgeNodeId, includeChildren, onKnowledgeTargetConsumed]);
 
   const filteredKnowledgeStats = useMemo(() => {
-    const keyword = knowledgeSearch.trim().toLowerCase();
-    return knowledgeStats.filter((point) => {
-      if (keyword && !knowledgeSearchText(point).includes(keyword)) return false;
-      if (onlyDueKnowledge && point.due_questions <= 0) return false;
-      if (onlyWeakKnowledge && point.weak_questions <= 0) return false;
-      return point.total_questions > 0;
+    return filterKnowledgeReviewStats(knowledgeStats, {
+      search: knowledgeSearch,
+      onlyDue: onlyDueKnowledge,
+      onlyWeak: onlyWeakKnowledge
     });
   }, [knowledgeStats, knowledgeSearch, onlyDueKnowledge, onlyWeakKnowledge]);
 
@@ -286,13 +274,10 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
 
   async function submit(result: ReviewResultV2) {
     if (!current) return;
-    setUndoData({
-      questionId: current.id,
-      previousMastery: current.mastery_level
-    });
 
     try {
       const response = await window.api.submitReviewResult({ questionId: current.id, result });
+      setUndoData({ questionId: current.id, reviewLogId: response.log.id, result });
       setFeedback({
         result,
         message: response.message || resultText(result),
@@ -316,6 +301,28 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
       undoTimerRef.current = setTimeout(() => setUndoData(null), 5000);
     } catch (error) {
       setUndoData(null);
+      toast(error instanceof Error ? error.message : String(error), 'error');
+    }
+  }
+
+  async function undoLastReview() {
+    if (!undoData) return;
+    try {
+      const undone = await window.api.undoReviewResult(undoData.questionId, undoData.reviewLogId);
+      setSessionQuestions((items) => items.map((item) => (item.id === undoData.questionId ? undone.question : item)));
+      setStats((value) => decrementReviewSessionStats(value, undoData.result));
+      setUndoData(null);
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      setFeedback(null);
+      await load();
+      if (activeKnowledge) {
+        const refreshed = await window.api.getKnowledgePointReviewStats(activeKnowledge.node_id, includeChildren);
+        if (refreshed) setActiveKnowledge(refreshed);
+      }
+      try {
+        await window.api.syncReviewToTickTick('question', String(undoData.questionId));
+      } catch {}
+    } catch (error) {
       toast(error instanceof Error ? error.message : String(error), 'error');
     }
   }
@@ -402,7 +409,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
             <span>{T.correct}<strong>{stats.correct}</strong></span>
             <span>{T.wrong}<strong>{stats.wrong}</strong></span>
             <span>{T.noIdea}<strong>{stats.no_idea}</strong></span>
-            <span>{T.accuracy}<strong>{accuracy(stats)}%</strong></span>
+            <span>{T.accuracy}<strong>{reviewSessionAccuracy(stats)}%</strong></span>
           </div>
           <button className="primary-button" type="button" onClick={backToCenter}>{T.backCenter}</button>
         </section>
@@ -479,20 +486,7 @@ export function ReviewPage({ onOpenQuestion, knowledgeNodeId, onKnowledgeTargetC
                       <button
                         className="secondary-button compact-button"
                         type="button"
-                        onClick={async () => {
-                          if (!undoData) return;
-                          await window.api.markMastery(undoData.questionId, (undoData.previousMastery as '未掌握' | '较弱' | '一般' | '较好' | '已掌握') || '未掌握');
-                          setUndoData(null);
-                          if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-                          setFeedback(null);
-                          setStats((value) => {
-                            const next = { ...value };
-                            if (feedback.result === 'correct') next.correct -= 1;
-                            else if (feedback.result === 'wrong') next.wrong -= 1;
-                            else next.no_idea -= 1;
-                            return next;
-                          });
-                        }}
+                        onClick={undoLastReview}
                       >
                         撤销 (5秒内)
                       </button>

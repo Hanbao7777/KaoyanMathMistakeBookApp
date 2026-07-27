@@ -1,9 +1,13 @@
-import type { Database } from 'sql.js';
+import { randomUUID } from 'node:crypto';
+import type { Database, SqlValue } from 'sql.js';
+import type { ReadOnlyDatabaseFacade } from '../application/queryBus';
+import type { DatabaseMutationResult } from '../persistence';
 import {
   allSql,
-  getDatabase,
+  getDatabaseCoordinator,
+  getQuestionsApplication,
+  getReadOnlyDatabase,
   oneSql,
-  persistDatabase,
   runSql
 } from './databaseService';
 import type {
@@ -34,6 +38,48 @@ const DEFAULT_SUBJECTS = [
   { id: 'politics', name: '政治', sort_order: 3 },
   { id: 'english', name: '英语', sort_order: 4 }
 ];
+
+type StudyReadDatabase = Database | ReadOnlyDatabaseFacade;
+
+function readAll<T>(database: StudyReadDatabase, sql: string, params: readonly SqlValue[] = []): T[] {
+  if ('kind' in database) return [...database.select(sql, params)] as T[];
+  return allSql<T>(database, sql, [...params]);
+}
+
+function readOne<T>(database: StudyReadDatabase, sql: string, params: readonly SqlValue[] = []): T | null {
+  if ('kind' in database) return (database.select(sql, params)[0] as T | undefined) ?? null;
+  return oneSql<T>(database, sql, [...params]);
+}
+
+function runMutation(database: Database, sql: string, params: readonly SqlValue[] = []): boolean {
+  runSql(database, sql, [...params]);
+  return database.getRowsModified() > 0;
+}
+
+async function executeLegacyMutation<T>(
+  operation: string,
+  execute: (database: Database) => DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>
+): Promise<T> {
+  const coordinator = await getDatabaseCoordinator();
+  const application = await getQuestionsApplication();
+  const requestId = randomUUID();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation } }],
+    { requestId, traceId: randomUUID(), source: 'internal' }
+  );
+  const result = await coordinator.executeWrite({
+    requestId,
+    concurrency: 'none',
+    execute
+  });
+  if (result.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: result.versionBefore,
+      versionAfter: result.versionAfter
+    }));
+  }
+  return result.value;
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -159,68 +205,69 @@ function hydrateTask(row: StudyTask): StudyTask {
 
 function ensureColumn(database: Database, table: string, name: string, sql: string) {
   const columns = allSql<{ name: string }>(database, `PRAGMA table_info(${table})`).map((column) => column.name);
-  if (!columns.includes(name)) database.run(`ALTER TABLE ${table} ADD COLUMN ${name} ${sql}`);
+  if (columns.includes(name)) return false;
+  database.run(`ALTER TABLE ${table} ADD COLUMN ${name} ${sql}`);
+  return true;
 }
 
-async function ensureStudyBase() {
-  const database = await getDatabase();
-  ensureColumn(database, 'study_settings', 'auto_rollover_enabled', 'INTEGER DEFAULT 1');
-  ensureColumn(database, 'study_settings', 'last_rollover_date', 'TEXT');
-  ensureColumn(database, 'study_materials', 'is_deleted', 'INTEGER DEFAULT 0');
+export async function initializeStudySupervisor() {
+  return executeLegacyMutation('study-initialize', (database) => {
+    let changed = ensureColumn(database, 'study_settings', 'auto_rollover_enabled', 'INTEGER DEFAULT 1');
+    changed = ensureColumn(database, 'study_settings', 'last_rollover_date', 'TEXT') || changed;
+    changed = ensureColumn(database, 'study_materials', 'is_deleted', 'INTEGER DEFAULT 0') || changed;
 
-  const timestamp = nowIso();
-  runSql(
-    database,
-    `INSERT OR IGNORE INTO study_settings (
-      id, exam_date, daily_target_minutes, supervision_mode, auto_rollover_enabled, last_rollover_date, created_at, updated_at
-    ) VALUES (1, NULL, 240, 'strict', 1, NULL, ?, ?)`,
-    [timestamp, timestamp]
-  );
-
-  for (const subject of DEFAULT_SUBJECTS) {
-    runSql(
+    const timestamp = nowIso();
+    changed = runMutation(
       database,
-      `INSERT OR IGNORE INTO study_subjects (id, name, sort_order, is_active, created_at, updated_at)
-       VALUES (?, ?, ?, 1, ?, ?)`,
-      [subject.id, subject.name, subject.sort_order, timestamp, timestamp]
-    );
-  }
-  persistDatabase();
-  return database;
+      `INSERT OR IGNORE INTO study_settings (
+        id, exam_date, daily_target_minutes, supervision_mode, auto_rollover_enabled, last_rollover_date, created_at, updated_at
+      ) VALUES (1, NULL, 240, 'strict', 1, NULL, ?, ?)`,
+      [timestamp, timestamp]
+    ) || changed;
+
+    for (const subject of DEFAULT_SUBJECTS) {
+      changed = runMutation(
+        database,
+        `INSERT OR IGNORE INTO study_subjects (id, name, sort_order, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, 1, ?, ?)`,
+        [subject.id, subject.name, subject.sort_order, timestamp, timestamp]
+      ) || changed;
+    }
+    return { changed, value: undefined };
+  });
 }
 
-async function getSettingsRow() {
-  const database = await ensureStudyBase();
-  return oneSql<StudySettings>(database, 'SELECT * FROM study_settings WHERE id = 1')!;
+function getSettingsRow(database: StudyReadDatabase) {
+  return readOne<StudySettings>(database, 'SELECT * FROM study_settings WHERE id = 1');
 }
 
 export async function getStudySettings() {
-  return getSettingsRow();
+  return getSettingsRow(await getReadOnlyDatabase());
 }
 
 export async function updateStudySettings(input: Partial<StudySettings>) {
-  const database = await ensureStudyBase();
-  runSql(
-    database,
-    `UPDATE study_settings SET
-      exam_date = ?, daily_target_minutes = ?, supervision_mode = ?,
-      auto_rollover_enabled = ?, updated_at = ?
-     WHERE id = 1`,
-    [
-      input.exam_date || null,
-      Number(input.daily_target_minutes || 240),
-      input.supervision_mode || 'strict',
-      input.auto_rollover_enabled === 0 ? 0 : 1,
-      nowIso()
-    ]
-  );
-  persistDatabase();
-  return getStudySettings();
+  return executeLegacyMutation('study-settings-update', (database) => {
+    const changed = runMutation(
+      database,
+      `UPDATE study_settings SET
+        exam_date = ?, daily_target_minutes = ?, supervision_mode = ?,
+        auto_rollover_enabled = ?, updated_at = ?
+       WHERE id = 1`,
+      [
+        input.exam_date || null,
+        Number(input.daily_target_minutes || 240),
+        input.supervision_mode || 'strict',
+        input.auto_rollover_enabled === 0 ? 0 : 1,
+        nowIso()
+      ]
+    );
+    return { changed, value: getSettingsRow(database) };
+  });
 }
 
 export async function listStudySubjects() {
-  const database = await ensureStudyBase();
-  return allSql<StudySubject>(
+  const database = await getReadOnlyDatabase();
+  return readAll<StudySubject>(
     database,
     'SELECT * FROM study_subjects WHERE is_active = 1 ORDER BY sort_order ASC, name ASC'
   );
@@ -235,9 +282,13 @@ function materialSelectSql(whereSql = '') {
 }
 
 export async function listStudyMaterials(filters: StudyMaterialFilters = {}) {
-  const database = await ensureStudyBase();
+  const database = await getReadOnlyDatabase();
+  return listStudyMaterialsFrom(database, filters);
+}
+
+function listStudyMaterialsFrom(database: StudyReadDatabase, filters: StudyMaterialFilters = {}) {
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SqlValue[] = [];
   if (filters.subjectId && filters.subjectId !== 'all') {
     where.push('m.subject_id = ?');
     params.push(filters.subjectId);
@@ -251,7 +302,7 @@ export async function listStudyMaterials(filters: StudyMaterialFilters = {}) {
     params.push(`%${filters.search.trim()}%`, `%${filters.search.trim()}%`);
   }
 
-  const rows = allSql<StudyMaterial>(database, materialSelectSql(where.length ? `AND ${where.join(' AND ')}` : ''), params)
+  const rows = readAll<StudyMaterial>(database, materialSelectSql(where.length ? `AND ${where.join(' AND ')}` : ''), params)
     .map((row) => materialRisk(row));
 
   if (!filters.risk || filters.risk === 'all') return rows;
@@ -260,84 +311,85 @@ export async function listStudyMaterials(filters: StudyMaterialFilters = {}) {
 }
 
 export async function createStudyMaterial(input: StudyMaterialInput) {
-  const database = await ensureStudyBase();
-  const timestamp = nowIso();
-  const materialId = id('material');
-  runSql(
-    database,
-    `INSERT INTO study_materials (
-      id, subject_id, name, material_type, progress_unit, custom_unit_name,
-      total_amount, current_amount, start_date, target_date, priority, status,
-      note, is_deleted, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-    [
-      materialId,
-      input.subject_id,
-      input.name.trim(),
-      input.material_type || '其他',
-      input.progress_unit || '自定义',
-      input.custom_unit_name || null,
-      Number(input.total_amount || 0),
-      Number(input.current_amount || 0),
-      input.start_date || null,
-      input.target_date || null,
-      input.priority || '中',
-      input.status || '进行中',
-      input.note || '',
-      timestamp,
-      timestamp
-    ]
-  );
-  persistDatabase();
-  return (await listStudyMaterials({})).find((item) => item.id === materialId)!;
+  return executeLegacyMutation('study-material-create', (database) => {
+    const timestamp = nowIso();
+    const materialId = id('material');
+    const changed = runMutation(
+      database,
+      `INSERT INTO study_materials (
+        id, subject_id, name, material_type, progress_unit, custom_unit_name,
+        total_amount, current_amount, start_date, target_date, priority, status,
+        note, is_deleted, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      [
+        materialId,
+        input.subject_id,
+        input.name.trim(),
+        input.material_type || '其他',
+        input.progress_unit || '自定义',
+        input.custom_unit_name || null,
+        Number(input.total_amount || 0),
+        Number(input.current_amount || 0),
+        input.start_date || null,
+        input.target_date || null,
+        input.priority || '中',
+        input.status || '进行中',
+        input.note || '',
+        timestamp,
+        timestamp
+      ]
+    );
+    const value = listStudyMaterialsFrom(database).find((item) => item.id === materialId)!;
+    return { changed, value };
+  });
 }
 
 export async function updateStudyMaterial(materialId: string, input: StudyMaterialInput) {
-  const database = await ensureStudyBase();
-  runSql(
-    database,
-    `UPDATE study_materials SET
-      subject_id = ?, name = ?, material_type = ?, progress_unit = ?, custom_unit_name = ?,
-      total_amount = ?, current_amount = ?, start_date = ?, target_date = ?,
-      priority = ?, status = ?, note = ?, updated_at = ?
-     WHERE id = ?`,
-    [
-      input.subject_id,
-      input.name.trim(),
-      input.material_type || '其他',
-      input.progress_unit || '自定义',
-      input.custom_unit_name || null,
-      Number(input.total_amount || 0),
-      Number(input.current_amount || 0),
-      input.start_date || null,
-      input.target_date || null,
-      input.priority || '中',
-      input.status || '进行中',
-      input.note || '',
-      nowIso(),
-      materialId
-    ]
-  );
-  persistDatabase();
-  return (await listStudyMaterials({})).find((item) => item.id === materialId) ?? null;
+  return executeLegacyMutation('study-material-update', (database) => {
+    const changed = runMutation(
+      database,
+      `UPDATE study_materials SET
+        subject_id = ?, name = ?, material_type = ?, progress_unit = ?, custom_unit_name = ?,
+        total_amount = ?, current_amount = ?, start_date = ?, target_date = ?,
+        priority = ?, status = ?, note = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        input.subject_id,
+        input.name.trim(),
+        input.material_type || '其他',
+        input.progress_unit || '自定义',
+        input.custom_unit_name || null,
+        Number(input.total_amount || 0),
+        Number(input.current_amount || 0),
+        input.start_date || null,
+        input.target_date || null,
+        input.priority || '中',
+        input.status || '进行中',
+        input.note || '',
+        nowIso(),
+        materialId
+      ]
+    );
+    return { changed, value: listStudyMaterialsFrom(database).find((item) => item.id === materialId) ?? null };
+  });
 }
 
 export async function deleteStudyMaterial(materialId: string) {
-  const database = await ensureStudyBase();
-  runSql(database, 'UPDATE study_materials SET is_deleted = 1, updated_at = ? WHERE id = ?', [nowIso(), materialId]);
-  persistDatabase();
-  return true;
+  return executeLegacyMutation('study-material-delete', (database) => ({
+    changed: runMutation(database, 'UPDATE study_materials SET is_deleted = 1, updated_at = ? WHERE id = ? AND COALESCE(is_deleted, 0) = 0', [nowIso(), materialId]),
+    value: true
+  }));
 }
 
 export async function updateStudyMaterialProgress(materialId: string, currentAmount: number) {
-  const database = await ensureStudyBase();
-  runSql(database, 'UPDATE study_materials SET current_amount = ?, updated_at = ? WHERE id = ?', [
-    Number(currentAmount || 0),
-    nowIso(),
-    materialId
-  ]);
-  persistDatabase();
-  return (await listStudyMaterials({})).find((item) => item.id === materialId) ?? null;
+  return executeLegacyMutation('study-material-progress', (database) => {
+    const changed = runMutation(database, 'UPDATE study_materials SET current_amount = ?, updated_at = ? WHERE id = ?', [
+      Number(currentAmount || 0),
+      nowIso(),
+      materialId
+    ]);
+    return { changed, value: listStudyMaterialsFrom(database).find((item) => item.id === materialId) ?? null };
+  });
 }
 
 function taskSelectSql(whereSql = '') {
@@ -352,9 +404,13 @@ function taskSelectSql(whereSql = '') {
 }
 
 export async function listStudyTasks(filters: StudyTaskFilters = {}) {
-  const database = await ensureStudyBase();
+  const database = await getReadOnlyDatabase();
+  return listStudyTasksFrom(database, filters);
+}
+
+function listStudyTasksFrom(database: StudyReadDatabase, filters: StudyTaskFilters = {}) {
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SqlValue[] = [];
   if (filters.date) {
     where.push(filters.includeBeforeDate ? 't.task_date <= ?' : 't.task_date = ?');
     params.push(filters.date);
@@ -367,7 +423,7 @@ export async function listStudyTasks(filters: StudyTaskFilters = {}) {
     where.push('t.status = ?');
     params.push(filters.status);
   }
-  return allSql<StudyTask>(database, taskSelectSql(where.length ? `WHERE ${where.join(' AND ')}` : ''), params)
+  return readAll<StudyTask>(database, taskSelectSql(where.length ? `WHERE ${where.join(' AND ')}` : ''), params)
     .map(hydrateTask);
 }
 
@@ -379,147 +435,150 @@ function assertTaskInput(input: StudyTaskInput) {
 
 export async function createStudyTask(input: StudyTaskInput) {
   assertTaskInput(input);
-  const database = await ensureStudyBase();
-  const timestamp = nowIso();
-  const taskId = id('task');
-  runSql(
-    database,
-    `INSERT INTO study_tasks (
-      id, task_date, subject_id, material_id, title, task_type, estimated_minutes,
-      actual_minutes, priority, status, completion_quality, defer_count, original_date,
-      skipped_reason, note, created_at, updated_at, completed_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`,
-    [
-      taskId,
-      input.task_date || localDate(),
-      input.subject_id,
-      input.material_id || null,
-      input.title.trim(),
-      input.task_type || '其他',
-      Number(input.estimated_minutes || 0),
-      Number(input.actual_minutes || 0),
-      input.priority || '中',
-      input.status || '未开始',
-      input.completion_quality || null,
-      input.skipped_reason || null,
-      input.note || '',
-      timestamp,
-      timestamp,
-      input.status === '已完成' ? timestamp : null
-    ]
-  );
-  persistDatabase();
-  return (await listStudyTasks({})).find((item) => item.id === taskId)!;
+  return executeLegacyMutation('study-task-create', (database) => {
+    const timestamp = nowIso();
+    const taskId = id('task');
+    const changed = runMutation(
+      database,
+      `INSERT INTO study_tasks (
+        id, task_date, subject_id, material_id, title, task_type, estimated_minutes,
+        actual_minutes, priority, status, completion_quality, defer_count, original_date,
+        skipped_reason, note, created_at, updated_at, completed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?)`,
+      [
+        taskId,
+        input.task_date || localDate(),
+        input.subject_id,
+        input.material_id || null,
+        input.title.trim(),
+        input.task_type || '其他',
+        Number(input.estimated_minutes || 0),
+        Number(input.actual_minutes || 0),
+        input.priority || '中',
+        input.status || '未开始',
+        input.completion_quality || null,
+        input.skipped_reason || null,
+        input.note || '',
+        timestamp,
+        timestamp,
+        input.status === '已完成' ? timestamp : null
+      ]
+    );
+    return { changed, value: listStudyTasksFrom(database).find((item) => item.id === taskId)! };
+  });
 }
 
 export async function updateStudyTask(taskId: string, input: StudyTaskInput) {
   assertTaskInput(input);
-  const database = await ensureStudyBase();
-  const completedAt = input.status === '已完成' ? nowIso() : null;
-  runSql(
-    database,
-    `UPDATE study_tasks SET
-      task_date = ?, subject_id = ?, material_id = ?, title = ?, task_type = ?,
-      estimated_minutes = ?, actual_minutes = ?, priority = ?, status = ?,
-      completion_quality = ?, skipped_reason = ?, note = ?, updated_at = ?,
-      completed_at = ?
-     WHERE id = ?`,
-    [
-      input.task_date || localDate(),
-      input.subject_id,
-      input.material_id || null,
-      input.title.trim(),
-      input.task_type || '其他',
-      Number(input.estimated_minutes || 0),
-      Number(input.actual_minutes || 0),
-      input.priority || '中',
-      input.status || '未开始',
-      input.completion_quality || null,
-      input.skipped_reason || null,
-      input.note || '',
-      nowIso(),
-      completedAt,
-      taskId
-    ]
-  );
-  persistDatabase();
-  return (await listStudyTasks({})).find((item) => item.id === taskId) ?? null;
+  return executeLegacyMutation('study-task-update', (database) => {
+    const completedAt = input.status === '已完成' ? nowIso() : null;
+    const changed = runMutation(
+      database,
+      `UPDATE study_tasks SET
+        task_date = ?, subject_id = ?, material_id = ?, title = ?, task_type = ?,
+        estimated_minutes = ?, actual_minutes = ?, priority = ?, status = ?,
+        completion_quality = ?, skipped_reason = ?, note = ?, updated_at = ?,
+        completed_at = ?
+       WHERE id = ?`,
+      [
+        input.task_date || localDate(),
+        input.subject_id,
+        input.material_id || null,
+        input.title.trim(),
+        input.task_type || '其他',
+        Number(input.estimated_minutes || 0),
+        Number(input.actual_minutes || 0),
+        input.priority || '中',
+        input.status || '未开始',
+        input.completion_quality || null,
+        input.skipped_reason || null,
+        input.note || '',
+        nowIso(),
+        completedAt,
+        taskId
+      ]
+    );
+    return { changed, value: listStudyTasksFrom(database).find((item) => item.id === taskId) ?? null };
+  });
 }
 
 export async function deleteStudyTask(taskId: string) {
-  const database = await ensureStudyBase();
-  runSql(database, 'DELETE FROM study_tasks WHERE id = ?', [taskId]);
-  persistDatabase();
-  return true;
+  return executeLegacyMutation('study-task-delete', (database) => ({
+    changed: runMutation(database, 'DELETE FROM study_tasks WHERE id = ?', [taskId]),
+    value: true
+  }));
 }
 
 export async function completeStudyTask(taskId: string, input: { actual_minutes?: number; completion_quality?: StudyQuality; note?: string } = {}) {
-  const database = await ensureStudyBase();
-  const current = oneSql<StudyTask>(database, 'SELECT * FROM study_tasks WHERE id = ?', [taskId]);
-  if (!current) return null;
-  runSql(
-    database,
-    `UPDATE study_tasks SET status = '已完成', actual_minutes = ?, completion_quality = ?,
-      note = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
-    [
-      Number(input.actual_minutes ?? current.actual_minutes ?? 0),
-      input.completion_quality || current.completion_quality || null,
-      input.note ?? current.note ?? '',
-      nowIso(),
-      nowIso(),
-      taskId
-    ]
-  );
-  persistDatabase();
-  return (await listStudyTasks({})).find((item) => item.id === taskId) ?? null;
+  return executeLegacyMutation('study-task-complete', (database) => {
+    const current = readOne<StudyTask>(database, 'SELECT * FROM study_tasks WHERE id = ?', [taskId]);
+    if (!current) return { changed: false, value: null };
+    const timestamp = nowIso();
+    const changed = runMutation(
+      database,
+      `UPDATE study_tasks SET status = '已完成', actual_minutes = ?, completion_quality = ?,
+        note = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+      [
+        Number(input.actual_minutes ?? current.actual_minutes ?? 0),
+        input.completion_quality || current.completion_quality || null,
+        input.note ?? current.note ?? '',
+        timestamp,
+        timestamp,
+        taskId
+      ]
+    );
+    return { changed, value: listStudyTasksFrom(database).find((item) => item.id === taskId) ?? null };
+  });
 }
 
 export async function skipStudyTask(taskId: string, reason: string) {
   if (!reason.trim()) throw new Error('强度监督模式下，跳过任务必须填写原因。');
-  const database = await ensureStudyBase();
-  runSql(
-    database,
-    `UPDATE study_tasks SET status = '已跳过', skipped_reason = ?, completed_at = ?, updated_at = ?
-     WHERE id = ?`,
-    [reason.trim(), nowIso(), nowIso(), taskId]
-  );
-  persistDatabase();
-  return (await listStudyTasks({})).find((item) => item.id === taskId) ?? null;
+  return executeLegacyMutation('study-task-skip', (database) => {
+    const timestamp = nowIso();
+    const changed = runMutation(
+      database,
+      `UPDATE study_tasks SET status = '已跳过', skipped_reason = ?, completed_at = ?, updated_at = ?
+       WHERE id = ?`,
+      [reason.trim(), timestamp, timestamp, taskId]
+    );
+    return { changed, value: listStudyTasksFrom(database).find((item) => item.id === taskId) ?? null };
+  });
 }
 
 export async function rolloverStudyTasks(force = false) {
-  const database = await ensureStudyBase();
-  const settings = await getSettingsRow();
-  const today = localDate();
-  if (!force && settings.auto_rollover_enabled !== 0 && settings.last_rollover_date === today) {
-    return { rolled: 0, skipped: true };
-  }
-  if (settings.auto_rollover_enabled === 0 && !force) {
-    return { rolled: 0, skipped: true };
-  }
+  return executeLegacyMutation('study-task-rollover', (database) => {
+    const settings = getSettingsRow(database);
+    if (!settings) return { changed: false, value: { rolled: 0, skipped: true } };
+    const today = localDate();
+    if (!force && settings.auto_rollover_enabled !== 0 && settings.last_rollover_date === today) {
+      return { changed: false, value: { rolled: 0, skipped: true } };
+    }
+    if (settings.auto_rollover_enabled === 0 && !force) {
+      return { changed: false, value: { rolled: 0, skipped: true } };
+    }
 
-  const timestamp = nowIso();
-  const placeholders = INCOMPLETE_TASK_STATUSES.map(() => '?').join(', ');
-  const tasks = allSql<StudyTask>(
-    database,
-    `SELECT * FROM study_tasks WHERE task_date < ? AND status IN (${placeholders})`,
-    [today, ...INCOMPLETE_TASK_STATUSES]
-  );
-  for (const task of tasks) {
-    runSql(
+    const timestamp = nowIso();
+    const placeholders = INCOMPLETE_TASK_STATUSES.map(() => '?').join(', ');
+    const tasks = readAll<StudyTask>(
       database,
-      `UPDATE study_tasks SET task_date = ?, defer_count = COALESCE(defer_count, 0) + 1,
-        original_date = COALESCE(original_date, ?), updated_at = ? WHERE id = ?`,
-      [today, task.task_date, timestamp, task.id]
+      `SELECT * FROM study_tasks WHERE task_date < ? AND status IN (${placeholders})`,
+      [today, ...INCOMPLETE_TASK_STATUSES]
     );
-  }
-  runSql(database, 'UPDATE study_settings SET last_rollover_date = ?, updated_at = ? WHERE id = 1', [today, timestamp]);
-  persistDatabase();
-  return { rolled: tasks.length, skipped: false };
+    let changed = false;
+    for (const task of tasks) {
+      changed = runMutation(
+        database,
+        `UPDATE study_tasks SET task_date = ?, defer_count = COALESCE(defer_count, 0) + 1,
+          original_date = COALESCE(original_date, ?), updated_at = ? WHERE id = ?`,
+        [today, task.task_date, timestamp, task.id]
+      ) || changed;
+    }
+    changed = runMutation(database, 'UPDATE study_settings SET last_rollover_date = ?, updated_at = ? WHERE id = 1', [today, timestamp]) || changed;
+    return { changed, value: { rolled: tasks.length, skipped: false } };
+  });
 }
 
 export async function listTodayStudyTasks() {
-  await rolloverStudyTasks();
   return listStudyTasks({ date: localDate() });
 }
 
@@ -534,9 +593,13 @@ function sessionSelectSql(whereSql = '') {
 }
 
 export async function listStudySessions(filters: StudySessionFilters = {}) {
-  const database = await ensureStudyBase();
+  const database = await getReadOnlyDatabase();
+  return listStudySessionsFrom(database, filters);
+}
+
+function listStudySessionsFrom(database: StudyReadDatabase, filters: StudySessionFilters = {}) {
   const where: string[] = [];
-  const params: unknown[] = [];
+  const params: SqlValue[] = [];
   if (filters.date) {
     where.push('ss.session_date = ?');
     params.push(filters.date);
@@ -553,52 +616,52 @@ export async function listStudySessions(filters: StudySessionFilters = {}) {
     where.push('ss.session_date <= ?');
     params.push(filters.to);
   }
-  return allSql<StudySession>(database, sessionSelectSql(where.length ? `WHERE ${where.join(' AND ')}` : ''), params)
+  return readAll<StudySession>(database, sessionSelectSql(where.length ? `WHERE ${where.join(' AND ')}` : ''), params)
     .map((row) => ({ ...row, note: row.note || '' }));
 }
 
 export async function createStudySession(input: StudySessionInput) {
-  const database = await ensureStudyBase();
-  const timestamp = nowIso();
-  const sessionId = id('session');
-  runSql(
-    database,
-    `INSERT INTO study_sessions (
-      id, session_date, subject_id, task_id, material_id, start_time, end_time,
-      duration_minutes, quality, note, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      sessionId,
-      input.session_date || localDate(),
-      input.subject_id,
-      input.task_id || null,
-      input.material_id || null,
-      input.start_time,
-      input.end_time || null,
-      Number(input.duration_minutes || 0),
-      input.quality || null,
-      input.note || '',
-      timestamp,
-      timestamp
-    ]
-  );
-
-  if (input.task_id) {
-    runSql(
+  return executeLegacyMutation('study-session-create', (database) => {
+    const timestamp = nowIso();
+    const sessionId = id('session');
+    let changed = runMutation(
       database,
-      'UPDATE study_tasks SET actual_minutes = COALESCE(actual_minutes, 0) + ?, updated_at = ? WHERE id = ?',
-      [Number(input.duration_minutes || 0), timestamp, input.task_id]
+      `INSERT INTO study_sessions (
+        id, session_date, subject_id, task_id, material_id, start_time, end_time,
+        duration_minutes, quality, note, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        sessionId,
+        input.session_date || localDate(),
+        input.subject_id,
+        input.task_id || null,
+        input.material_id || null,
+        input.start_time,
+        input.end_time || null,
+        Number(input.duration_minutes || 0),
+        input.quality || null,
+        input.note || '',
+        timestamp,
+        timestamp
+      ]
     );
-  }
-  persistDatabase();
-  return (await listStudySessions({})).find((item) => item.id === sessionId)!;
+
+    if (input.task_id) {
+      changed = runMutation(
+        database,
+        'UPDATE study_tasks SET actual_minutes = COALESCE(actual_minutes, 0) + ?, updated_at = ? WHERE id = ?',
+        [Number(input.duration_minutes || 0), timestamp, input.task_id]
+      ) || changed;
+    }
+    return { changed, value: listStudySessionsFrom(database).find((item) => item.id === sessionId)! };
+  });
 }
 
 export async function deleteStudySession(sessionId: string) {
-  const database = await ensureStudyBase();
-  runSql(database, 'DELETE FROM study_sessions WHERE id = ?', [sessionId]);
-  persistDatabase();
-  return true;
+  return executeLegacyMutation('study-session-delete', (database) => ({
+    changed: runMutation(database, 'DELETE FROM study_sessions WHERE id = ?', [sessionId]),
+    value: true
+  }));
 }
 
 function dailyTaskStats(database: Database, date: string) {
@@ -617,60 +680,57 @@ function dailyTaskStats(database: Database, date: string) {
 }
 
 export async function getDailyReview(date = localDate()) {
-  const database = await ensureStudyBase();
-  return oneSql<DailyReview>(database, 'SELECT * FROM daily_reviews WHERE review_date = ?', [date]);
+  return readOne<DailyReview>(await getReadOnlyDatabase(), 'SELECT * FROM daily_reviews WHERE review_date = ?', [date]);
 }
 
 export async function saveDailyReview(input: DailyReviewInput) {
-  const database = await ensureStudyBase();
-  const date = input.review_date || localDate();
-  const stats = dailyTaskStats(database, date);
-  const existing = oneSql<DailyReview>(database, 'SELECT * FROM daily_reviews WHERE review_date = ?', [date]);
-  const timestamp = nowIso();
-  if (existing) {
-    runSql(
-      database,
-      `UPDATE daily_reviews SET completion_rate = ?, total_study_minutes = ?,
-        completed_task_count = ?, total_task_count = ?, mood = ?, today_summary = ?,
-        main_problem = ?, tomorrow_priority = ?, updated_at = ? WHERE review_date = ?`,
-      [
-        stats.rate,
-        stats.minutes,
-        stats.completed,
-        stats.total,
-        input.mood || null,
-        input.today_summary || '',
-        input.main_problem || '',
-        input.tomorrow_priority || '',
-        timestamp,
-        date
-      ]
-    );
-  } else {
-    runSql(
-      database,
-      `INSERT INTO daily_reviews (
-        id, review_date, completion_rate, total_study_minutes, completed_task_count,
-        total_task_count, mood, today_summary, main_problem, tomorrow_priority, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id('review'),
-        date,
-        stats.rate,
-        stats.minutes,
-        stats.completed,
-        stats.total,
-        input.mood || null,
-        input.today_summary || '',
-        input.main_problem || '',
-        input.tomorrow_priority || '',
-        timestamp,
-        timestamp
-      ]
-    );
-  }
-  persistDatabase();
-  return getDailyReview(date);
+  return executeLegacyMutation('study-review-save', (database) => {
+    const date = input.review_date || localDate();
+    const stats = dailyTaskStats(database, date);
+    const existing = readOne<DailyReview>(database, 'SELECT * FROM daily_reviews WHERE review_date = ?', [date]);
+    const timestamp = nowIso();
+    const changed = existing
+      ? runMutation(
+        database,
+        `UPDATE daily_reviews SET completion_rate = ?, total_study_minutes = ?,
+          completed_task_count = ?, total_task_count = ?, mood = ?, today_summary = ?,
+          main_problem = ?, tomorrow_priority = ?, updated_at = ? WHERE review_date = ?`,
+        [
+          stats.rate,
+          stats.minutes,
+          stats.completed,
+          stats.total,
+          input.mood || null,
+          input.today_summary || '',
+          input.main_problem || '',
+          input.tomorrow_priority || '',
+          timestamp,
+          date
+        ]
+      )
+      : runMutation(
+        database,
+        `INSERT INTO daily_reviews (
+          id, review_date, completion_rate, total_study_minutes, completed_task_count,
+          total_task_count, mood, today_summary, main_problem, tomorrow_priority, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id('review'),
+          date,
+          stats.rate,
+          stats.minutes,
+          stats.completed,
+          stats.total,
+          input.mood || null,
+          input.today_summary || '',
+          input.main_problem || '',
+          input.tomorrow_priority || '',
+          timestamp,
+          timestamp
+        ]
+      );
+    return { changed, value: readOne<DailyReview>(database, 'SELECT * FROM daily_reviews WHERE review_date = ?', [date]) };
+  });
 }
 
 function consecutiveNoStudyDays(sessions: StudySession[], subjectId: StudySubjectId, today: string) {
@@ -687,17 +747,17 @@ function consecutiveNoStudyDays(sessions: StudySession[], subjectId: StudySubjec
 }
 
 export async function getStudySupervisorDashboard(date = localDate()): Promise<StudySupervisorDashboard> {
-  await rolloverStudyTasks();
-  const database = await ensureStudyBase();
-  const settings = await getSettingsRow();
-  const subjects = await listStudySubjects();
-  const materials = await listStudyMaterials({});
-  const tasks = await listStudyTasks({ date });
+  const database = await getReadOnlyDatabase();
+  const settings = getSettingsRow(database);
+  if (!settings) throw new Error('Study supervisor is not initialized');
+  const subjects = readAll<StudySubject>(database, 'SELECT * FROM study_subjects WHERE is_active = 1 ORDER BY sort_order ASC, name ASC');
+  const materials = listStudyMaterialsFrom(database);
+  const tasks = listStudyTasksFrom(database, { date });
   const weekStart = new Date(`${date}T00:00:00`);
   const day = weekStart.getDay() || 7;
   weekStart.setDate(weekStart.getDate() - day + 1);
   const weekStartText = localDate(weekStart);
-  const sessions = await listStudySessions({ from: weekStartText, to: date });
+  const sessions = listStudySessionsFrom(database, { from: weekStartText, to: date });
   const todaySessions = sessions.filter((session) => session.session_date === date);
 
   const todayStudyMinutes = todaySessions.reduce((sum, session) => sum + Number(session.duration_minutes || 0), 0);
@@ -741,7 +801,7 @@ export async function getStudySupervisorDashboard(date = localDate()): Promise<S
   if (delayedTasks.some((task) => task.defer_count >= 5)) supervisionStatus = 'critical';
   if (todayTaskTotal > 0 && todayCompletionRate < 50 && new Date().getHours() >= 20) supervisionStatus = 'danger';
 
-  const dueReviewCount = oneSql<{ count: number }>(
+  const dueReviewCount = readOne<{ count: number }>(
     database,
     `SELECT COUNT(*) AS count FROM questions
      WHERE (next_review_at IS NOT NULL AND next_review_at != '' AND substr(next_review_at, 1, 10) <= ?)

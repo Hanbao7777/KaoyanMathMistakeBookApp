@@ -10,11 +10,15 @@
     "dev:main": "tsc -p tsconfig.main.json --watch",
     "dev:electron": "wait-on tcp:5173 file:dist/main/main/main.js file:dist/main/preload/preload.js && electron .",
     "build": "tsc -p tsconfig.main.json && vite build --configLoader native",
-    "test": "npm run build:main && node --test tests/**/*.test.cjs",
+    "test": "npm run build && npm run build:launcher && npm run build:launcher:test-fixture && node --test tests/**/*.test.cjs",
     "test:main": "npm run build:main && node --test tests/main/**/*.test.cjs",
     "build:main": "tsc -p tsconfig.main.json",
+    "build:launcher:js": "tsc -p tsconfig.launcher.json",
+    "build:launcher": "npm run build:launcher:js && pkg --target node22-win-x64 --output dist/mcp-stdio/kaoyan-mcp.exe dist/launcher-build/packages/kaoyan-mcp-stdio/src/launcher.cjs && node scripts/build-mcp-launcher-manifest.cjs",
+    "build:launcher:test-fixture": "pkg --target node22-win-x64 --output dist/mcp-stdio/kaoyan-fake-app.exe tests/mcp/launcher/fakeApp.cjs",
+    "test:launcher:real": "npm run build:main && npm run build:launcher && npm run build:launcher:test-fixture && node --test tests/mcp/launcher/realProcess.test.cjs",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.main.json --noEmit",
-    "pack:win": "npm run build && electron-builder --win portable --x64"
+    "pack:win": "npm run build && npm run build:launcher && electron-builder --win portable --x64 && node scripts/verify-phase-c-package.cjs"
   },
   "build": {
     "appId": "com.local.kaoyan.math.mistakebook",
@@ -24,6 +28,8 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/mcp-stdio/**/*",
+      "!dist/launcher-build/**/*",
       "package.json",
       "node_modules/**/*"
     ],
@@ -35,6 +41,14 @@
       {
         "from": "resources/knowledge_map_seed.zip",
         "to": "knowledge_map_seed.zip"
+      },
+      {
+        "from": "dist/mcp-stdio/kaoyan-mcp.exe",
+        "to": "mcp-stdio/kaoyan-mcp.exe"
+      },
+      {
+        "from": "dist/mcp-stdio/launcher-manifest.json",
+        "to": "mcp-stdio/launcher-manifest.json"
       }
     ],
     "asarUnpack": [
@@ -53,6 +67,7 @@
     }
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@vitejs/plugin-react": "^5.0.4",
     "@xyflow/react": "^12.10.2",
     "adm-zip": "^0.5.16",
@@ -65,11 +80,13 @@
     "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "@types/adm-zip": "^0.5.7",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/sql.js": "^1.4.9",
+    "@yao-pkg/pkg": "6.21.0",
     "concurrently": "^9.1.0",
     "electron": "^38.4.0",
     "electron-builder": "^26.0.12",

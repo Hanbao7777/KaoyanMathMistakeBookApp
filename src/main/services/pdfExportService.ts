@@ -217,13 +217,17 @@ async function waitForReady(win: BrowserWindow) {
 }
 
 export async function exportQuestionsToPdf(options: PdfExportOptions): Promise<PdfExportResult> {
+  const paths = getPaths();
+  const safeTitle = options.scope === 'knowledgePoint' && options.title ? `_${sanitizeFileName(options.title)}` : '';
+  return exportQuestionsToPdfAt(options, path.join(paths.exports, `mistakes${safeTitle}_export_${timestamp()}.pdf`));
+}
+
+/** Internal C13 seam: materialization owns its App-managed staging path. */
+export async function exportQuestionsToPdfAt(options: PdfExportOptions, filePath: string): Promise<PdfExportResult> {
   const questions = await resolveQuestions(options);
   if (!questions.length) throw new Error('当前没有可导出的错题');
-  const paths = getPaths();
-  fs.mkdirSync(paths.exports, { recursive: true });
-  const safeTitle = options.scope === 'knowledgePoint' && options.title ? `_${sanitizeFileName(options.title)}` : '';
-  const fileName = `mistakes${safeTitle}_export_${timestamp()}.pdf`;
-  const filePath = path.join(paths.exports, fileName);
+  const normalized = path.normalize(filePath);
+  fs.mkdirSync(path.dirname(normalized), { recursive: true });
   const html = buildHtml(questions, options);
   const win = new BrowserWindow({ show: false, width: 900, height: 1200, webPreferences: { offscreen: true } });
   try {
@@ -234,8 +238,8 @@ export async function exportQuestionsToPdf(options: PdfExportOptions): Promise<P
       pageSize: 'A4',
       margins: { marginType: 'custom', top: 0.55, bottom: 0.55, left: 0.45, right: 0.45 }
     });
-    fs.writeFileSync(filePath, pdf);
-    return { fileName, filePath, count: questions.length, mode: options.mode, scope: options.scope };
+    fs.writeFileSync(normalized, pdf);
+    return { fileName: path.basename(normalized), filePath: normalized, count: questions.length, mode: options.mode, scope: options.scope };
   } finally {
     win.destroy();
   }

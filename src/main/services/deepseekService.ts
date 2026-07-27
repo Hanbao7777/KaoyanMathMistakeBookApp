@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
+import type { Database } from 'sql.js';
 import type { AiDiagnosisResult, AiStructuredQuestion, DeepSeekSettings } from '../../shared/types';
-import { getDatabase } from './databaseService';
+import type { DatabaseMutationResult } from '../persistence';
+import { getDatabaseCoordinator, getQuestionsApplication, getReadOnlyDatabase } from './databaseService';
 
 const DEFAULT_SETTINGS: DeepSeekSettings = {
   apiKey: '',
@@ -7,12 +10,37 @@ const DEFAULT_SETTINGS: DeepSeekSettings = {
   baseUrl: 'https://api.deepseek.com/v1'
 };
 
+async function executeLegacyMutation<T>(
+  operation: string,
+  execute: (database: Database) => DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>
+): Promise<T> {
+  const coordinator = await getDatabaseCoordinator();
+  const application = await getQuestionsApplication();
+  const requestId = randomUUID();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation } }],
+    { requestId, traceId: randomUUID(), source: 'internal' }
+  );
+  const result = await coordinator.executeWrite({
+    requestId,
+    concurrency: 'none',
+    execute
+  });
+  if (result.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: result.versionBefore,
+      versionAfter: result.versionAfter
+    }));
+  }
+  return result.value;
+}
+
 export async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
-  const db = await getDatabase();
+  const database = await getReadOnlyDatabase();
   try {
-    const row = db.exec("SELECT value FROM app_settings WHERE key = 'deepseek'");
-    if (row.length && row[0].values.length) {
-      const parsed = JSON.parse(row[0].values[0][0] as string);
+    const row = database.select<{ value: string }>("SELECT value FROM app_settings WHERE key = 'deepseek'")[0];
+    if (row) {
+      const parsed = JSON.parse(row.value);
       return { ...DEFAULT_SETTINGS, ...parsed };
     }
   } catch { /* not yet configured */ }
@@ -20,17 +48,25 @@ export async function getDeepSeekSettings(): Promise<DeepSeekSettings> {
 }
 
 export async function saveDeepSeekSettings(settings: DeepSeekSettings): Promise<DeepSeekSettings> {
-  const db = await getDatabase();
-  db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   const jsonValue = JSON.stringify(settings);
-  const stmt = db.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)");
-  try {
-    stmt.bind(['deepseek', jsonValue]);
-    stmt.step();
-  } finally {
-    stmt.free();
-  }
-  return settings;
+  return executeLegacyMutation('deepseek-settings-save', (database) => {
+    const tableExists = database.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'").length > 0;
+    if (!tableExists) {
+      database.run('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    } else {
+      const current = database.exec("SELECT value FROM app_settings WHERE key = 'deepseek'");
+      if (current[0]?.values[0]?.[0] === jsonValue) return { changed: false, value: settings };
+    }
+
+    const statement = database.prepare('INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)');
+    try {
+      statement.bind(['deepseek', jsonValue]);
+      statement.step();
+    } finally {
+      statement.free();
+    }
+    return { changed: true, value: settings };
+  });
 }
 
 async function callDeepSeek(systemPrompt: string, userMessage: string, maxTokens = 4096): Promise<string> {

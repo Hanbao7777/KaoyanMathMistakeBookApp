@@ -1,6 +1,7 @@
 import { AlertTriangle, BarChart3, BookOpen, CheckCircle2, Target, TrendingUp } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData, KnowledgePointReviewStats, Question, QuestionFilters, StatsData } from '../../shared/types';
+import { isDue, isWeak } from '../../shared/questionFilters';
 import { useToast } from '../components/Toast';
 
 interface StatsPageProps {
@@ -20,22 +21,6 @@ function percent(count: number, total: number) {
 
 function formatRate(value: number | null | undefined) {
   return value === null || value === undefined ? '暂无' : `${value}%`;
-}
-
-function dateOnly(value: Date) {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function isDue(question: Question) {
-  const today = dateOnly(new Date());
-  return !question.next_review_at || question.next_review_at.slice(0, 10) <= today;
-}
-
-function isWeak(question: Question) {
-  return question.mastery_level === '未掌握' || question.mastery_level === '较弱' || question.wrong_count > question.correct_count || question.no_idea_count > 0;
 }
 
 function masteryTone(level: string) {

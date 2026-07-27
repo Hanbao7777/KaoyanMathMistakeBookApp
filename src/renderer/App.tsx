@@ -16,6 +16,7 @@ import { LibraryPage } from './pages/LibraryPage';
 import { QuestionBankPage } from './pages/QuestionBankPage';
 import { ReviewPage } from './pages/ReviewPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { AgentControlCenterPage } from './pages/AgentControlCenterPage';
 import { StatsPage } from './pages/StatsPage';
 import { StudyMaterialsPage } from './pages/StudyMaterialsPage';
 import { StudySupervisorPage } from './pages/StudySupervisorPage';
@@ -32,10 +33,12 @@ import { EisenhowerPage } from './pages/ticktick/EisenhowerPage';
 import { HabitsPage } from './pages/ticktick/HabitsPage';
 import 'katex/dist/katex.min.css';
 const DesktopWidget = React.lazy(() => import('./pages/ticktick/DesktopWidget').then(m => ({ default: m.DesktopWidget })));
+const AgentControlCenterHarness = React.lazy(() => import('./e2e/AgentControlCenterHarness').then(m => ({ default: m.AgentControlCenterHarness })));
 import './styles/global.css';
 import './styles/modal.css';
 import './styles/toast.css';
 import './styles/ticktick.css';
+import './styles/agent-control-center.css';
 
 const focusTimerStorageKey = 'kaoyan-focus-timer-state-v1';
 
@@ -78,6 +81,7 @@ export default function App() {
   const [mode, setMode] = useState<'mistake' | 'ticktick'>('mistake');
   const [ttPage, setTtPage] = useState<TickTickPageKey>('today');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
+  const [agentControlOpen, setAgentControlOpen] = useState(false);
 
   useEffect(() => {
     window.localStorage.setItem(focusTimerStorageKey, JSON.stringify(focusTimer));
@@ -169,6 +173,7 @@ export default function App() {
     if (next !== 'detail') setReviewMode(false);
     if (next !== 'knowledgeMap') setSelectedKnowledgeNodeId(null);
     if (next !== 'library') setLibraryFilters(null);
+    if (next !== 'settings') setAgentControlOpen(false);
     setReviewKnowledgeNodeId(null);
     setPage(next);
   }
@@ -207,6 +212,11 @@ export default function App() {
         <DesktopWidget />
       </React.Suspense>
     );
+  }
+
+  const guardedHarness = (window as Window & { agentControlE2e?: unknown }).agentControlE2e;
+  if (window.location.hash === '#/e2e-agent-control' && guardedHarness) {
+    return <React.Suspense fallback={<main className="agent-control-harness">Loading isolated harness...</main>}><AgentControlCenterHarness /></React.Suspense>;
   }
 
   return (
@@ -253,7 +263,8 @@ export default function App() {
         {page === 'stats' ? <StatsPage onOpenLibrary={openLibraryWithFilters} onOpenKnowledgePoint={openKnowledgePoint} onOpenQuestion={openQuestion} onOpenImport={() => navigate('import')} onOpenReview={() => navigate('review')} /> : null}
         {page === 'import' ? <ImportPage /> : null}
         {page === 'aiImport' ? <AiImportPage /> : null}
-        {page === 'settings' ? <SettingsPage /> : null}
+        {page === 'settings' && !agentControlOpen ? <SettingsPage onOpenAgentControl={() => setAgentControlOpen(true)} /> : null}
+        {page === 'settings' && agentControlOpen ? <AgentControlCenterPage onBack={() => setAgentControlOpen(false)} /> : null}
         </Shell>
       )}
       <GlobalSearch

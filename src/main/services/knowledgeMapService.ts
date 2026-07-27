@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import crypto from 'node:crypto';
 import { dialog, shell } from 'electron';
 import AdmZip from 'adm-zip';
-import { allSql, getDatabase, getQuestionsByIds, inferSubjectFromCategory, lastInsertId, normalizeSubject, oneSql, persistDatabase, runSql } from './databaseService';
+import type { Database, SqlValue } from 'sql.js';
+import { createInternalExecutionContext } from '../application/executionContext';
+import { assertDatabaseMutationScope, type DatabaseMutationScope } from '../persistence/databaseCoordinator';
+import { allSql, getDatabase, getDatabaseCoordinator, getQuestionsApplication, getQuestionsByIds, inferSubjectFromCategory, lastInsertId, normalizeSubject, oneSql } from './databaseService';
 import { getPaths } from './pathService';
-import { createImportBatch, finalizeImportBatch, recordImportAsset, recordImportBatchItem } from './importBatchService';
+import { createBatchId } from './importBatchService';
 import type {
   BindTextbookPdfResult,
   KnowledgeMapImportResult,
@@ -23,9 +27,21 @@ import type {
 } from '../../shared/types';
 
 const PDF_EXT = '.pdf';
+const REMATCH_BATCH_SIZE = 500;
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function mutateSql(database: Database, scope: DatabaseMutationScope, sql: string, params: readonly unknown[] = []) {
+  assertDatabaseMutationScope(scope, database);
+  const statement = database.prepare(sql);
+  try {
+    statement.bind([...params] as SqlValue[]);
+    statement.step();
+  } finally {
+    statement.free();
+  }
 }
 
 function dateOnly(date = new Date()) {
@@ -234,7 +250,7 @@ function copyTextbookPdf(tempDir: string, textbookRaw: Record<string, unknown>) 
   return { fileName, filePath: target, copiedPath: target };
 }
 
-function upsertTextbook(database: Awaited<ReturnType<typeof getDatabase>>, textbookRaw: Record<string, unknown>, copied: { fileName: string; filePath: string }) {
+function upsertTextbook(database: Database, scope: DatabaseMutationScope, textbookRaw: Record<string, unknown>, copied: { fileName: string; filePath: string }) {
   const now = nowIso();
   const title = asText(textbookRaw.title) || '未命名教材';
   const edition = asText(textbookRaw.edition);
@@ -244,16 +260,18 @@ function upsertTextbook(database: Awaited<ReturnType<typeof getDatabase>>, textb
   const filePath = copied.filePath || asText(textbookRaw.file_path);
 
   if (existing) {
-    runSql(
+    mutateSql(
       database,
+      scope,
       `UPDATE textbooks SET subject = ?, file_name = ?, file_path = ?, note = ?, updated_at = ? WHERE id = ?`,
       [subject, fileName, filePath || existing.file_path, asText(textbookRaw.note), now, existing.id]
     );
     return existing.id;
   }
 
-  runSql(
+  mutateSql(
     database,
+    scope,
     `INSERT INTO textbooks (title, subject, edition, file_name, file_path, note, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [title, subject, edition, fileName, filePath, asText(textbookRaw.note), now, now]
@@ -261,7 +279,7 @@ function upsertTextbook(database: Awaited<ReturnType<typeof getDatabase>>, textb
   return lastInsertId(database);
 }
 
-function upsertKnowledgePoint(database: Awaited<ReturnType<typeof getDatabase>>, textbookId: number, raw: Record<string, unknown>, inheritedSubject: string, batchId?: string) {
+function upsertKnowledgePoint(database: Database, scope: DatabaseMutationScope, textbookId: number, raw: Record<string, unknown>, inheritedSubject: string, batchId?: string) {
   const now = nowIso();
   const nodeId = asText(raw.node_id);
   if (!nodeId) throw new Error('\u006e\u006f\u0064\u0065\u005f\u0069\u0064 \u4e0d\u80fd\u4e3a\u7a7a');
@@ -291,8 +309,9 @@ function upsertKnowledgePoint(database: Awaited<ReturnType<typeof getDatabase>>,
   ];
 
   if (existing) {
-    runSql(
+    mutateSql(
       database,
+      scope,
       `UPDATE knowledge_points SET
         textbook_id = ?, parent_node_id = ?, title = ?, subject = ?, category = ?, level = ?, sort_order = ?,
         book_page = ?, pdf_page = ?, summary = ?, core_formulas = ?, common_question_types = ?,
@@ -303,8 +322,9 @@ function upsertKnowledgePoint(database: Awaited<ReturnType<typeof getDatabase>>,
     return { status: 'updated' as const, nodeId };
   }
 
-  runSql(
+  mutateSql(
     database,
+    scope,
     `INSERT INTO knowledge_points (
       textbook_id, node_id, parent_node_id, title, subject, category, level, sort_order,
       book_page, pdf_page, summary, core_formulas, common_question_types,
@@ -313,6 +333,91 @@ function upsertKnowledgePoint(database: Awaited<ReturnType<typeof getDatabase>>,
     [textbookId, nodeId, ...params.slice(1), batchId ?? null, now]
   );
   return { status: 'imported' as const, nodeId };
+}
+
+function createKnowledgeImportBatch(database: Database, scope: DatabaseMutationScope, input: {
+  id: string;
+  name: string;
+  sourceFileName: string;
+  source: string;
+  metadata: unknown;
+}) {
+  mutateSql(
+    database,
+    scope,
+    `INSERT INTO import_batches (
+      id, owner_client_id, type, name, source_file_name, source, imported_at, item_count, asset_count, status, metadata_json, deleted_at
+    ) VALUES (?, 'local-renderer-management', 'knowledge_map', ?, ?, ?, ?, 0, 0, 'active', ?, NULL)`,
+    [input.id, input.name, input.sourceFileName, input.source, nowIso(), JSON.stringify(input.metadata)]
+  );
+}
+
+function recordKnowledgeImportItem(database: Database, scope: DatabaseMutationScope, batchId: string, targetTable: string, targetId: string | number) {
+  mutateSql(
+    database,
+    scope,
+    'INSERT INTO import_batch_items (batch_id, target_table, target_id, action, created_at) VALUES (?, ?, ?, ?, ?)',
+    [batchId, targetTable, String(targetId), 'created', nowIso()]
+  );
+}
+
+function recordKnowledgeImportAsset(database: Database, scope: DatabaseMutationScope, batchId: string, filePath: string) {
+  if (!filePath) return;
+  mutateSql(
+    database,
+    scope,
+    'INSERT INTO import_assets (batch_id, asset_type, file_path, created_at, deleted_at) VALUES (?, ?, ?, ?, NULL)',
+    [batchId, 'textbook_pdf', filePath, nowIso()]
+  );
+}
+
+function finalizeKnowledgeImportBatch(database: Database, scope: DatabaseMutationScope, batchId: string, status: 'active' | 'failed') {
+  const itemCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM import_batch_items WHERE batch_id = ?', [batchId])?.count ?? 0;
+  const assetCount = oneSql<{ count: number }>(database, 'SELECT COUNT(*) AS count FROM import_assets WHERE batch_id = ?', [batchId])?.count ?? 0;
+  mutateSql(database, scope, 'UPDATE import_batches SET item_count = ?, asset_count = ?, status = ? WHERE id = ?', [itemCount, assetCount, status, batchId]);
+}
+
+async function persistKnowledgeImport(
+  textbookRaw: Record<string, unknown>,
+  pointRows: unknown[],
+  copied: { fileName: string; filePath: string; copiedPath: string | null },
+  batch: { name: string; sourceFileName: string; source: string; metadata: unknown },
+  result: KnowledgeMapImportResult
+) {
+  const coordinator = await getDatabaseCoordinator();
+  const batchId = createBatchId('knowledge_map');
+  await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(database, scope) {
+      createKnowledgeImportBatch(database, scope, { id: batchId, ...batch });
+      const textbookId = upsertTextbook(database, scope, textbookRaw, copied);
+      recordKnowledgeImportItem(database, scope, batchId, 'textbooks', textbookId);
+      if (copied.copiedPath) recordKnowledgeImportAsset(database, scope, batchId, copied.copiedPath);
+
+      for (const row of pointRows) {
+        try {
+          const current = (row ?? {}) as Record<string, unknown>;
+          const outcome = upsertKnowledgePoint(database, scope, textbookId, current, asText(textbookRaw.subject), batchId);
+          if (outcome.status === 'imported') {
+            result.importedCount += 1;
+            recordKnowledgeImportItem(database, scope, batchId, 'knowledge_points', outcome.nodeId);
+          } else result.updatedCount += 1;
+        } catch (error) {
+          result.failedCount += 1;
+          const current = (row ?? {}) as Record<string, unknown>;
+          result.failures.push({
+            node_id: asText(current.node_id),
+            title: asText(current.title),
+            reason: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+
+      finalizeKnowledgeImportBatch(database, scope, batchId, result.failedCount && !result.importedCount && !result.updatedCount ? 'failed' : 'active');
+      return { changed: true, value: null };
+    }
+  });
 }
 
 export async function importKnowledgeMapZip(): Promise<KnowledgeMapImportResult | null> {
@@ -337,14 +442,6 @@ export async function importKnowledgeMapZip(): Promise<KnowledgeMapImportResult 
     if (!Array.isArray(pointRows)) throw new Error('knowledge_points.json 必须是数组');
 
     const textbookSubject = normalizeSubject(textbookRaw.subject);
-    const database = await getDatabase();
-    const batchId = await createImportBatch({
-      type: 'knowledge_map',
-      name: asText(textbookRaw.title) || path.basename(filePath),
-      sourceFileName: path.basename(filePath),
-      source: asText(textbookRaw.title),
-      metadata: textbookRaw
-    });
     const result: KnowledgeMapImportResult = {
       textbookTitle: asText(textbookRaw.title) || '未命名教材',
       subject: textbookSubject,
@@ -355,39 +452,14 @@ export async function importKnowledgeMapZip(): Promise<KnowledgeMapImportResult 
       copiedPdfPath: null
     };
 
-    database.run('BEGIN TRANSACTION');
-    try {
-      const copied = copyTextbookPdf(tempDir, textbookRaw);
-      result.copiedPdfPath = copied.copiedPath;
-      const textbookId = upsertTextbook(database, textbookRaw, copied);
-      recordImportBatchItem(database, batchId, 'textbooks', textbookId);
-      if (copied.copiedPath) recordImportAsset(database, batchId, 'textbook_pdf', copied.copiedPath);
-
-      for (const row of pointRows) {
-        try {
-          const status = upsertKnowledgePoint(database, textbookId, (row ?? {}) as Record<string, unknown>, asText(textbookRaw.subject), batchId);
-          if (status.status === 'imported') {
-            result.importedCount += 1;
-            recordImportBatchItem(database, batchId, 'knowledge_points', status.nodeId);
-          } else result.updatedCount += 1;
-        } catch (error) {
-          result.failedCount += 1;
-          const current = (row ?? {}) as Record<string, unknown>;
-          result.failures.push({
-            node_id: asText(current.node_id),
-            title: asText(current.title),
-            reason: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-
-      finalizeImportBatch(database, batchId, result.failedCount && !result.importedCount && !result.updatedCount ? 'failed' : 'active');
-      database.run('COMMIT');
-      persistDatabase();
-    } catch (error) {
-      database.run('ROLLBACK');
-      throw error;
-    }
+    const copied = copyTextbookPdf(tempDir, textbookRaw);
+    result.copiedPdfPath = copied.copiedPath;
+    await persistKnowledgeImport(textbookRaw, pointRows, copied, {
+      name: asText(textbookRaw.title) || path.basename(filePath),
+      sourceFileName: path.basename(filePath),
+      source: asText(textbookRaw.title),
+      metadata: textbookRaw
+    }, result);
 
     return result;
   } finally {
@@ -429,14 +501,6 @@ export async function seedImportKnowledgeMap(): Promise<KnowledgeMapImportResult
     if (!Array.isArray(pointRows)) throw new Error('knowledge_points.json 必须是数组');
 
     const textbookSubject = normalizeSubject(textbookRaw.subject);
-    const database = await getDatabase();
-    const batchId = await createImportBatch({
-      type: 'knowledge_map',
-      name: asText(textbookRaw.title) || '考点汇总种子数据',
-      sourceFileName: 'knowledge_map_seed.zip',
-      source: asText(textbookRaw.title),
-      metadata: { ...textbookRaw, seed: true }
-    });
     const result: KnowledgeMapImportResult = {
       textbookTitle: asText(textbookRaw.title) || '考研数学考点汇总',
       subject: textbookSubject,
@@ -447,37 +511,13 @@ export async function seedImportKnowledgeMap(): Promise<KnowledgeMapImportResult
       copiedPdfPath: null
     };
 
-    database.run('BEGIN TRANSACTION');
-    try {
-      const copied = { fileName: asText(textbookRaw.file_name), filePath: asText(textbookRaw.file_path), copiedPath: null };
-      const textbookId = upsertTextbook(database, textbookRaw, copied);
-      recordImportBatchItem(database, batchId, 'textbooks', textbookId);
-
-      for (const row of pointRows) {
-        try {
-          const status = upsertKnowledgePoint(database, textbookId, (row ?? {}) as Record<string, unknown>, asText(textbookRaw.subject), batchId);
-          if (status.status === 'imported') {
-            result.importedCount += 1;
-            recordImportBatchItem(database, batchId, 'knowledge_points', status.nodeId);
-          } else result.updatedCount += 1;
-        } catch (error) {
-          result.failedCount += 1;
-          const current = (row ?? {}) as Record<string, unknown>;
-          result.failures.push({
-            node_id: asText(current.node_id),
-            title: asText(current.title),
-            reason: error instanceof Error ? error.message : String(error)
-          });
-        }
-      }
-
-      finalizeImportBatch(database, batchId, result.failedCount && !result.importedCount && !result.updatedCount ? 'failed' : 'active');
-      database.run('COMMIT');
-      persistDatabase();
-    } catch (error) {
-      database.run('ROLLBACK');
-      throw error;
-    }
+    const copied = { fileName: asText(textbookRaw.file_name), filePath: asText(textbookRaw.file_path), copiedPath: null };
+    await persistKnowledgeImport(textbookRaw, pointRows, copied, {
+      name: asText(textbookRaw.title) || '考点汇总种子数据',
+      sourceFileName: 'knowledge_map_seed.zip',
+      source: asText(textbookRaw.title),
+      metadata: { ...textbookRaw, seed: true }
+    }, result);
 
     return result;
   } finally {
@@ -683,15 +723,20 @@ export async function bindTextbookPdf(nodeId: string): Promise<BindTextbookPdfRe
   if (!filePath) return null;
 
   const fileName = path.basename(filePath);
-  runSql(database, 'UPDATE textbooks SET file_name = ?, file_path = ?, updated_at = ? WHERE id = ?', [fileName, filePath, nowIso(), point.textbook_id]);
-  persistDatabase();
-
-  const textbook = oneSql<Textbook>(database, 'SELECT * FROM textbooks WHERE id = ?', [point.textbook_id]);
+  const coordinator = await getDatabaseCoordinator();
+  const mutation = await coordinator.executeWrite({
+    requestId: crypto.randomUUID(),
+    concurrency: 'none',
+    execute(currentDatabase, scope) {
+      mutateSql(currentDatabase, scope, 'UPDATE textbooks SET file_name = ?, file_path = ?, updated_at = ? WHERE id = ?', [fileName, filePath, nowIso(), point.textbook_id]);
+      return { changed: true, value: oneSql<Textbook>(currentDatabase, 'SELECT * FROM textbooks WHERE id = ?', [point.textbook_id]) };
+    }
+  });
   return {
     bound: true,
     filePath,
     fileName,
-    status: resolveTextbookPdf(textbook, point.book_page, point.pdf_page)
+    status: resolveTextbookPdf(mutation.value, point.book_page, point.pdf_page)
   };
 }
 
@@ -748,52 +793,35 @@ export async function rematchKnowledgePoints(): Promise<KnowledgeRematchResult> 
      ORDER BY q.id ASC`
   );
   const points = allSql<KnowledgePoint>(database, 'SELECT * FROM knowledge_points WHERE deleted_at IS NULL OR deleted_at = "" ORDER BY level ASC, sort_order ASC');
-  const result: KnowledgeRematchResult = {
-    scannedQuestions: questions.length,
-    insertedCount: 0,
-    skippedExistingCount: 0,
-    unmatchedQuestions: 0
-  };
-
-  database.run('BEGIN TRANSACTION');
-  try {
-    for (const question of questions) {
-      const ranked = points
-        .map((point) => ({ point, score: scoreQuestionPoint(question, point) }))
-        .filter((item) => item.score >= 5)
-        .sort((a, b) => b.score - a.score || a.point.level - b.point.level || a.point.sort_order - b.point.sort_order)
-        .slice(0, 3);
-
-      if (!ranked.length) {
-        result.unmatchedQuestions += 1;
-        continue;
-      }
-
-      for (const item of ranked) {
-        const exists = oneSql<{ id: number }>(
-          database,
-          'SELECT id FROM question_knowledge_points WHERE question_id = ? AND knowledge_node_id = ?',
-          [question.id, item.point.node_id]
-        );
-        if (exists) {
-          result.skippedExistingCount += 1;
-          continue;
-        }
-        runSql(
-          database,
-          'INSERT INTO question_knowledge_points (question_id, knowledge_node_id, match_type, created_at) VALUES (?, ?, ?, ?)',
-          [question.id, item.point.node_id, 'auto', nowIso()]
-        );
-        result.insertedCount += 1;
-      }
-    }
-
-    database.run('COMMIT');
-    persistDatabase();
-  } catch (error) {
-    database.run('ROLLBACK');
-    throw error;
+  let rankedLinkCount = 0;
+  let unmatchedQuestions = 0;
+  for (const question of questions) {
+    const rankedCount = points
+      .map((point) => scoreQuestionPoint(question, point))
+      .filter((score) => score >= 5)
+      .sort((left, right) => right - left)
+      .slice(0, 3).length;
+    rankedLinkCount += rankedCount;
+    if (!rankedCount) unmatchedQuestions += 1;
   }
 
-  return result;
+  const application = await getQuestionsApplication();
+  let scannedQuestions = 0;
+  let insertedCount = 0;
+  for (let offset = 0; offset < questions.length; offset += REMATCH_BATCH_SIZE) {
+    const questionIds = questions.slice(offset, offset + REMATCH_BATCH_SIZE).map((question) => question.id);
+    const outcome = await application.execute(
+      { type: 'questions.rematch_knowledge', payload: { limit: REMATCH_BATCH_SIZE, questionIds } },
+      createInternalExecutionContext({ concurrency: 'none' })
+    );
+    scannedQuestions += outcome.value.scannedQuestions;
+    insertedCount += outcome.value.insertedCount;
+  }
+
+  return {
+    scannedQuestions,
+    insertedCount,
+    skippedExistingCount: Math.max(0, rankedLinkCount - insertedCount),
+    unmatchedQuestions
+  };
 }

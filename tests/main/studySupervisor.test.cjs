@@ -52,7 +52,10 @@ async function createTask(overrides = {}) {
 
 test.after(cleanupTestRoot);
 
-test.beforeEach(resetTestDatabase);
+test.beforeEach(async () => {
+  await resetTestDatabase();
+  await studySupervisorService.initializeStudySupervisor();
+});
 
 test('completeStudyTask marks task completed with minutes, quality, and completed_at', async () => {
   const task = await createTask({ title: '完成任务' });

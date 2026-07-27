@@ -8,7 +8,8 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -23,6 +24,9 @@ jobs:
         run: npm ci
 
       - name: Run tests
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: npm test
 
       - name: Run typecheck

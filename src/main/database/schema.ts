@@ -1,4 +1,744 @@
+// This versions the control_metadata row shape only. Existing migrations remain
+// authoritative for application schema upgrades until a unified migrator lands.
+export const controlMetadataSchemaVersion = 1;
+
+export const controlMetadataSchemaSql = `
+CREATE TABLE IF NOT EXISTS control_metadata (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data_epoch TEXT NOT NULL CHECK (length(trim(data_epoch)) > 0),
+  data_revision INTEGER NOT NULL CHECK (
+    typeof(data_revision) = 'integer'
+    AND data_revision >= 0
+    AND data_revision <= 9007199254740991
+  ),
+  control_revision INTEGER NOT NULL DEFAULT 0 CHECK (
+    typeof(control_revision) = 'integer'
+    AND control_revision >= 0
+    AND control_revision <= 9007199254740991
+  ),
+  schema_version INTEGER NOT NULL CHECK (
+    typeof(schema_version) = 'integer'
+    AND schema_version >= 1
+    AND schema_version <= 9007199254740991
+  ),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0)
+);
+`;
+
+export const agentIdentitySchemaSql = `
+CREATE TABLE IF NOT EXISTS agent_control_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  external_control_enabled INTEGER NOT NULL DEFAULT 0 CHECK (external_control_enabled IN (0, 1)),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
+  catalog_hash TEXT NOT NULL CHECK (
+    substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74
+    AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  policy_version TEXT NOT NULL CHECK (length(trim(policy_version)) > 0),
+  policy_json TEXT NOT NULL CHECK (json_valid(policy_json) AND json_type(policy_json) = 'array'),
+  policy_hash TEXT NOT NULL CHECK (
+    substr(policy_hash, 1, 10) = 'sha256-v1:' AND length(policy_hash) = 74
+    AND substr(policy_hash, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  privacy_revision INTEGER NOT NULL DEFAULT 1 CHECK (typeof(privacy_revision) = 'integer' AND privacy_revision >= 1),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0),
+  UNIQUE (catalog_version, catalog_hash)
+);
+
+CREATE TABLE IF NOT EXISTS agent_clients (
+  client_id TEXT PRIMARY KEY CHECK (length(trim(client_id)) > 0),
+  subject_id TEXT NOT NULL CHECK (length(trim(subject_id)) > 0),
+  display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
+  credential_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(credential_fingerprint, 1, 10) = 'sha256-v1:' AND length(credential_fingerprint) = 74
+    AND substr(credential_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  trust TEXT NOT NULL CHECK (trust IN ('observer', 'collaborator', 'autonomous', 'full_control')),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0),
+  last_active_at TEXT,
+  revoked_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_client_scopes (
+  client_id TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK (scope IN (
+    'system.read', 'control.manage', 'clients.read', 'clients.manage', 'sessions.read', 'sessions.manage',
+    'r4.read', 'r4.manage', 'approvals.read', 'approvals.manage', 'changesets.read', 'changesets.manage',
+    'policy.read', 'policy.manage', 'audit.read', 'audit.export', 'questions.read', 'questions.write',
+    'questions.archive', 'reviews.read', 'reviews.submit', 'knowledge.read', 'knowledge.write', 'textbooks.read', 'analytics.read', 'study.read', 'study.write', 'imports.read', 'imports.write', 'operations.batch', 'tasks.read',
+    'tasks.write', 'tasks.execute', 'jobs.read', 'jobs.execute', 'jobs.cancel', 'jobs.admin',
+    'focus.read', 'focus.control', 'files.images.read',
+    'ticktick.lists.read', 'ticktick.lists.write', 'ticktick.habits.read', 'ticktick.habits.write', 'ticktick.calendar.read', 'ticktick.bridges.read', 'ticktick.bridges.write',
+    'backups.read', 'backups.create', 'backups.delete', 'exports.create', 'exports.read', 'database.restore', 'database.replace', 'database.clear', 'imports.delete', 'data_root.migrate'
+  )),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) > 0),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  PRIMARY KEY (client_id, scope),
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
+-- The App stores only the public SPKI binding. The launcher owns the CNG private key.
+CREATE TABLE IF NOT EXISTS agent_client_keys (
+  client_id TEXT PRIMARY KEY,
+  public_key_format TEXT NOT NULL CHECK (public_key_format = 'spki-der-base64url'),
+  public_key TEXT NOT NULL CHECK (length(public_key) BETWEEN 64 AND 16384),
+  public_key_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(public_key_fingerprint, 1, 10) = 'sha256-v1:' AND length(public_key_fingerprint) = 74
+    AND substr(public_key_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  signature_algorithm TEXT NOT NULL CHECK (signature_algorithm = 'rsa-pss-sha256'),
+  key_generation INTEGER NOT NULL CHECK (typeof(key_generation) = 'integer' AND key_generation >= 1),
+  registry_generation INTEGER NOT NULL CHECK (typeof(registry_generation) = 'integer' AND registry_generation >= 1),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z'),
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  session_id TEXT PRIMARY KEY CHECK (length(trim(session_id)) > 0),
+  client_id TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL CHECK (length(trim(app_instance_id)) > 0),
+  session_fingerprint TEXT NOT NULL UNIQUE CHECK (
+    substr(session_fingerprint, 1, 10) = 'sha256-v1:' AND length(session_fingerprint) = 74
+    AND substr(session_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  credential_fingerprint TEXT NOT NULL CHECK (
+    substr(credential_fingerprint, 1, 10) = 'sha256-v1:' AND length(credential_fingerprint) = 74
+    AND substr(credential_fingerprint, 11) NOT GLOB '*[^0-9a-f]*'
+  ),
+  created_at TEXT NOT NULL CHECK (length(trim(created_at)) > 0),
+  expires_at TEXT NOT NULL CHECK (length(trim(expires_at)) > 0),
+  last_active_at TEXT NOT NULL CHECK (length(trim(last_active_at)) > 0),
+  terminated_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_clients_revoked_active ON agent_clients(revoked_at, last_active_at);
+CREATE INDEX IF NOT EXISTS idx_agent_client_scopes_scope ON agent_client_scopes(scope, client_id);
+CREATE INDEX IF NOT EXISTS idx_agent_client_keys_fingerprint ON agent_client_keys(public_key_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_client_expiry ON agent_sessions(client_id, expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_instance_active ON agent_sessions(app_instance_id, terminated_at);
+`;
+
+export const agentDurabilitySchemaSql = `
+CREATE TABLE IF NOT EXISTS agent_idempotency (
+  receipt_id TEXT PRIMARY KEY CHECK (length(receipt_id) = 36),
+  client_id TEXT NOT NULL CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  request_id TEXT NOT NULL CHECK (length(request_id) = 36),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  payload_json TEXT NOT NULL CHECK (json_valid(payload_json) AND json_type(payload_json) = 'object'),
+  payload_hash TEXT NOT NULL CHECK (substr(payload_hash, 1, 10) = 'sha256-v1:' AND length(payload_hash) = 74 AND substr(payload_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  affected_set_hash TEXT CHECK (affected_set_hash IS NULL OR (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74 AND substr(affected_set_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  base_data_epoch TEXT,
+  base_data_revision INTEGER CHECK (base_data_revision IS NULL OR (typeof(base_data_revision) = 'integer' AND base_data_revision BETWEEN 0 AND 9007199254740991)),
+  risk TEXT NOT NULL CHECK (risk IN ('R0', 'R1', 'R2', 'R3', 'R4')),
+  status TEXT NOT NULL CHECK (status IN ('admitted', 'completed', 'failed', 'indeterminate', 'interrupted_precommit')),
+  terminal_outcome_json TEXT CHECK (terminal_outcome_json IS NULL OR json_valid(terminal_outcome_json)),
+  terminal_outcome_hash TEXT CHECK (terminal_outcome_hash IS NULL OR (substr(terminal_outcome_hash, 1, 10) = 'sha256-v1:' AND length(terminal_outcome_hash) = 74 AND substr(terminal_outcome_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  terminal_data_epoch TEXT,
+  terminal_data_revision INTEGER CHECK (terminal_data_revision IS NULL OR (typeof(terminal_data_revision) = 'integer' AND terminal_data_revision BETWEEN 0 AND 9007199254740991)),
+  reservation_id TEXT UNIQUE CHECK (reservation_id IS NULL OR length(reservation_id) = 36),
+  grant_id TEXT CHECK (grant_id IS NULL OR length(grant_id) = 36),
+  r4_target_hash TEXT CHECK (r4_target_hash IS NULL OR (substr(r4_target_hash, 1, 10) = 'sha256-v1:' AND length(r4_target_hash) = 74 AND substr(r4_target_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  r4_recovery TEXT CHECK (r4_recovery IS NULL OR r4_recovery IN ('inverse', 'quarantine', 'consistency_bundle')),
+  r4_max_affected_entities INTEGER CHECK (r4_max_affected_entities IS NULL OR (typeof(r4_max_affected_entities) = 'integer' AND r4_max_affected_entities BETWEEN 1 AND 500)),
+  r4_reservation_expires_at TEXT CHECK (r4_reservation_expires_at IS NULL OR (length(r4_reservation_expires_at) = 24 AND substr(r4_reservation_expires_at, 24, 1) = 'Z')),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z'),
+  terminal_at TEXT CHECK (terminal_at IS NULL OR (length(terminal_at) = 24 AND substr(terminal_at, 24, 1) = 'Z')),
+  retain_until TEXT CHECK (retain_until IS NULL OR (length(retain_until) = 24 AND substr(retain_until, 24, 1) = 'Z')),
+  UNIQUE (client_id, request_id),
+  CHECK ((base_data_epoch IS NULL) = (base_data_revision IS NULL)),
+  CHECK (
+    (grant_id IS NULL AND reservation_id IS NULL AND r4_target_hash IS NULL AND r4_recovery IS NULL AND r4_max_affected_entities IS NULL AND r4_reservation_expires_at IS NULL)
+    OR
+    (grant_id IS NOT NULL AND reservation_id IS NOT NULL AND r4_target_hash IS NOT NULL AND r4_recovery IS NOT NULL AND r4_max_affected_entities IS NOT NULL AND r4_reservation_expires_at IS NOT NULL)
+  ),
+  CHECK ((terminal_data_epoch IS NULL) = (terminal_data_revision IS NULL)),
+  CHECK (
+    (status = 'admitted' AND terminal_outcome_json IS NULL AND terminal_outcome_hash IS NULL AND terminal_at IS NULL AND retain_until IS NULL)
+    OR
+    (status <> 'admitted' AND terminal_outcome_json IS NOT NULL AND terminal_outcome_hash IS NOT NULL AND terminal_at IS NOT NULL AND retain_until IS NOT NULL)
+  )
+);
+
+CREATE TABLE IF NOT EXISTS agent_r4_grants (
+  grant_id TEXT PRIMARY KEY CHECK (length(grant_id) = 36),
+  client_id TEXT NOT NULL CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  payload_hash TEXT NOT NULL CHECK (substr(payload_hash, 1, 10) = 'sha256-v1:' AND length(payload_hash) = 74 AND substr(payload_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74 AND substr(target_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  recovery TEXT NOT NULL CHECK (recovery IN ('inverse', 'quarantine', 'consistency_bundle')),
+  max_affected_entities INTEGER NOT NULL CHECK (typeof(max_affected_entities) = 'integer' AND max_affected_entities BETWEEN 1 AND 500),
+  max_uses INTEGER NOT NULL DEFAULT 1 CHECK (max_uses = 1),
+  status TEXT NOT NULL CHECK (status IN ('active', 'reserved', 'consumed', 'revoked', 'expired')),
+  issued_at TEXT NOT NULL CHECK (length(issued_at) = 24 AND substr(issued_at, 24, 1) = 'Z'),
+  expires_at TEXT NOT NULL CHECK (
+    length(expires_at) = 24 AND substr(expires_at, 24, 1) = 'Z' AND expires_at > issued_at
+    AND (julianday(expires_at) - julianday(issued_at)) * 86400000 <= 900000.5
+  ),
+  reservation_id TEXT UNIQUE CHECK (reservation_id IS NULL OR length(reservation_id) = 36),
+  reserved_client_id TEXT,
+  reserved_request_id TEXT CHECK (reserved_request_id IS NULL OR length(reserved_request_id) = 36),
+  reserved_payload_hash TEXT CHECK (reserved_payload_hash IS NULL OR (substr(reserved_payload_hash, 1, 10) = 'sha256-v1:' AND length(reserved_payload_hash) = 74 AND substr(reserved_payload_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  reserved_affected_set_hash TEXT CHECK (reserved_affected_set_hash IS NULL OR (substr(reserved_affected_set_hash, 1, 10) = 'sha256-v1:' AND length(reserved_affected_set_hash) = 74 AND substr(reserved_affected_set_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  reserved_base_epoch TEXT,
+  reserved_base_revision INTEGER CHECK (reserved_base_revision IS NULL OR (typeof(reserved_base_revision) = 'integer' AND reserved_base_revision BETWEEN 0 AND 9007199254740991)),
+  reserved_catalog_version TEXT,
+  reserved_catalog_hash TEXT CHECK (reserved_catalog_hash IS NULL OR (substr(reserved_catalog_hash, 1, 10) = 'sha256-v1:' AND length(reserved_catalog_hash) = 74 AND substr(reserved_catalog_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  reserved_at TEXT CHECK (reserved_at IS NULL OR (length(reserved_at) = 24 AND substr(reserved_at, 24, 1) = 'Z')),
+  reservation_expires_at TEXT CHECK (reservation_expires_at IS NULL OR (length(reservation_expires_at) = 24 AND substr(reservation_expires_at, 24, 1) = 'Z')),
+  consumed_at TEXT CHECK (consumed_at IS NULL OR (length(consumed_at) = 24 AND substr(consumed_at, 24, 1) = 'Z')),
+  revoked_at TEXT CHECK (revoked_at IS NULL OR (length(revoked_at) = 24 AND substr(revoked_at, 24, 1) = 'Z')),
+  UNIQUE (client_id, reserved_request_id),
+  CHECK ((reserved_base_epoch IS NULL) = (reserved_base_revision IS NULL)),
+  CHECK (
+    (status IN ('active', 'revoked', 'expired') AND reservation_id IS NULL AND reserved_client_id IS NULL AND reserved_request_id IS NULL AND reserved_payload_hash IS NULL AND reserved_affected_set_hash IS NULL AND reserved_base_epoch IS NULL AND reserved_catalog_version IS NULL AND reserved_catalog_hash IS NULL AND reserved_at IS NULL AND reservation_expires_at IS NULL)
+    OR
+    (status IN ('reserved', 'consumed') AND reservation_id IS NOT NULL AND reserved_client_id IS NOT NULL AND reserved_request_id IS NOT NULL AND reserved_payload_hash IS NOT NULL AND reserved_affected_set_hash IS NOT NULL AND reserved_base_epoch IS NOT NULL AND reserved_catalog_version IS NOT NULL AND reserved_catalog_hash IS NOT NULL AND reserved_at IS NOT NULL AND reservation_expires_at IS NOT NULL)
+  ),
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL)),
+  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL)),
+  CHECK (reservation_expires_at IS NULL OR (reservation_expires_at > reserved_at AND reservation_expires_at <= expires_at))
+);
+
+CREATE TABLE IF NOT EXISTS agent_approvals (
+  approval_id TEXT PRIMARY KEY CHECK (length(approval_id) = 36),
+  nonce TEXT NOT NULL UNIQUE CHECK (length(nonce) BETWEEN 16 AND 500),
+  client_id TEXT NOT NULL CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  credential_binding TEXT NOT NULL CHECK (length(credential_binding) BETWEEN 1 AND 500),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  payload_hash TEXT NOT NULL CHECK (substr(payload_hash, 1, 10) = 'sha256-v1:' AND length(payload_hash) = 74 AND substr(payload_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74 AND substr(affected_set_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  base_data_epoch TEXT NOT NULL CHECK (length(trim(base_data_epoch)) BETWEEN 1 AND 200),
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision BETWEEN 0 AND 9007199254740991),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  policy_version TEXT NOT NULL CHECK (length(trim(policy_version)) BETWEEN 1 AND 100),
+  risk TEXT NOT NULL CHECK (risk IN ('R0', 'R1', 'R2', 'R3', 'R4')),
+  required_scopes_json TEXT NOT NULL CHECK (json_valid(required_scopes_json) AND json_type(required_scopes_json) = 'array'),
+  required_scopes_hash TEXT NOT NULL CHECK (substr(required_scopes_hash, 1, 10) = 'sha256-v1:' AND length(required_scopes_hash) = 74 AND substr(required_scopes_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  recovery TEXT NOT NULL CHECK (recovery IN ('inverse', 'quarantine', 'consistency_bundle', 'none')),
+  source TEXT CHECK (source IS NULL OR source IN ('user', 'policy')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected', 'consumed', 'revoked', 'expired')),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  expires_at TEXT NOT NULL CHECK (length(expires_at) = 24 AND substr(expires_at, 24, 1) = 'Z' AND expires_at > created_at),
+  decided_at TEXT CHECK (decided_at IS NULL OR (length(decided_at) = 24 AND substr(decided_at, 24, 1) = 'Z')),
+  consumed_at TEXT CHECK (consumed_at IS NULL OR (length(consumed_at) = 24 AND substr(consumed_at, 24, 1) = 'Z')),
+  revoked_at TEXT CHECK (revoked_at IS NULL OR (length(revoked_at) = 24 AND substr(revoked_at, 24, 1) = 'Z')),
+  CHECK ((status IN ('approved', 'rejected')) = (decided_at IS NOT NULL)),
+  CHECK ((status = 'consumed') = (consumed_at IS NOT NULL)),
+  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS agent_changesets (
+  change_set_id TEXT PRIMARY KEY CHECK (length(change_set_id) = 36),
+  client_id TEXT NOT NULL CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  status TEXT NOT NULL CHECK (status IN ('draft', 'waiting_approval', 'approved', 'applied', 'rejected', 'expired', 'rolled_back')),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  base_data_epoch TEXT NOT NULL CHECK (length(trim(base_data_epoch)) BETWEEN 1 AND 200),
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision BETWEEN 0 AND 9007199254740991),
+  risk TEXT NOT NULL CHECK (risk IN ('R2', 'R3', 'R4')),
+  summary TEXT NOT NULL CHECK (length(summary) BETWEEN 1 AND 2000),
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74 AND substr(affected_set_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  recovery TEXT NOT NULL CHECK (recovery IN ('inverse', 'quarantine', 'consistency_bundle', 'none')),
+  recovery_asset_id TEXT CHECK (recovery_asset_id IS NULL OR length(recovery_asset_id) = 36),
+  operation_count INTEGER NOT NULL CHECK (typeof(operation_count) = 'integer' AND operation_count BETWEEN 1 AND 500),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  expires_at TEXT NOT NULL CHECK (length(expires_at) = 24 AND substr(expires_at, 24, 1) = 'Z' AND expires_at > created_at),
+  applied_at TEXT,
+  CHECK ((status = 'applied') = (applied_at IS NOT NULL)),
+  CHECK (risk <> 'R4' OR recovery <> 'none')
+);
+
+CREATE TABLE IF NOT EXISTS agent_changeset_operations (
+  change_set_id TEXT NOT NULL,
+  operation_index INTEGER NOT NULL CHECK (typeof(operation_index) = 'integer' AND operation_index BETWEEN 0 AND 499),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  operation_json TEXT NOT NULL CHECK (json_valid(operation_json) AND json_type(operation_json) = 'object'),
+  operation_hash TEXT NOT NULL CHECK (substr(operation_hash, 1, 10) = 'sha256-v1:' AND length(operation_hash) = 74 AND substr(operation_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  payload_hash TEXT NOT NULL CHECK (substr(payload_hash, 1, 10) = 'sha256-v1:' AND length(payload_hash) = 74 AND substr(payload_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  affected_entities_json TEXT NOT NULL CHECK (json_valid(affected_entities_json) AND json_type(affected_entities_json) = 'array'),
+  affected_entities_hash TEXT NOT NULL CHECK (substr(affected_entities_hash, 1, 10) = 'sha256-v1:' AND length(affected_entities_hash) = 74 AND substr(affected_entities_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  PRIMARY KEY (change_set_id, operation_index),
+  FOREIGN KEY (change_set_id) REFERENCES agent_changesets(change_set_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS agent_audit_segments (
+  segment_id TEXT PRIMARY KEY CHECK (length(segment_id) = 36),
+  segment_number INTEGER NOT NULL UNIQUE CHECK (typeof(segment_number) = 'integer' AND segment_number >= 0),
+  previous_segment_id TEXT UNIQUE CHECK (previous_segment_id IS NULL OR length(previous_segment_id) = 36),
+  previous_closing_hash TEXT CHECK (previous_closing_hash IS NULL OR (substr(previous_closing_hash, 1, 10) = 'sha256-v1:' AND length(previous_closing_hash) = 74 AND substr(previous_closing_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  opened_sequence INTEGER NOT NULL CHECK (typeof(opened_sequence) = 'integer' AND opened_sequence >= 0),
+  last_sequence INTEGER CHECK (last_sequence IS NULL OR (typeof(last_sequence) = 'integer' AND last_sequence >= opened_sequence)),
+  last_hash TEXT CHECK (last_hash IS NULL OR (substr(last_hash, 1, 10) = 'sha256-v1:' AND length(last_hash) = 74 AND substr(last_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  closed_sequence INTEGER CHECK (closed_sequence IS NULL OR (typeof(closed_sequence) = 'integer' AND closed_sequence >= opened_sequence)),
+  closing_hash TEXT CHECK (closing_hash IS NULL OR (substr(closing_hash, 1, 10) = 'sha256-v1:' AND length(closing_hash) = 74 AND substr(closing_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  opened_at TEXT NOT NULL CHECK (length(opened_at) = 24 AND substr(opened_at, 24, 1) = 'Z'),
+  closed_at TEXT,
+  pruned_at TEXT,
+  CHECK ((previous_segment_id IS NULL) = (previous_closing_hash IS NULL)),
+  CHECK ((last_sequence IS NULL) = (last_hash IS NULL)),
+  CHECK ((closed_sequence IS NULL) = (closing_hash IS NULL)),
+  CHECK ((closed_sequence IS NULL) = (closed_at IS NULL)),
+  CHECK (closed_sequence IS NULL OR (closed_sequence = last_sequence AND closing_hash = last_hash)),
+  FOREIGN KEY (previous_segment_id) REFERENCES agent_audit_segments(segment_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS agent_audit_events (
+  sequence INTEGER PRIMARY KEY CHECK (typeof(sequence) = 'integer' AND sequence >= 0),
+  audit_id TEXT NOT NULL UNIQUE CHECK (length(audit_id) = 36),
+  segment_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('authentication', 'pairing', 'admission', 'denial', 'query', 'success', 'failure', 'indeterminate', 'reconciliation', 'grant_reserved', 'grant_released', 'grant_consumed', 'client_revoked', 'session_terminated', 'policy_changed', 'catalog_changed', 'control_changed', 'segment_closed', 'segment_opened')),
+  occurred_at TEXT NOT NULL CHECK (length(occurred_at) = 24 AND substr(occurred_at, 24, 1) = 'Z'),
+  client_id TEXT NOT NULL CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  request_id TEXT CHECK (request_id IS NULL OR length(request_id) = 36),
+  operation TEXT CHECK (operation IS NULL OR length(trim(operation)) BETWEEN 1 AND 200),
+  risk TEXT CHECK (risk IS NULL OR risk IN ('R0', 'R1', 'R2', 'R3', 'R4')),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  policy_version TEXT CHECK (policy_version IS NULL OR length(trim(policy_version)) BETWEEN 1 AND 100),
+  receipt_id TEXT CHECK (receipt_id IS NULL OR length(receipt_id) = 36),
+  receipt_client_id TEXT,
+  receipt_request_id TEXT CHECK (receipt_request_id IS NULL OR length(receipt_request_id) = 36),
+  summary_json TEXT NOT NULL CHECK (json_valid(summary_json) AND json_type(summary_json) = 'object'),
+  affected_entities_json TEXT NOT NULL CHECK (json_valid(affected_entities_json) AND json_type(affected_entities_json) = 'array'),
+  event_json TEXT NOT NULL CHECK (json_valid(event_json) AND json_type(event_json) = 'object'),
+  previous_hash TEXT CHECK (previous_hash IS NULL OR (substr(previous_hash, 1, 10) = 'sha256-v1:' AND length(previous_hash) = 74 AND substr(previous_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  record_hash TEXT NOT NULL UNIQUE CHECK (substr(record_hash, 1, 10) = 'sha256-v1:' AND length(record_hash) = 74 AND substr(record_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  retention_class TEXT NOT NULL CHECK (retention_class IN ('ordinary_180d', 'protected_1y')),
+  retain_until TEXT NOT NULL CHECK (length(retain_until) = 24 AND substr(retain_until, 24, 1) = 'Z' AND retain_until > occurred_at),
+  UNIQUE (segment_id, sequence),
+  CHECK ((receipt_client_id IS NULL) = (receipt_request_id IS NULL)),
+  FOREIGN KEY (segment_id) REFERENCES agent_audit_segments(segment_id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS agent_jobs (
+  job_id TEXT PRIMARY KEY CHECK (length(job_id) = 36),
+  owner_client_id TEXT NOT NULL CHECK (length(trim(owner_client_id)) BETWEEN 1 AND 200),
+  creating_session_id TEXT NOT NULL CHECK (length(creating_session_id) = 36),
+  operation TEXT NOT NULL CHECK (length(trim(operation)) BETWEEN 1 AND 200),
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('command', 'query')),
+  catalog_version TEXT NOT NULL CHECK (length(trim(catalog_version)) BETWEEN 1 AND 100),
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74 AND substr(catalog_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  input_json TEXT NOT NULL CHECK (json_valid(input_json) AND json_type(input_json) = 'object'),
+  input_hash TEXT NOT NULL CHECK (substr(input_hash, 1, 10) = 'sha256-v1:' AND length(input_hash) = 74 AND substr(input_hash, 11) NOT GLOB '*[^0-9a-f]*'),
+  expected_data_epoch TEXT,
+  expected_data_revision INTEGER CHECK (expected_data_revision IS NULL OR (typeof(expected_data_revision) = 'integer' AND expected_data_revision BETWEEN 0 AND 9007199254740991)),
+  workflow_kind TEXT CHECK (workflow_kind IS NULL OR workflow_kind IN ('approval', 'changeset', 'r4-grant')),
+  workflow_id TEXT CHECK (workflow_id IS NULL OR length(workflow_id) = 36),
+  gateway_request_id TEXT NOT NULL UNIQUE CHECK (length(gateway_request_id) = 36),
+  receipt_id TEXT CHECK (receipt_id IS NULL OR length(receipt_id) = 36),
+  operation_journal_id TEXT CHECK (operation_journal_id IS NULL OR length(trim(operation_journal_id)) BETWEEN 1 AND 200),
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'waiting_approval', 'completed', 'failed', 'cancelled', 'interrupted')),
+  progress INTEGER NOT NULL DEFAULT 0 CHECK (typeof(progress) = 'integer' AND progress BETWEEN 0 AND 100),
+  result_ref TEXT CHECK (result_ref IS NULL OR (length(result_ref) BETWEEN 1 AND 200 AND instr(result_ref, '/') = 0 AND instr(result_ref, char(92)) = 0)),
+  result_hash TEXT CHECK (result_hash IS NULL OR (substr(result_hash, 1, 10) = 'sha256-v1:' AND length(result_hash) = 74 AND substr(result_hash, 11) NOT GLOB '*[^0-9a-f]*')),
+  result_size INTEGER CHECK (result_size IS NULL OR (typeof(result_size) = 'integer' AND result_size BETWEEN 0 AND 1048576)),
+  error_code TEXT CHECK (error_code IS NULL OR length(trim(error_code)) BETWEEN 1 AND 100),
+  error_message TEXT CHECK (error_message IS NULL OR length(error_message) BETWEEN 1 AND 500),
+  cancellation_requested_at TEXT CHECK (cancellation_requested_at IS NULL OR (length(cancellation_requested_at) = 24 AND substr(cancellation_requested_at, 24, 1) = 'Z')),
+  lease_token TEXT UNIQUE CHECK (lease_token IS NULL OR length(lease_token) = 36),
+  lease_expires_at TEXT CHECK (lease_expires_at IS NULL OR (length(lease_expires_at) = 24 AND substr(lease_expires_at, 24, 1) = 'Z')),
+  attempt INTEGER NOT NULL DEFAULT 0 CHECK (typeof(attempt) = 'integer' AND attempt BETWEEN 0 AND 100),
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z'),
+  started_at TEXT CHECK (started_at IS NULL OR (length(started_at) = 24 AND substr(started_at, 24, 1) = 'Z')),
+  terminal_at TEXT CHECK (terminal_at IS NULL OR (length(terminal_at) = 24 AND substr(terminal_at, 24, 1) = 'Z')),
+  retention_class TEXT NOT NULL CHECK (retention_class IN ('ordinary_7d', 'protected_30d')),
+  retain_until TEXT NOT NULL CHECK (length(retain_until) = 24 AND substr(retain_until, 24, 1) = 'Z' AND retain_until > created_at),
+  CHECK ((expected_data_epoch IS NULL) = (expected_data_revision IS NULL)),
+  CHECK ((workflow_kind IS NULL) = (workflow_id IS NULL)),
+  CHECK ((result_ref IS NULL) = (result_hash IS NULL) AND (result_ref IS NULL) = (result_size IS NULL)),
+  CHECK ((lease_token IS NULL) = (lease_expires_at IS NULL)),
+  CHECK ((status = 'running') = (lease_token IS NOT NULL)),
+  CHECK ((status IN ('completed', 'failed', 'cancelled', 'interrupted')) = (terminal_at IS NOT NULL)),
+  CHECK (status <> 'completed' OR result_ref IS NOT NULL),
+  CHECK (status <> 'waiting_approval' OR workflow_id IS NOT NULL),
+  FOREIGN KEY (creating_session_id) REFERENCES agent_sessions(session_id) ON DELETE RESTRICT
+);
+
+CREATE TRIGGER IF NOT EXISTS agent_jobs_terminal_immutable_update
+BEFORE UPDATE ON agent_jobs
+WHEN OLD.status IN ('completed', 'failed', 'cancelled', 'interrupted')
+BEGIN
+  SELECT RAISE(ABORT, 'terminal agent_jobs rows are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_jobs_nonterminal_delete_forbidden
+BEFORE DELETE ON agent_jobs
+WHEN OLD.status NOT IN ('completed', 'failed', 'cancelled', 'interrupted')
+BEGIN
+  SELECT RAISE(ABORT, 'nonterminal agent_jobs rows cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_changeset_operations_immutable_update
+BEFORE UPDATE ON agent_changeset_operations
+BEGIN
+  SELECT RAISE(ABORT, 'agent_changeset_operations are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS agent_changeset_operations_immutable_delete
+BEFORE DELETE ON agent_changeset_operations
+BEGIN
+  SELECT RAISE(ABORT, 'agent_changeset_operations are immutable');
+END;
+
+CREATE INDEX IF NOT EXISTS idx_agent_idempotency_status_updated ON agent_idempotency(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_agent_idempotency_retention ON agent_idempotency(retain_until, status);
+CREATE INDEX IF NOT EXISTS idx_agent_r4_grants_client_status_expiry ON agent_r4_grants(client_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_r4_grants_reserve_lookup ON agent_r4_grants(client_id, operation, payload_hash, target_hash, catalog_hash, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_r4_grants_unique_authority ON agent_r4_grants(client_id, operation, payload_hash, target_hash, catalog_hash) WHERE status IN ('active', 'reserved');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_r4_grants_reserved_request ON agent_r4_grants(reserved_request_id) WHERE reserved_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_approvals_status_expiry ON agent_approvals(status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_approvals_client_status ON agent_approvals(client_id, status, expires_at);
+CREATE INDEX IF NOT EXISTS idx_agent_changesets_client_status_expiry ON agent_changesets(client_id, status, expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_audit_segments_open ON agent_audit_segments((1)) WHERE closed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_audit_events_search ON agent_audit_events(occurred_at, client_id, risk, operation);
+CREATE INDEX IF NOT EXISTS idx_agent_audit_events_receipt ON agent_audit_events(receipt_client_id, receipt_request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_audit_events_retention ON agent_audit_events(retain_until, segment_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_fifo ON agent_jobs(status, created_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_owner_session ON agent_jobs(owner_client_id, creating_session_id, created_at, job_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_receipt ON agent_jobs(receipt_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_journal ON agent_jobs(operation_journal_id);
+CREATE INDEX IF NOT EXISTS idx_agent_jobs_retention ON agent_jobs(retain_until, status);
+
+CREATE TABLE IF NOT EXISTS agent_http_oauth_config (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  direct_https_port INTEGER NOT NULL CHECK (typeof(direct_https_port) = 'integer' AND direct_https_port BETWEEN 1 AND 65535),
+  authority TEXT NOT NULL CHECK (length(authority) BETWEEN 20 AND 100),
+  resource TEXT NOT NULL CHECK (length(resource) BETWEEN 25 AND 120),
+  issuer TEXT NOT NULL CHECK (length(issuer) BETWEEN 20 AND 100),
+  app_instance_id TEXT NOT NULL CHECK (length(trim(app_instance_id)) BETWEEN 1 AND 200),
+  root_ca_thumbprint TEXT CHECK (root_ca_thumbprint IS NULL OR root_ca_thumbprint GLOB '[0-9A-Fa-f]*'),
+  previous_root_ca_thumbprint TEXT CHECK (previous_root_ca_thumbprint IS NULL OR previous_root_ca_thumbprint GLOB '[0-9A-Fa-f]*'),
+  current_user_key_handle TEXT CHECK (current_user_key_handle IS NULL OR length(current_user_key_handle) BETWEEN 1 AND 200),
+  certificate_thumbprint TEXT CHECK (certificate_thumbprint IS NULL OR certificate_thumbprint GLOB '[0-9A-Fa-f]*'),
+  certificate_not_after TEXT,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+  updated_at TEXT NOT NULL CHECK (length(trim(updated_at)) > 0)
+);
+
+CREATE TABLE IF NOT EXISTS agent_http_clients (
+  client_id TEXT PRIMARY KEY CHECK (length(trim(client_id)) BETWEEN 1 AND 200),
+  product TEXT NOT NULL CHECK (product IN ('codex', 'claude_code')),
+  version_evidence TEXT NOT NULL CHECK (length(trim(version_evidence)) BETWEEN 1 AND 200),
+  redirect_mode TEXT NOT NULL CHECK (redirect_mode IN ('codex-loopback', 'claude-exact')),
+  exact_redirect_uri TEXT,
+  resource TEXT NOT NULL CHECK (length(trim(resource)) BETWEEN 1 AND 200),
+  issuer TEXT NOT NULL CHECK (length(trim(issuer)) BETWEEN 1 AND 200),
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  trust TEXT NOT NULL CHECK (trust IN ('observer', 'collaborator', 'autonomous', 'full_control')),
+  refresh_tokens_allowed INTEGER NOT NULL CHECK (refresh_tokens_allowed IN (0, 1)),
+  metadata_hash TEXT CHECK (metadata_hash IS NULL OR (substr(metadata_hash, 1, 10) = 'sha256-v1:' AND length(metadata_hash) = 74)),
+  revoked_at TEXT,
+  created_at TEXT NOT NULL CHECK (length(created_at) = 24 AND substr(created_at, 24, 1) = 'Z'),
+  updated_at TEXT NOT NULL CHECK (length(updated_at) = 24 AND substr(updated_at, 24, 1) = 'Z')
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_authorization_codes (
+  code_hash TEXT PRIMARY KEY CHECK (substr(code_hash, 1, 10) = 'sha256-v1:' AND length(code_hash) = 74),
+  client_id TEXT NOT NULL,
+  redirect_uri TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  code_challenge TEXT NOT NULL,
+  nonce_hash TEXT,
+  app_instance_id TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  refresh_tokens_allowed INTEGER NOT NULL CHECK (refresh_tokens_allowed IN (0, 1)),
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_access_tokens (
+  token_id TEXT PRIMARY KEY CHECK (length(token_id) = 36),
+  token_hash TEXT NOT NULL UNIQUE CHECK (substr(token_hash, 1, 10) = 'sha256-v1:' AND length(token_hash) = 74),
+  client_id TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL,
+  family_id TEXT,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_refresh_families (
+  family_id TEXT PRIMARY KEY CHECK (length(family_id) = 36),
+  client_id TEXT NOT NULL,
+  resource TEXT NOT NULL,
+  issuer TEXT NOT NULL,
+  app_instance_id TEXT NOT NULL,
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  current_token_hash TEXT NOT NULL CHECK (substr(current_token_hash, 1, 10) = 'sha256-v1:' AND length(current_token_hash) = 74),
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  FOREIGN KEY (client_id) REFERENCES agent_http_clients(client_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_refresh_tokens (
+  token_hash TEXT PRIMARY KEY CHECK (substr(token_hash, 1, 10) = 'sha256-v1:' AND length(token_hash) = 74),
+  family_id TEXT NOT NULL,
+  used_at TEXT,
+  FOREIGN KEY (family_id) REFERENCES agent_oauth_refresh_families(family_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_revocations (
+  token_id TEXT PRIMARY KEY CHECK (length(token_id) BETWEEN 1 AND 200),
+  client_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 100),
+  revoked_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_http_clients_active ON agent_http_clients(revoked_at, product);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_access_active ON agent_oauth_access_tokens(client_id, expires_at, revoked_at);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_refresh_client ON agent_oauth_refresh_families(client_id, expires_at, revoked_at);
+
+CREATE TABLE IF NOT EXISTS agent_https_trust_intents (
+  intent_id TEXT PRIMARY KEY CHECK (length(intent_id) = 36),
+  kind TEXT NOT NULL CHECK (kind IN ('install', 'remove')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'install_pending', 'removal_pending', 'completed', 'failed', 'recovery_required', 'expired', 'invalidated')),
+  renderer_web_contents_id INTEGER NOT NULL,
+  navigation_generation INTEGER NOT NULL,
+  key_name TEXT,
+  certificate_der BLOB,
+  certificate_hash TEXT,
+  thumbprint TEXT,
+  certificate_not_after TEXT,
+  subject TEXT,
+  authority TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_https_trust_intents_status ON agent_https_trust_intents(status, expires_at);
+
+CREATE TABLE IF NOT EXISTS agent_oauth_pending_consents (
+  request_id TEXT PRIMARY KEY CHECK (length(request_id) = 36),
+  client_id TEXT NOT NULL,
+  product TEXT NOT NULL CHECK (product IN ('codex', 'claude_code')),
+  scopes_json TEXT NOT NULL CHECK (json_valid(scopes_json) AND json_type(scopes_json) = 'array'),
+  resource TEXT NOT NULL,
+  redirect_display TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'invalidated', 'consumed')),
+  renderer_web_contents_id INTEGER,
+  navigation_generation INTEGER,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agent_oauth_pending_consents_status ON agent_oauth_pending_consents(status, expires_at);
+`;
+
 export const schemaSql = `
+${controlMetadataSchemaSql}
+${agentIdentitySchemaSql}
+${agentDurabilitySchemaSql}
+
+CREATE TABLE IF NOT EXISTS agent_global_assets (
+  asset_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('backup', 'export', 'database_import', 'root_selection')),
+  status TEXT NOT NULL CHECK (status IN ('intent', 'staged', 'published', 'consumed', 'quarantined', 'failed', 'needs_recovery')),
+  metadata_json TEXT NOT NULL,
+  metadata_hash TEXT NOT NULL,
+  internal_path TEXT,
+  staged_path TEXT,
+  content_hash TEXT,
+  content_size INTEGER,
+  operation_journal_id TEXT,
+  job_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_global_assets_owner_kind ON agent_global_assets(owner_client_id, kind, created_at, asset_id);
+CREATE INDEX IF NOT EXISTS idx_agent_global_assets_recovery ON agent_global_assets(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_backup_deletion_journals (
+  journal_id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL UNIQUE,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  affected_set_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL CHECK (substr(content_hash, 1, 10) = 'sha256-v1:' AND length(content_hash) = 74),
+  content_size INTEGER NOT NULL CHECK (typeof(content_size) = 'integer' AND content_size >= 0),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('intent', 'moved', 'completed', 'failed', 'needs_recovery')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_backup_deletion_journals_status ON agent_backup_deletion_journals(status, updated_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_backup_deletion_journals_request ON agent_backup_deletion_journals(owner_client_id, request_id);
+
+CREATE TABLE IF NOT EXISTS agent_database_restore_journals (
+  operation_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  change_set_id TEXT,
+  asset_id TEXT NOT NULL,
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  backup_content_hash TEXT NOT NULL CHECK (substr(backup_content_hash, 1, 10) = 'sha256-v1:' AND length(backup_content_hash) = 74),
+  backup_content_size INTEGER NOT NULL CHECK (typeof(backup_content_size) = 'integer' AND backup_content_size >= 0),
+  base_data_epoch TEXT NOT NULL,
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision >= 0),
+  catalog_version TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'needs_recovery')),
+  version_after_epoch TEXT,
+  version_after_revision INTEGER CHECK (version_after_revision IS NULL OR (typeof(version_after_revision) = 'integer' AND version_after_revision >= 0)),
+  recovery_database_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_database_restore_journals_request ON agent_database_restore_journals(owner_client_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_database_restore_journals_status ON agent_database_restore_journals(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_database_import_journals (
+  operation_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  change_set_id TEXT,
+  asset_id TEXT NOT NULL UNIQUE,
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  package_content_hash TEXT NOT NULL CHECK (substr(package_content_hash, 1, 10) = 'sha256-v1:' AND length(package_content_hash) = 74),
+  package_content_size INTEGER NOT NULL CHECK (typeof(package_content_size) = 'integer' AND package_content_size > 0),
+  package_semantic_hash TEXT NOT NULL CHECK (substr(package_semantic_hash, 1, 10) = 'sha256-v1:' AND length(package_semantic_hash) = 74),
+  package_row_count INTEGER NOT NULL CHECK (typeof(package_row_count) = 'integer' AND package_row_count >= 0),
+  live_semantic_hash TEXT NOT NULL CHECK (substr(live_semantic_hash, 1, 10) = 'sha256-v1:' AND length(live_semantic_hash) = 74),
+  live_semantic_size INTEGER NOT NULL CHECK (typeof(live_semantic_size) = 'integer' AND live_semantic_size >= 0),
+  base_data_epoch TEXT NOT NULL,
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision >= 0),
+  catalog_version TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'needs_recovery')),
+  version_after_epoch TEXT,
+  version_after_revision INTEGER CHECK (version_after_revision IS NULL OR (typeof(version_after_revision) = 'integer' AND version_after_revision >= 0)),
+  recovery_database_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_database_import_journals_request ON agent_database_import_journals(owner_client_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_database_import_journals_status ON agent_database_import_journals(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_database_clear_journals (
+  operation_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  change_set_id TEXT,
+  delete_managed_images INTEGER NOT NULL CHECK (delete_managed_images IN (0, 1)),
+  business_row_count INTEGER NOT NULL CHECK (typeof(business_row_count) = 'integer' AND business_row_count >= 0),
+  managed_image_count INTEGER NOT NULL CHECK (typeof(managed_image_count) = 'integer' AND managed_image_count >= 0),
+  affected_entity_count INTEGER NOT NULL CHECK (typeof(affected_entity_count) = 'integer' AND affected_entity_count >= 0 AND affected_entity_count <= 500),
+  inventory_hash TEXT NOT NULL CHECK (substr(inventory_hash, 1, 10) = 'sha256-v1:' AND length(inventory_hash) = 74),
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  live_semantic_hash TEXT NOT NULL CHECK (substr(live_semantic_hash, 1, 10) = 'sha256-v1:' AND length(live_semantic_hash) = 74),
+  live_semantic_size INTEGER NOT NULL CHECK (typeof(live_semantic_size) = 'integer' AND live_semantic_size >= 0),
+  base_data_epoch TEXT NOT NULL,
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision >= 0),
+  catalog_version TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'needs_recovery')),
+  version_after_epoch TEXT,
+  version_after_revision INTEGER CHECK (version_after_revision IS NULL OR (typeof(version_after_revision) = 'integer' AND version_after_revision >= 0)),
+  recovery_database_path TEXT,
+  recovery_inventory_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_database_clear_journals_request ON agent_database_clear_journals(owner_client_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_database_clear_journals_status ON agent_database_clear_journals(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_import_batch_deletion_journals (
+  operation_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  change_set_id TEXT,
+  batch_id TEXT NOT NULL,
+  batch_owner_client_id TEXT,
+  delete_managed_assets INTEGER NOT NULL CHECK (delete_managed_assets IN (0, 1)),
+  deleted_question_count INTEGER NOT NULL CHECK (typeof(deleted_question_count) = 'integer' AND deleted_question_count >= 0),
+  deleted_external_question_count INTEGER NOT NULL CHECK (typeof(deleted_external_question_count) = 'integer' AND deleted_external_question_count >= 0),
+  deleted_attempt_count INTEGER NOT NULL CHECK (typeof(deleted_attempt_count) = 'integer' AND deleted_attempt_count >= 0),
+  soft_deleted_knowledge_count INTEGER NOT NULL CHECK (typeof(soft_deleted_knowledge_count) = 'integer' AND soft_deleted_knowledge_count >= 0),
+  managed_file_count INTEGER NOT NULL CHECK (typeof(managed_file_count) = 'integer' AND managed_file_count >= 0),
+  quarantined_file_count INTEGER NOT NULL CHECK (typeof(quarantined_file_count) = 'integer' AND quarantined_file_count >= 0),
+  affected_entity_count INTEGER NOT NULL CHECK (typeof(affected_entity_count) = 'integer' AND affected_entity_count >= 0 AND affected_entity_count <= 500),
+  inventory_hash TEXT NOT NULL CHECK (substr(inventory_hash, 1, 10) = 'sha256-v1:' AND length(inventory_hash) = 74),
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  live_semantic_hash TEXT NOT NULL CHECK (substr(live_semantic_hash, 1, 10) = 'sha256-v1:' AND length(live_semantic_hash) = 74),
+  live_semantic_size INTEGER NOT NULL CHECK (typeof(live_semantic_size) = 'integer' AND live_semantic_size >= 0),
+  base_data_epoch TEXT NOT NULL,
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision >= 0),
+  catalog_version TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'needs_recovery')),
+  version_after_epoch TEXT,
+  version_after_revision INTEGER CHECK (version_after_revision IS NULL OR (typeof(version_after_revision) = 'integer' AND version_after_revision >= 0)),
+  recovery_database_path TEXT,
+  recovery_inventory_path TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_import_batch_deletion_journals_request ON agent_import_batch_deletion_journals(owner_client_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_import_batch_deletion_journals_status ON agent_import_batch_deletion_journals(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS agent_data_root_migration_journals (
+  operation_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  reservation_id TEXT NOT NULL,
+  grant_id TEXT NOT NULL,
+  change_set_id TEXT,
+  selection_id TEXT NOT NULL UNIQUE,
+  affected_entities_json TEXT NOT NULL,
+  affected_set_hash TEXT NOT NULL CHECK (substr(affected_set_hash, 1, 10) = 'sha256-v1:' AND length(affected_set_hash) = 74),
+  target_hash TEXT NOT NULL CHECK (substr(target_hash, 1, 10) = 'sha256-v1:' AND length(target_hash) = 74),
+  inventory_hash TEXT NOT NULL CHECK (substr(inventory_hash, 1, 10) = 'sha256-v1:' AND length(inventory_hash) = 74),
+  file_count INTEGER NOT NULL CHECK (typeof(file_count) = 'integer' AND file_count >= 0 AND file_count <= 498),
+  total_bytes INTEGER NOT NULL CHECK (typeof(total_bytes) = 'integer' AND total_bytes >= 0),
+  base_data_epoch TEXT NOT NULL,
+  base_data_revision INTEGER NOT NULL CHECK (typeof(base_data_revision) = 'integer' AND base_data_revision >= 0),
+  catalog_version TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL CHECK (substr(catalog_hash, 1, 10) = 'sha256-v1:' AND length(catalog_hash) = 74),
+  status TEXT NOT NULL CHECK (status IN ('completed', 'needs_recovery')),
+  version_after_epoch TEXT,
+  version_after_revision INTEGER CHECK (version_after_revision IS NULL OR (typeof(version_after_revision) = 'integer' AND version_after_revision >= 0)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_data_root_migration_request ON agent_data_root_migration_journals(owner_client_id, request_id);
+CREATE INDEX IF NOT EXISTS idx_agent_data_root_migration_status ON agent_data_root_migration_journals(status, updated_at);
+
 CREATE TABLE IF NOT EXISTS questions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
@@ -114,6 +854,7 @@ CREATE TABLE IF NOT EXISTS question_knowledge_points (
 
 CREATE TABLE IF NOT EXISTS import_batches (
   id TEXT PRIMARY KEY,
+  owner_client_id TEXT,
   type TEXT NOT NULL CHECK (type IN ('wrong_questions', 'question_bank', 'knowledge_map', 'textbook', 'unknown')),
   name TEXT DEFAULT '',
   source_file_name TEXT DEFAULT '',
@@ -144,6 +885,32 @@ CREATE TABLE IF NOT EXISTS import_assets (
   created_at TEXT NOT NULL,
   deleted_at TEXT,
   FOREIGN KEY (batch_id) REFERENCES import_batches(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS import_drafts (
+  draft_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('collecting', 'validated', 'applied', 'cancelled')),
+  source TEXT NOT NULL CHECK (source IN ('external_multimodal', 'app_ocr_deepseek', 'structured_file', 'question_bank')),
+  network_disclosure TEXT NOT NULL CHECK (network_disclosure IN ('none', 'deepseek_text_only')),
+  created_by TEXT NOT NULL CHECK (created_by IN ('renderer', 'mcp', 'internal')),
+  items_json TEXT NOT NULL,
+  validation_json TEXT,
+  applied_question_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS import_managed_assets (
+  asset_id TEXT PRIMARY KEY,
+  owner_client_id TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  file_path TEXT NOT NULL UNIQUE,
+  sha256 TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('staged', 'consumed', 'cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS external_questions (
@@ -298,6 +1065,8 @@ CREATE INDEX IF NOT EXISTS idx_import_batches_type ON import_batches(type);
 CREATE INDEX IF NOT EXISTS idx_import_batches_status ON import_batches(status);
 CREATE INDEX IF NOT EXISTS idx_import_batch_items_batch ON import_batch_items(batch_id);
 CREATE INDEX IF NOT EXISTS idx_import_assets_batch ON import_assets(batch_id);
+CREATE INDEX IF NOT EXISTS idx_import_drafts_owner_state ON import_drafts(owner_client_id, state, updated_at);
+CREATE INDEX IF NOT EXISTS idx_import_managed_assets_owner_state ON import_managed_assets(owner_client_id, state, updated_at);
 CREATE INDEX IF NOT EXISTS idx_external_questions_subject ON external_questions(subject);
 CREATE INDEX IF NOT EXISTS idx_external_questions_year ON external_questions(year);
 CREATE INDEX IF NOT EXISTS idx_external_questions_format ON external_questions(question_format);

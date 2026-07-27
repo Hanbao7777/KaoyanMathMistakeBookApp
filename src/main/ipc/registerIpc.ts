@@ -1,34 +1,49 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, ipcMain, screen } from 'electron';
+import type { Database } from 'sql.js';
+import type { DatabaseMutationResult } from '../persistence';
 import {
-  addReviewLog,
   clearAllData,
-  createQuestion,
-  deleteQuestion,
   exportData,
+  getAgentControlPlane,
+  getDatabaseCoordinator,
   getCurrentPaths,
   getDashboard,
-  getQuestion,
+    getQuestionsApplication,
+    getImportsApplication,
+  getReadOnlyDatabase,
   getReviewBuckets,
   getStats,
   importData,
-  initializeDatabase,
-  listQuestions,
-  listReviewLogs,
-  markMastery,
-  removeImage,
-  resetDatabaseConnection,
-  submitReviewResult,
-  updateQuestion
+  switchDataRoot,
 } from '../services/databaseService';
+import {
+  addReviewFromRenderer,
+  createQuestionFromRenderer,
+  deleteQuestionFromRenderer,
+  getQuestionFromRenderer,
+  getReviewBucketsFromRenderer,
+  listQuestionsFromRenderer,
+  listReviewLogsFromRenderer,
+  markMasteryFromRenderer,
+  removeImageFromRenderer,
+  submitReviewResultFromRenderer,
+  undoReviewResultFromRenderer,
+  updateQuestionFromRenderer
+} from './adapters/questionsIpc';
+import { createKnowledgeRendererAdapter } from './adapters/knowledgeIpc';
+import { createStudyRendererAdapter } from './adapters/studyIpc';
+import { createImportsRendererAdapter } from './adapters/importsIpc';
+import { createGlobalRendererAdapter } from './adapters/globalIpc';
 import { getDeepSeekSettings, saveDeepSeekSettings, structureQuestion as structureQuestionAi, diagnoseError as diagnoseErrorAi } from '../services/deepseekService';
 import { runOcr as runOcrService, getPythonPath } from '../services/ocrService';
 import { chooseDataRoot, chooseImages, chooseJsonFile } from '../services/fileService';
-import { copyExistingData, getPaths, setDataRoot } from '../services/pathService';
 import { checkImageExists, getImageUrl, openImage, revealImageInFolder } from '../services/imageService';
-import { createDatabaseBackup, deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
-import { exportQuestionsToPdf, openExportedPdf, openExportsFolder } from '../services/pdfExportService';
+import { deleteDatabaseBackup, ensureDailyAutoBackup, listDatabaseBackups, openBackupsFolder, restoreDatabaseBackup } from '../services/backupService';
+import { openExportedPdf, openExportsFolder } from '../services/pdfExportService';
 import {
   cleanupStructuredImport,
   confirmStructuredImport,
@@ -94,17 +109,37 @@ import {
   updateStudyTask
 } from '../services/studySupervisorService';
 import {
-  listTickTickLists, getTickTickList, createTickTickList, updateTickTickList, deleteTickTickList, reorderTickTickLists,
-  listTickTickTasks, getTickTickTask, createTickTickTask, updateTickTickTask, deleteTickTickTask,
+  getTickTickList, deleteTickTickList, reorderTickTickLists,
   getTodayTickTickTasks,
   listTickTickTags,
-  listTickTickFocusSessions, createTickTickFocusSession,
-  getTickTickTaskBridges, createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
-  getTickTickCalendarMonth,
+  createTickTickFocusSession,
+  createTickTickBridge, deleteTickTickBridge, getBridgesForLinked,
   getTickTickSettings, saveTickTickSettings,
-  listTickTickHabits, createTickTickHabit, updateTickTickHabit, deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
+  deleteTickTickHabit, toggleTickTickHabit, getTickTickHabitLogs
 } from '../services/ticktickService';
-import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted, completeTaskWithReviewSync, uncompleteTaskWithReviewSync } from '../services/bridgeService';
+import { syncTaskCompletedToReview, syncReviewToTickTickTask, syncMasteryToTaskPriority, generateAutoReviewTasks, undoSyncTaskCompleted } from '../services/bridgeService';
+import {
+  completeTickTickTaskFromRenderer,
+  createTickTickHabitFromRenderer,
+  createTickTickListFromRenderer,
+  createTickTickFocusSessionFromRenderer,
+  createTickTickTaskFromRenderer,
+  deleteTickTickTaskFromRenderer,
+  getTickTickTaskFromRenderer,
+  getTickTickBridgesFromRenderer,
+  getTickTickCalendarEventsFromRenderer,
+  listTickTickFocusSessionsFromRenderer,
+  listTickTickHabitsFromRenderer,
+  listTickTickListsFromRenderer,
+  listTickTickTasksFromRenderer,
+  uncompleteTickTickTaskFromRenderer,
+  updateTickTickTaskFromRenderer,
+  updateTickTickBridgeFromRenderer,
+  updateTickTickHabitFromRenderer,
+  updateTickTickListFromRenderer
+} from './adapters/ticktickIpc';
+import { agentControlCenterIpc } from './adapters/agentControlCenterIpc';
+import { advanceRendererSession, deriveTrustedRendererContext, registerRendererSession, removeRendererSession } from './trustedRendererContext';
 import { FocusTimerEngine } from '../services/focusTimerEngine';
 import { aiDecomposeTask, aiGenerateDailyPlan, aiGenerateReview } from '../services/ticktickAiService';
 import type {
@@ -150,6 +185,14 @@ import type {
   TickTickHabitInput,
   TickTickHabitLog
 } from '../../shared/types';
+import type { AgentScope, TrustProfile } from '../../shared/agent/v1/gatewayContracts';
+import type { AgentControlCreateR4GrantRequest, AgentControlPageRequest } from '../../shared/api';
+import { validatePairingRequest, validatePairingTargetRequest, type PairingRequest, type PairingTargetRequest } from '../../shared/mcp/v1/pairingContracts';
+
+function trustedRendererContext(event: Electron.IpcMainInvokeEvent): { readonly webContentsId: number; readonly navigationGeneration: number } {
+  const packagedUrl = pathToFileURL(path.resolve(__dirname, '../../../renderer/index.html')).href;
+  return deriveTrustedRendererContext(event, { packaged: app.isPackaged, packagedUrl, developmentOrigin: 'http://127.0.0.1:5173' });
+}
 
 function handle<TArgs extends unknown[], TResult>(channel: string, listener: (...args: TArgs) => Promise<TResult> | TResult) {
   ipcMain.handle(channel, async (_event, ...args: TArgs) => {
@@ -161,19 +204,108 @@ function handle<TArgs extends unknown[], TResult>(channel: string, listener: (..
   });
 }
 
+async function executeLegacyMutation<T>(
+  operation: string,
+  execute: (database: Database) => DatabaseMutationResult<T> | Promise<DatabaseMutationResult<T>>
+): Promise<T> {
+  const coordinator = await getDatabaseCoordinator();
+  const application = await getQuestionsApplication();
+  const requestId = randomUUID();
+  const preparedEvents = application.eventBus.prepareEvents(
+    [{ type: 'legacy.operation_completed', payload: { operation } }],
+    { requestId, traceId: randomUUID(), source: 'internal' }
+  );
+  const result = await coordinator.executeWrite({ requestId, concurrency: 'none', execute });
+  if (result.changed) {
+    await application.eventBus.publish(application.eventBus.finalizeEvents(preparedEvents, {
+      versionBefore: result.versionBefore,
+      versionAfter: result.versionAfter
+    }));
+  }
+  return result.value;
+}
+
+async function getWhiteNoiseState(): Promise<{ enabled: boolean; noise: TickTickWhiteNoise }> {
+  const database = await getReadOnlyDatabase();
+  try {
+    const row = database.select<{ value: string }>(
+      "SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'"
+    )[0];
+    if (row) return JSON.parse(row.value) as { enabled: boolean; noise: TickTickWhiteNoise };
+  } catch { /* not yet configured */ }
+  return { enabled: false, noise: 'none' };
+}
+
+async function setWhiteNoiseState(state: { enabled: boolean; noise: TickTickWhiteNoise }): Promise<void> {
+  const value = JSON.stringify(state);
+  await executeLegacyMutation('ipc-white-noise-set', (database) => {
+    const tableExists = database.exec(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_settings'"
+    ).length > 0;
+    if (!tableExists) {
+      database.run('CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+    } else {
+      const current = database.exec("SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'");
+      if (current[0]?.values[0]?.[0] === value) return { changed: false, value: undefined };
+    }
+
+    const statement = database.prepare("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)");
+    try {
+      statement.run([value]);
+    } finally {
+      statement.free();
+    }
+    return { changed: true, value: undefined };
+  });
+}
+
 // ── Shared Timer State (single source of truth: FocusTimerEngine) ──
+interface RendererImageSelection {
+  readonly filePaths: readonly string[];
+  readonly expiresAt: number;
+}
+
+const rendererImageSelections = new Map<string, RendererImageSelection>();
+const RENDERER_IMAGE_SELECTION_TTL_MS = 10 * 60_000;
+
+async function canonicalSelectedImagePath(filePath: string): Promise<string> {
+  return path.normalize(await fs.promises.realpath(filePath));
+}
+
+async function createRendererImageSelection(): Promise<{ readonly selectionToken: string; readonly filePaths: readonly string[] }> {
+  const selected = await chooseImages();
+  const filePaths = Object.freeze(await Promise.all(selected.map(canonicalSelectedImagePath)));
+  const selectionToken = randomUUID().toLowerCase();
+  rendererImageSelections.set(selectionToken, Object.freeze({ filePaths, expiresAt: Date.now() + RENDERER_IMAGE_SELECTION_TTL_MS }));
+  return Object.freeze({ selectionToken, filePaths });
+}
+
+function consumeRendererImageSelection(selectionToken: string): readonly string[] {
+  const now = Date.now();
+  for (const [token, selection] of rendererImageSelections) if (selection.expiresAt <= now) rendererImageSelections.delete(token);
+  const selection = rendererImageSelections.get(selectionToken);
+  if (!selection || selection.expiresAt <= now) throw new Error('Import image selection token is invalid or expired');
+  rendererImageSelections.delete(selectionToken);
+  return selection.filePaths;
+}
+
+export function clearRendererImageSelectionProofs(): void { rendererImageSelections.clear(); }
+
 const focusTimerEngine = new FocusTimerEngine();
 let focusTimerInterval: ReturnType<typeof setInterval> | null = null;
 
 focusTimerEngine.setSessionEndCallback((info) => {
-  createTickTickFocusSession({
+  void createTickTickFocusSession({
     task_id: info.boundTaskId,
     start_time: new Date(info.sessionStartTime).toISOString(),
     end_time: new Date().toISOString(),
     duration_minutes: info.durationMinutes,
     session_type: 'focus',
     completed: 1,
-  }).catch((e) => { console.error('focusTimerEngine: saveSession', e); });
+  }).then(
+    () => undefined,
+    (error) => { console.error('focusTimerEngine: saveSession failed', error); }
+  );
 });
 
 function startEngineTick() {
@@ -278,23 +410,109 @@ function focusMainWindow() {
 }
 
 export function registerIpc() {
+  if (typeof app.on === 'function') app.on('web-contents-created', (_event, contents) => {
+    registerRendererSession(contents.id);
+    contents.on('did-frame-navigate', (_event, _url, _httpResponseCode, _httpStatusText, isMainFrame) => { if (isMainFrame) advanceRendererSession(contents.id); });
+    contents.on('did-navigate-in-page', (_event, _url, isMainFrame) => { if (isMainFrame) advanceRendererSession(contents.id); });
+    contents.on('render-process-gone', () => advanceRendererSession(contents.id));
+    contents.once('destroyed', () => removeRendererSession(contents.id));
+  });
+  handle('agentControl:getStatus', () => agentControlCenterIpc.getStatus());
+  handle('agentControl:setExternalControlEnabled', (enabled: boolean) => agentControlCenterIpc.setExternalControlEnabled(enabled));
+  handle('agentControl:listClients', (request?: AgentControlPageRequest) => agentControlCenterIpc.listClients(request));
+  handle('agentControl:updateClientAccess', (request: { readonly clientId: string; readonly scopes: readonly AgentScope[]; readonly trust: TrustProfile }) => agentControlCenterIpc.updateClientAccess(request.clientId, request.scopes, request.trust));
+  handle('agentControl:revokeClient', (clientId: string) => agentControlCenterIpc.revokeClient(clientId));
+  handle('agentControl:listSessions', (request?: AgentControlPageRequest & { readonly clientId?: string }) => agentControlCenterIpc.listSessions(request));
+  handle('agentControl:terminateSession', (sessionId: string) => agentControlCenterIpc.terminateSession(sessionId));
+  handle('agentControl:listR4Grants', (request?: AgentControlPageRequest & { readonly clientId?: string; readonly status?: import('../../shared/agent/v1/gatewayContracts').R4GrantStatus }) => agentControlCenterIpc.listR4Grants(request));
+  handle('agentControl:createR4Grant', (grant: AgentControlCreateR4GrantRequest) => agentControlCenterIpc.createR4Grant(grant));
+  handle('agentControl:revokeR4Grant', (grantId: string) => agentControlCenterIpc.revokeR4Grant(grantId));
+  handle('agentControl:listApprovals', (request?: AgentControlPageRequest & { readonly status?: import('../../shared/agent/v1/gatewayContracts').ApprovalStatus }) => agentControlCenterIpc.listApprovals(request));
+  handle('agentControl:approve', (approvalId: string) => agentControlCenterIpc.approve(approvalId));
+  handle('agentControl:rejectApproval', (approvalId: string, reasonCode: string) => agentControlCenterIpc.rejectApproval(approvalId, reasonCode));
+  handle('agentControl:listChangeSets', (request?: AgentControlPageRequest & { readonly status?: import('../../shared/agent/v1/gatewayContracts').ChangeSetStatus }) => agentControlCenterIpc.listChangeSets(request));
+  handle('agentControl:getChangeSet', (changeSetId: string) => agentControlCenterIpc.getChangeSet(changeSetId));
+  handle('agentControl:applyChangeSet', (changeSetId: string) => agentControlCenterIpc.applyChangeSet(changeSetId));
+  handle('agentControl:rejectChangeSet', (changeSetId: string, reasonCode: string) => agentControlCenterIpc.rejectChangeSet(changeSetId, reasonCode));
+  handle('agentControl:searchAudit', (request?: AgentControlPageRequest & { readonly clientId?: string; readonly kinds?: readonly import('../../shared/agent/v1/gatewayContracts').AuditKind[] }) => agentControlCenterIpc.searchAudit(request));
+  handle('agentControl:exportAudit', (request?: AgentControlPageRequest) => agentControlCenterIpc.exportAudit(request));
+  handle('agentControl:verifyAudit', (segmentId?: string) => agentControlCenterIpc.verifyAudit(segmentId));
+  handle('agentControl:getPolicy', () => agentControlCenterIpc.getPolicy());
+  handle('agentControl:getCatalog', () => agentControlCenterIpc.getCatalog());
+  handle('agentControl:getPrivacyDisclosure', () => agentControlCenterIpc.getPrivacyDisclosure());
+  ipcMain.handle('agentControl:prepareDirectHttpsTrust', async (event) => { try { return { ok: true, data: await agentControlCenterIpc.prepareDirectHttpsTrust(trustedRendererContext(event)) }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:confirmDirectHttpsTrust', async (event, intentId: string, confirmed: boolean) => { try { await agentControlCenterIpc.confirmDirectHttpsTrust(intentId, confirmed, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:prepareDirectHttpsRemoval', async (event) => { try { return { ok: true, data: await agentControlCenterIpc.prepareDirectHttpsRemoval(trustedRendererContext(event)) }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:confirmDirectHttpsRemoval', async (event, intentId: string, confirmed: boolean) => { try { await agentControlCenterIpc.confirmDirectHttpsRemoval(intentId, confirmed, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:listOAuthConsent', async (event) => { try { trustedRendererContext(event); return { ok: true, data: await agentControlCenterIpc.listOAuthConsent() }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:decideOAuthConsent', async (event, requestId: string, decision: 'approve' | 'deny') => { try { await agentControlCenterIpc.decideOAuthConsent(requestId, decision, trustedRendererContext(event)); return { ok: true, data: undefined }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:previewDiagnostics', async (event) => { try { trustedRendererContext(event); return { ok: true, data: await agentControlCenterIpc.previewDiagnostics() }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  ipcMain.handle('agentControl:exportDiagnostics', async (event) => { try { trustedRendererContext(event); return { ok: true, data: await agentControlCenterIpc.exportDiagnostics() }; } catch (error) { return { ok: false, error: error instanceof Error ? error.message : String(error) }; } });
+  const knowledge = async () => {
+    const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
+    return createKnowledgeRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
+  };
+  const study = async () => {
+    const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
+    return createStudyRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
+  };
+  const imports = async () => {
+    const [controlPlane, coordinator, application] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator(), getImportsApplication()]);
+    return createImportsRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), application, currentVersion: () => coordinator.currentVersion() });
+  };
+  const global = async () => {
+    const [controlPlane, coordinator] = await Promise.all([getAgentControlPlane(), getDatabaseCoordinator()]);
+    return createGlobalRendererAdapter({ gateway: controlPlane.gateway, principal: () => controlPlane.renderer.principal(), currentVersion: () => coordinator.currentVersion() });
+  };
+  handle('knowledge:listNodes', async (parentNodeId?: string, subject?: string) => (await knowledge()).listNodes(parentNodeId, subject));
+  handle('knowledge:getNode', async (nodeId: string) => (await knowledge()).getNode(nodeId));
+  handle('knowledge:listLinks', async (input: { nodeId?: string; questionId?: number }) => (await knowledge()).listLinks(input));
+  handle('textbooks:list', async (subject?: string) => (await knowledge()).listTextbooks(subject));
+  handle('textbooks:get', async (textbookId: number) => (await knowledge()).getTextbook(textbookId));
+  handle('analytics:getWeakAreas', async (subject?: string) => (await knowledge()).getWeakAreas(subject));
+  handle('knowledge:linkQuestion', async (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => (await knowledge()).linkQuestion(questionId, nodeId, matchType));
+  handle('knowledge:unlinkQuestion', async (questionId: number, nodeId: string) => (await knowledge()).unlinkQuestion(questionId, nodeId));
+  handle('knowledge:bindTextbook', async (nodeId: string, textbookId: number) => (await knowledge()).bindTextbook(nodeId, textbookId));
+  handle('study:getToday', async (date?: string) => (await study()).getToday(date));
+  handle('study:getWeekSummary', async (date?: string) => (await study()).getWeekSummary(date));
+  handle('study:createPlanDraft', async (date: string, tasks: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.create_plan_draft' }>['payload']['tasks']) => (await study()).createPlanDraft(date, tasks));
+  handle('study:applyPlanAdjustment', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.apply_plan_adjustment' }>['payload']) => (await study()).applyPlanAdjustment(payload));
+  handle('study:recordManualProgress', async (payload: Extract<import('../../shared/agent/v1/contracts').StudyCommand, { type: 'study.record_manual_progress' }>['payload']) => (await study()).recordManualProgress(payload));
+  handle('imports:createDraft', async (payload: Extract<import('../../shared/imports/v1').ImportsCommand, { type: 'imports.create_draft' }>['payload']) => (await imports()).createDraft(payload));
+  handle('imports:addDraftImage', async (payload: Extract<import('../../shared/imports/v1').ImportsCommand, { type: 'imports.add_draft_image' }>['payload']) => (await imports()).addDraftImage(payload));
+  handle('imports:validateDraft', async (draftId: string) => (await imports()).validateDraft(draftId));
+  handle('imports:previewDraft', async (draftId: string) => (await imports()).previewDraft(draftId));
+  handle('imports:applyDraft', async (draftId: string, previewHash: string) => (await imports()).applyDraft(draftId, previewHash));
+  handle('imports:get', async (draftId: string) => (await imports()).get(draftId));
+  handle('imports:cancel', async (draftId: string) => (await imports()).cancel(draftId));
+  handle('imports:selectImages', () => createRendererImageSelection());
+  handle('imports:stageSelectedImages', async (selectionToken: string) => {
+    const filePaths = consumeRendererImageSelection(selectionToken);
+    return (await imports()).stageSelectedImages(filePaths, { kind: 'main_process_selection' });
+  });
+  handle('agentControl:connectClient', (request: PairingRequest) => { validatePairingRequest(request, 'ipc.connectClient'); return agentControlCenterIpc.connectClient(request); });
+  handle('agentControl:getClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.getClientConnection'); return agentControlCenterIpc.getClientConnection(request); });
+  handle('agentControl:repairClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.repairClientConnection'); return agentControlCenterIpc.repairClientConnection(request); });
+  handle('agentControl:rotateClientKey', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.rotateClientKey'); return agentControlCenterIpc.rotateClientKey(request); });
+  handle('agentControl:disconnectClientConnection', (request: PairingTargetRequest) => { validatePairingTargetRequest(request, 'ipc.disconnectClientConnection'); return agentControlCenterIpc.disconnectClientConnection(request); });
   handle('dashboard:get', () => getDashboard());
-  handle('questions:list', (filters: QuestionFilters) => listQuestions(filters));
-  handle('questions:get', (id: number) => getQuestion(id));
-  handle('questions:create', (input: QuestionInput) => createQuestion(input));
-  handle('questions:update', (id: number, input: QuestionInput) => updateQuestion(id, input));
-  handle('questions:delete', (id: number, deleteImages: boolean) => deleteQuestion(id, deleteImages));
-  handle('questions:markMastery', (id: number, mastery: MasteryLevel) => markMastery(id, mastery));
-  handle('images:remove', (id: number, deleteFile: boolean) => removeImage(id, deleteFile));
+  handle('questions:list', (filters: QuestionFilters) => listQuestionsFromRenderer(filters));
+  handle('questions:get', (id: number) => getQuestionFromRenderer(id));
+  handle('questions:create', (input: QuestionInput) => createQuestionFromRenderer(input));
+  handle('questions:update', (id: number, input: QuestionInput) => updateQuestionFromRenderer(id, input));
+  handle('questions:delete', (id: number, deleteImages: boolean) => deleteQuestionFromRenderer(id, deleteImages));
+  handle('questions:markMastery', (id: number, mastery: MasteryLevel) => markMasteryFromRenderer(id, mastery));
+  handle('images:remove', (id: number, deleteFile: boolean) => removeImageFromRenderer(id, deleteFile));
   handle('images:choose', () => chooseImages());
   handle('images:getUrl', (imagePath: string) => getImageUrl(imagePath));
   handle('images:exists', (imagePath: string) => checkImageExists(imagePath));
   handle('images:open', (imagePath: string) => openImage(imagePath));
   handle('images:reveal', (imagePath: string) => revealImageInFolder(imagePath));
-  handle('reviews:list', (questionId: number) => listReviewLogs(questionId));
-  handle('reviews:add', (input: ReviewInput) => addReviewLog(input));
-  handle('reviews:submitResult', (input: ReviewSubmitInput) => submitReviewResult(input));
-  handle('review:buckets', () => getReviewBuckets());
+  handle('reviews:list', (questionId: number) => listReviewLogsFromRenderer(questionId));
+  handle('reviews:add', (input: ReviewInput) => addReviewFromRenderer(input));
+  handle('reviews:submitResult', (input: ReviewSubmitInput) => submitReviewResultFromRenderer(input));
+  handle('reviews:undoResult', (questionId: number, reviewLogId: number) => undoReviewResultFromRenderer(questionId, reviewLogId));
+  handle('review:buckets', () => getReviewBucketsFromRenderer());
   handle('stats:get', () => getStats());
   handle('paths:get', () => getCurrentPaths());
   handle('settings:export', () => exportData());
@@ -302,21 +520,19 @@ export function registerIpc() {
   handle('settings:import', (filePath: string) => importData(filePath));
   handle('settings:clear', (deleteImages: boolean) => clearAllData(deleteImages));
   handle('settings:chooseRoot', () => chooseDataRoot());
-  handle('settings:setRoot', async (root: string, migrate: boolean) => {
-    const oldPaths = getPaths();
-    const newPaths = setDataRoot(root);
-    if (migrate) copyExistingData(oldPaths, newPaths);
-    resetDatabaseConnection();
-    await initializeDatabase();
-    return getPaths();
-  });
-  handle('backups:create', (type?: DatabaseBackupKind) => createDatabaseBackup(type || 'manual'));
+  handle('settings:setRoot', (root: string, migrate: boolean) => switchDataRoot(root, migrate));
+  handle('backups:create', async () => (await global()).createBackup());
   handle('backups:ensureDaily', () => ensureDailyAutoBackup());
-  handle('backups:list', () => listDatabaseBackups());
+  handle('backups:list', async () => (await global()).listBackups());
+  handle('backups:listLegacy', () => listDatabaseBackups());
   handle('backups:restore', (fileName: string) => restoreDatabaseBackup(fileName));
   handle('backups:delete', (fileName: string) => deleteDatabaseBackup(fileName));
   handle('backups:openFolder', () => openBackupsFolder());
-  handle('pdfExport:create', (options: PdfExportOptions) => exportQuestionsToPdf(options));
+  handle('pdfExport:create', async (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => (await global()).createExport({
+    scope: options.scope === 'all' ? 'all' : 'questions', mode: options.mode,
+    ...(options.scope === 'questionIds' && options.questionIds ? { questionIds: options.questionIds } : {})
+  }));
+  handle('pdfExport:get', async (assetId: string) => (await global()).getExport(assetId));
   handle('pdfExport:open', (filePath: string) => openExportedPdf(filePath));
   handle('pdfExport:openFolder', () => openExportsFolder());
   handle('structuredImport:template', () => createImportTemplate());
@@ -432,54 +648,39 @@ export function registerIpc() {
     }
   });
 
-  // AI import batch record
-  handle('ai:recordImport', async (questionId: number) => {
-    const { createImportBatch, recordImportBatchItem } = await import('../services/importBatchService');
-    const { getDatabase } = await import('../services/databaseService');
-    const db = await getDatabase();
-    const batchId = await createImportBatch({
-      type: 'wrong_questions',
-      name: `AI 导入 - ${new Date().toLocaleString('zh-CN')}`,
-      source: 'AI 智能导入',
-      sourceFileName: `ai-import-${Date.now()}`
-    });
-    recordImportBatchItem(db, batchId, 'questions', questionId, 'created');
-    return { batchId };
-  });
-
   // TickTick Lists
-  handle('ticktick:lists:list', () => listTickTickLists());
+  handle('ticktick:lists:list', () => listTickTickListsFromRenderer());
   handle('ticktick:lists:get', (id: string) => getTickTickList(id));
-  handle('ticktick:lists:create', (input: TickTickListInput) => createTickTickList(input));
-  handle('ticktick:lists:update', (id: string, input: TickTickListInput) => updateTickTickList(id, input));
+  handle('ticktick:lists:create', (input: TickTickListInput) => createTickTickListFromRenderer(input));
+  handle('ticktick:lists:update', (id: string, input: TickTickListInput) => updateTickTickListFromRenderer(id, input));
   handle('ticktick:lists:delete', (id: string) => deleteTickTickList(id));
   handle('ticktick:lists:reorder', (ids: string[]) => reorderTickTickLists(ids));
 
   // TickTick Tasks
-  handle('ticktick:tasks:list', (filters?: TickTickTaskFilters) => listTickTickTasks(filters));
-  handle('ticktick:tasks:get', (id: string) => getTickTickTask(id));
-  handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTask(input));
-  handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTask(id, input));
-  handle('ticktick:tasks:delete', (id: string) => deleteTickTickTask(id));
-  handle('ticktick:tasks:complete', (id: string) => completeTaskWithReviewSync(id));
-  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTaskWithReviewSync(id));
+  handle('ticktick:tasks:list', (filters?: TickTickTaskFilters) => listTickTickTasksFromRenderer(filters));
+  handle('ticktick:tasks:get', (id: string) => getTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:create', (input: TickTickTaskInput) => createTickTickTaskFromRenderer(input));
+  handle('ticktick:tasks:update', (id: string, input: Partial<TickTickTaskInput> & { is_completed?: number; actual_minutes?: number; pomodoro_sessions?: number; sort_order?: number }) => updateTickTickTaskFromRenderer(id, input));
+  handle('ticktick:tasks:delete', (id: string) => deleteTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:complete', (id: string) => completeTickTickTaskFromRenderer(id));
+  handle('ticktick:tasks:uncomplete', (id: string) => uncompleteTickTickTaskFromRenderer(id));
   handle('ticktick:tasks:today', () => getTodayTickTickTasks());
 
   // TickTick Tags
   handle('ticktick:tags:list', () => listTickTickTags());
 
   // TickTick Focus
-  handle('ticktick:focus:list', (filters?: { date?: string; taskId?: string }) => listTickTickFocusSessions(filters));
-  handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSession(input));
+  handle('ticktick:focus:list', (filters?: { date?: string; taskId?: string }) => listTickTickFocusSessionsFromRenderer(filters));
+  handle('ticktick:focus:create', (input: TickTickFocusSessionInput) => createTickTickFocusSessionFromRenderer(input));
 
   // TickTick Bridge
-  handle('ticktick:bridge:task', (taskId: string) => getTickTickTaskBridges(taskId));
-  handle('ticktick:bridge:create', (input: TickTickBridgeInput) => createTickTickBridge(input));
+  handle('ticktick:bridge:task', (taskId: string) => getTickTickBridgesFromRenderer(taskId));
+  handle('ticktick:bridge:create', (input: TickTickBridgeInput) => updateTickTickBridgeFromRenderer(input));
   handle('ticktick:bridge:delete', (id: number) => deleteTickTickBridge(id));
   handle('ticktick:bridge:linked', (linkedType: TickTickBridgeLinkedType, linkedId: string) => getBridgesForLinked(linkedType, linkedId));
 
   // TickTick Calendar
-  handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarMonth(year, month));
+  handle('ticktick:calendar:month', (year: number, month: number) => getTickTickCalendarEventsFromRenderer(year, month));
 
   // TickTick AI
   handle('ticktick:ai:decompose', (input: TickTickAiDecompositionInput) => aiDecomposeTask(input));
@@ -491,9 +692,9 @@ export function registerIpc() {
   handle('ticktick:settings:save', (settings: TickTickSettings) => saveTickTickSettings(settings));
 
   // TickTick Habits
-  handle('ticktick:habits:list', () => listTickTickHabits());
-  handle('ticktick:habits:create', (input: TickTickHabitInput) => createTickTickHabit(input));
-  handle('ticktick:habits:update', (id: string, input: TickTickHabitInput) => updateTickTickHabit(id, input));
+  handle('ticktick:habits:list', () => listTickTickHabitsFromRenderer());
+  handle('ticktick:habits:create', (input: TickTickHabitInput) => createTickTickHabitFromRenderer(input));
+  handle('ticktick:habits:update', (id: string, input: TickTickHabitInput) => updateTickTickHabitFromRenderer(id, input));
   handle('ticktick:habits:delete', (id: string) => deleteTickTickHabit(id));
   handle('ticktick:habits:toggle', (habitId: string, date: string) => toggleTickTickHabit(habitId, date));
   handle('ticktick:habits:logs', (habitId: string, fromDate?: string, toDate?: string) => getTickTickHabitLogs(habitId, fromDate, toDate));
@@ -506,20 +707,8 @@ export function registerIpc() {
   handle('ticktick:sync:masteryChanged', (knowledgeNodeId: string, newMasteryScore: number) => syncMasteryToTaskPriority(knowledgeNodeId, newMasteryScore));
 
   // White noise state
-  handle('ticktick:whiteNoise:get', async () => {
-    const db = await (await import('../services/databaseService')).getDatabase();
-    try {
-      const result = db.exec("SELECT value FROM app_settings WHERE key = 'ticktick_white_noise'");
-      if (result.length && result[0].values.length) return JSON.parse(result[0].values[0][0] as string);
-    } catch { /* ignore */ }
-    return { enabled: false, noise: 'none' };
-  });
-  handle('ticktick:whiteNoise:set', async (state: { enabled: boolean; noise: TickTickWhiteNoise }) => {
-    const db = await (await import('../services/databaseService')).getDatabase();
-    db.run("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-    db.run("INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ticktick_white_noise', ?)", [JSON.stringify(state)]);
-    (await import('../services/databaseService')).persistDatabase();
-  });
+  handle('ticktick:whiteNoise:get', () => getWhiteNoiseState());
+  handle('ticktick:whiteNoise:set', (state: { enabled: boolean; noise: TickTickWhiteNoise }) => setWhiteNoiseState(state));
 
   // Shared timer state IPC (single source of truth: engine)
   handle('timer:getState', () => focusTimerEngine.getState());

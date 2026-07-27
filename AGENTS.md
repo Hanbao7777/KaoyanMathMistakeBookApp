@@ -1,138 +1,108 @@
-# AGENTS.md
+# Agent Collaboration Rules
 
-## Project Collaboration
+## Scope and precedence
 
-This repository uses CCB for visible multi-agent collaboration.
+These rules apply to every agent working in this repository. Direct user instructions override this file. This file overrides all documents under `docs/agents/`. If instructions conflict and precedence does not resolve the conflict, stop and ask the coordinator.
 
-- Use CCB `ask` for project-level collaboration with configured agents.
-- Delegate with the goal, scope/files, assumptions, expected output, and verification needs.
-- Reply concisely with findings, changes, verification, blockers, and risks when relevant.
+## Required reading
 
-## Default Agent Roles
+Before starting work:
 
-- `codex`: controller. Owns task intake, decomposition, design/task skeletons, dispatch, review decisions, and final acceptance.
-- `claude`: preferred for lightweight tasks such as document expansion, copy cleanup, small UI/style changes, simple refactors, and straightforward test additions.
-- `opencode`: preferred for complex tasks such as multi-file implementation, architecture-sensitive changes, complex debugging, data-flow changes, and higher-risk refactors.
+1. Read this file.
+2. Read `docs/agents/README.md`.
+3. Coordinators read `docs/agents/coordinator.md` and `docs/agents/model-routing.md`.
+4. Paseo child agents read `docs/agents/worker.md` and `docs/agents/project-overrides.md`.
+5. Read every project document named in the task prompt. Read a Superpowers skill only when the user explicitly requested Superpowers or that specific skill in the current request and the dispatch lists it.
 
-## Execution Protocol
+## Orchestration boundary
 
-1. `codex` reads local context first and minimizes task scope before delegating.
-2. `codex` creates plan or document skeletons before expansion work when useful.
-3. `codex` delegates one task at a time with minimal sufficient context.
-4. The implementer agent completes the task and performs self-review before handoff.
-5. `codex` reviews for spec compliance first.
-6. `codex` reviews for code quality and regression risk second.
-7. If either review fails, the task is returned to the implementer with concrete fixes required.
-8. Only tasks that pass both review stages are accepted as complete.
+- Paseo MCP is the only default channel for creating, prompting, supervising, and archiving agents.
+- Do not use CCB, Orca, native subagent APIs, or another orchestrator unless the user explicitly authorizes it in the current request.
+- Do not invoke Superpowers or any specific Superpowers skill unless the user explicitly requests it in the current request. Never infer authorization from the task type, complexity, or applicability of a skill.
+- When the user explicitly requests a Superpowers skill and it calls for an agent or subagent, implement that step with Paseo MCP.
+- Do not restart the Paseo daemon without explicit user approval.
 
-## Routing Rules
+## Coordinator rules
 
-- Use `claude` for narrow, mechanical, or documentation-heavy tasks.
-- Use `opencode` for cross-file, integration-heavy, or higher-risk tasks.
-- If `claude` fails the same task twice, escalate the task to `opencode`.
+- The coordinator is responsible for understanding, decomposing, dispatching, debugging, and verifying work without relying on an automatically selected skill.
+- Decide whether delegation adds value before creating an agent.
+- Classify each delegated task as simple, medium, hard, or ultra-hard and follow `docs/agents/model-routing.md`.
+- Define objective, allowed scope, forbidden scope, file ownership, validation, and expected response before dispatch.
+- Default to `relationship: subagent` and `notifyOnFinish: true`.
+- Use `detached` only for an explicit full ownership transfer requested by the user.
+- Verify every returned claim, test result, and file change before accepting it.
+- Directly inspect the Worker's files, validation evidence, and report for final acceptance. Do not create a separate reviewer unless the user explicitly requests independent review in the current request.
+- Archive agents that are complete, abandoned, or replaced.
 
-## Required Subagent Handoff Format
+## Worker rules
 
-Every delegated task should return:
+- Follow `docs/agents/worker.md` regardless of task type.
+- Stay within the dispatched scope and file ownership.
+- Do not create or prompt another agent unless the coordinator explicitly authorizes it.
+- Do not expand permissions, change requirements, or modify unrelated files.
+- Before reporting completion, self-review the changed files, scope compliance, and validation evidence.
+- Report completed, partial, blocked, and failed work using the required response format.
 
-- `Goal`
-- `Files Changed`
-- `Key Changes`
-- `Verification`
-- `Risks / Limitations`
-- `Self-Review`
-- `Status`
+## Shared workspace safety
 
-`Status` must be one of:
+- Agents in the current workspace see the same files immediately.
+- Only one writer may own a file or feature area at a time.
+- Use a Paseo worktree for independent write-heavy tasks that may conflict.
+- Keep tasks that depend on current uncommitted files in the current workspace.
 
-- `DONE`
-- `DONE_WITH_CONCERNS`
-- `NEEDS_CONTEXT`
-- `BLOCKED`
+## Completion standard
 
-## Required Self-Review
+Work is complete only after the Worker self-reviews its files and evidence and the coordinator directly performs final acceptance. Scope must be satisfied, relevant validation must have run, evidence must be reported, risks must be explicit, and modified files must be listed.
 
-Before handoff, the implementer must verify:
+## Agent skills
 
-- The requested scope was followed.
-- Acceptance criteria were satisfied.
-- Relevant tests, build steps, or manual verification were run where applicable.
-- No unjustified extra behavior was introduced.
-- Risks, assumptions, and incomplete items are explicitly listed.
+### Issue tracker
 
-## Review Gates
+Issues and PRDs are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
 
-### Gate 1: Spec Compliance
+### Triage labels
 
-Reject and return the task if:
+Use the default Matt Pocock triage label vocabulary. See `docs/agents/triage-labels.md`.
 
-- Requested behavior is incomplete.
-- Acceptance criteria are unmet.
-- The implementation exceeds scope without justification.
-- Required docs or task artifacts are missing.
-- Verification is missing or clearly insufficient.
+### Domain docs
 
-### Gate 2: Code Quality
+This is a single-context repository. See `docs/agents/domain.md`.
 
-Reject and return the task if:
+<!-- code-review-graph MCP tools -->
+## MCP Tools: code-review-graph
 
-- There is a clear regression risk.
-- The implementation is unnecessarily hard to maintain.
-- Obvious edge cases are unhandled.
-- File boundaries or naming are materially inconsistent with the codebase.
-- Important review findings remain unresolved.
+**IMPORTANT: This project has a knowledge graph. ALWAYS use the
+code-review-graph MCP tools BEFORE using Grep/Glob/Read to explore
+the codebase.** The graph is faster, cheaper (fewer tokens), and gives
+you structural context (callers, dependents, test coverage) that file
+scanning cannot.
 
-## Plan and Document Skeleton Standard
+### When to use graph tools FIRST
 
-When creating a design doc skeleton, task doc skeleton, or implementation plan, include at minimum:
+- **Exploring code**: `semantic_search_nodes_tool` or `query_graph_tool` instead of Grep
+- **Understanding impact**: `get_impact_radius_tool` instead of manually tracing imports
+- **Code review**: `detect_changes_tool` + `get_review_context_tool` instead of reading entire files
+- **Finding relationships**: `query_graph_tool` with callers_of/callees_of/imports_of/tests_for
+- **Architecture questions**: `get_architecture_overview_tool` + `list_communities_tool`
 
-- Background
-- Goal
-- Non-Goals
-- Scope
-- Constraints
-- Proposed Approach
-- Risks
-- Acceptance Criteria
-- Task Breakdown
-- Verification
+Fall back to Grep/Glob/Read **only** when the graph doesn't cover what you need.
 
-## Documentation Organization
+### Key Tools
 
-- All newly created documents must be placed into a clear category-specific location instead of being dropped into the repository root arbitrarily.
-- Prefer stable directory grouping by document purpose, for example:
-  - `docs/superpowers/plans/` for implementation plans
-  - `docs/design/` for design and architecture notes
-  - `docs/tasks/` for task breakdowns and execution checklists
-  - `docs/archive/` for outdated or superseded documents
-- If a document is replaced, outdated, or no longer authoritative, move it to an archive location instead of leaving it mixed with active documents.
-- When archiving a document, preserve enough naming context to show what it was and when it became obsolete.
-- Active documents should be easy to distinguish from archived documents at a glance.
+| Tool | Use when |
+| ------ | ---------- |
+| `detect_changes_tool` | Reviewing code changes — gives risk-scored analysis |
+| `get_review_context_tool` | Need source snippets for review — token-efficient |
+| `get_impact_radius_tool` | Understanding blast radius of a change |
+| `get_affected_flows_tool` | Finding which execution paths are impacted |
+| `query_graph_tool` | Tracing callers, callees, imports, tests, dependencies |
+| `semantic_search_nodes_tool` | Finding functions/classes by name or keyword |
+| `get_architecture_overview_tool` | Understanding high-level codebase structure |
+| `refactor_tool` | Planning renames, finding dead code |
 
-For multi-step implementation plans, prefer:
+### Workflow
 
-- `docs/superpowers/plans/YYYY-MM-DD-<feature-name>.md`
-
-## Efficiency Rules
-
-- Read only the files needed for the current task.
-- Delegate with minimal sufficient context instead of broad repository dumps.
-- Prefer skeleton-first, expansion-second for documentation work.
-- Keep reviews focused on correctness, regression risk, and acceptance.
-- Avoid unnecessary back-and-forth when direct execution is possible.
-
-## CCB Runtime Rules
-
-- CCB `ask` is submit-only: submit once, then stop unless diagnostics were explicitly requested.
-- During an active CCB ask task, use `ask --callback` when a child result is needed to finish; use `ask --silence` only for independent no-result-needed work.
-- During a CCB callback continuation, answer directly with the final result; do not use `ask`, `--callback`, or `--silence` to send that final result to the original caller.
-
-## Operating Default
-
-Unless explicitly overridden by the user:
-
-- `codex` orchestrates and performs final review
-- `claude` handles lighter execution
-- `opencode` handles heavier execution
-- self-review is mandatory before handoff
-- `codex` review is mandatory before acceptance
+1. The graph auto-updates on file changes (via hooks).
+2. Use `detect_changes_tool` for code review.
+3. Use `get_affected_flows_tool` to understand impact.
+4. Use `query_graph_tool` pattern="tests_for" to check coverage.

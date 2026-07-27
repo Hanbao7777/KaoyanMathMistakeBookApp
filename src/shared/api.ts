@@ -88,8 +88,99 @@ import type {
   TickTickHabitInput,
   TickTickHabitLog
 } from './types';
+import type {
+  AgentScope,
+  ApprovalStatus,
+  AuditKind,
+  ChangeSetStatus,
+  R4GrantStatus,
+  TrustProfile,
+  OperationName
+} from './agent/v1/gatewayContracts';
+import type { PairingRequest, PairingStatus, PairingTargetRequest } from './mcp/v1/pairingContracts';
+
+export interface ManagedGlobalJob { readonly assetId: string; readonly jobId: string; readonly status: 'intent'; }
+export interface ManagedBackup { readonly assetId: string; readonly kind: 'backup'; readonly status: 'intent' | 'staged' | 'published' | 'quarantined' | 'failed' | 'needs_recovery'; readonly metadata: Readonly<{ readonly backupKind?: 'manual' }>; readonly createdAt: string; readonly updatedAt: string; }
+export interface ManagedExport { readonly assetId: string; readonly kind: 'export'; readonly status: 'intent' | 'staged' | 'published' | 'quarantined' | 'failed' | 'needs_recovery'; readonly metadata: Readonly<Record<string, unknown>>; readonly createdAt: string; readonly updatedAt: string; }
+
+export interface AgentControlPageRequest {
+  readonly cursor?: string;
+  readonly pageSize?: number;
+}
+
+export interface AgentControlPage<T> {
+  readonly items: readonly T[];
+  readonly page: { readonly pageSize: number; readonly hasMore: boolean; readonly nextCursor?: string };
+}
+
+export interface AgentControlMutationAcknowledgement { readonly clientId?: string; readonly sessionId?: string; readonly grantId?: string; readonly approvalId?: string; readonly changeSetId?: string; readonly enabled?: boolean; readonly revoked?: boolean; readonly terminated?: boolean; }
+export interface AgentControlClientSummary { readonly clientId: string; readonly subjectId: string; readonly displayName: string; readonly scopes: readonly AgentScope[]; readonly trust: TrustProfile; readonly revokedAt?: string; readonly lastActiveAt?: string; }
+export interface AgentControlSessionSummary { readonly sessionId: string; readonly clientId: string; readonly appInstanceId: string; readonly createdAt: string; readonly expiresAt: string; readonly lastActiveAt: string; readonly terminatedAt?: string; }
+export interface AgentControlCreateR4GrantRequest { readonly clientId: string; readonly operation: OperationName; readonly payloadHash: string; readonly targetHash: string; readonly maxAffectedEntities: number; readonly expiresAt: string; }
+export interface AgentControlR4GrantSummary { readonly grantId: string; readonly clientId: string; readonly operation: OperationName; readonly recovery: string; readonly maxAffectedEntities: number; readonly status: R4GrantStatus; readonly issuedAt: string; readonly expiresAt: string; readonly consumedAt?: string; readonly revokedAt?: string; }
+export interface AgentControlApprovalSummary { readonly approvalId: string; readonly clientId: string; readonly operation: OperationName; readonly status: ApprovalStatus; readonly risk: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentControlChangeSetSummary { readonly changeSetId: string; readonly clientId: string; readonly status: ChangeSetStatus; readonly summary: string; readonly risk: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentControlAuditSummary { readonly sequence: number; readonly clientId: string; readonly operation?: string; readonly kind: AuditKind; readonly occurredAt: string; readonly risk?: string; }
+export interface AgentControlStatus { readonly settings: { readonly externalControlEnabled: boolean; readonly policyVersion: string; readonly privacyRevision: number }; readonly runtimeState: string; readonly directHttps?: { readonly port: number; readonly authority: string; readonly resource: string; readonly issuer: string; readonly appInstanceId: string; readonly enabled: boolean; readonly state?: 'disabled' | 'ready' | 'stopped'; readonly reason?: string; readonly certificateThumbprint?: string; readonly rootCaThumbprint?: string }; }
+export interface AgentControlPrivacyDisclosure { readonly revision: number; readonly externalModelDataDisclosureRequired: boolean; }
+export interface AgentControlVerification { readonly valid: boolean; readonly segments: number; readonly events: number; readonly headHash?: string; }
+export interface AgentControlTrustIntent { readonly intentId: string; readonly thumbprint: string; readonly expiresAt: string; readonly authority: string; readonly resource?: string; readonly subject?: string; }
+export interface AgentControlOAuthConsent { readonly requestId: string; readonly clientId: string; readonly product: 'codex' | 'claude_code'; readonly clientDisplayName: string; readonly scopes: readonly string[]; readonly resource: string; readonly redirectDisplay: string; readonly createdAt: string; readonly expiresAt: string; }
+export interface AgentDiagnosticPreview { readonly schemaVersion: 1; readonly generatedAt: string; readonly files: readonly { readonly name: string; readonly bytes: number; readonly sha256: string }[]; readonly totalBytes: number; }
+export interface AgentDiagnosticExportResult { readonly schemaVersion: 1; readonly generatedAt: string; readonly fileName: string; readonly bytes: number; readonly sha256: string; }
+
+export interface AgentControlApi {
+  getStatus: () => Promise<AgentControlStatus>;
+  setExternalControlEnabled: (enabled: boolean) => Promise<{ readonly enabled: boolean }>;
+  listClients: (request?: AgentControlPageRequest) => Promise<AgentControlPage<AgentControlClientSummary>>;
+  updateClientAccess: (clientId: string, scopes: readonly AgentScope[], trust: TrustProfile) => Promise<AgentControlMutationAcknowledgement>;
+  revokeClient: (clientId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listSessions: (request?: AgentControlPageRequest & { readonly clientId?: string }) => Promise<AgentControlPage<AgentControlSessionSummary>>;
+  terminateSession: (sessionId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listR4Grants: (request?: AgentControlPageRequest & { readonly clientId?: string; readonly status?: R4GrantStatus }) => Promise<AgentControlPage<AgentControlR4GrantSummary>>;
+  createR4Grant: (grant: AgentControlCreateR4GrantRequest) => Promise<AgentControlR4GrantSummary>;
+  revokeR4Grant: (grantId: string) => Promise<AgentControlMutationAcknowledgement>;
+  listApprovals: (request?: AgentControlPageRequest & { readonly status?: ApprovalStatus }) => Promise<AgentControlPage<AgentControlApprovalSummary>>;
+  approve: (approvalId: string) => Promise<AgentControlMutationAcknowledgement>;
+  rejectApproval: (approvalId: string, reasonCode: string) => Promise<AgentControlMutationAcknowledgement>;
+  listChangeSets: (request?: AgentControlPageRequest & { readonly status?: ChangeSetStatus }) => Promise<AgentControlPage<AgentControlChangeSetSummary>>;
+  getChangeSet: (changeSetId: string) => Promise<AgentControlChangeSetSummary | null>;
+  applyChangeSet: (changeSetId: string) => Promise<AgentControlMutationAcknowledgement>;
+  rejectChangeSet: (changeSetId: string, reasonCode: string) => Promise<AgentControlMutationAcknowledgement>;
+  searchAudit: (request?: AgentControlPageRequest & { readonly clientId?: string; readonly kinds?: readonly AuditKind[] }) => Promise<AgentControlPage<AgentControlAuditSummary>>;
+  exportAudit: (request?: AgentControlPageRequest) => Promise<AgentControlVerification>;
+  verifyAudit: (segmentId?: string) => Promise<AgentControlVerification>;
+  getPolicy: () => Promise<{ readonly policyVersion: string; readonly externalControlEnabled: boolean }>;
+  getCatalog: () => Promise<{ readonly version: string; readonly hash: string }>;
+  getPrivacyDisclosure: () => Promise<AgentControlPrivacyDisclosure>;
+  connectClient: (request: PairingRequest) => Promise<PairingStatus>;
+  getClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  repairClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  rotateClientKey: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  disconnectClientConnection: (request: PairingTargetRequest) => Promise<PairingStatus>;
+  prepareDirectHttpsTrust: () => Promise<AgentControlTrustIntent>;
+  confirmDirectHttpsTrust: (intentId: string, confirmed: boolean) => Promise<void>;
+  prepareDirectHttpsRemoval: () => Promise<AgentControlTrustIntent>;
+  confirmDirectHttpsRemoval: (intentId: string, confirmed: boolean) => Promise<void>;
+  listOAuthConsent: () => Promise<readonly AgentControlOAuthConsent[]>;
+  decideOAuthConsent: (requestId: string, decision: 'approve' | 'deny') => Promise<void>;
+  previewDiagnostics: () => Promise<AgentDiagnosticPreview>;
+  exportDiagnostics: () => Promise<AgentDiagnosticExportResult>;
+}
 
 export interface AppApi {
+  agentControl: AgentControlApi;
+  knowledge: {
+    listNodes: (parentNodeId?: string, subject?: string) => Promise<import('./types').KnowledgePoint[]>;
+    getNode: (nodeId: string) => Promise<import('./types').SafeKnowledgeNode | null>;
+    listLinks: (input: { nodeId?: string; questionId?: number }) => Promise<import('./agent/v1/contracts').KnowledgeLinkView[]>;
+    listTextbooks: (subject?: string) => Promise<import('./types').SafeTextbook[]>;
+    getTextbook: (textbookId: number) => Promise<import('./types').SafeTextbook | null>;
+    getWeakAreas: (subject?: string) => Promise<import('./types').KnowledgePointReviewStats[]>;
+    linkQuestion: (questionId: number, nodeId: string, matchType: 'gpt' | 'auto' | 'manual') => Promise<{ linked: boolean; questionId: number; nodeId: string }>;
+    unlinkQuestion: (questionId: number, nodeId: string) => Promise<{ unlinked: boolean; questionId: number; nodeId: string }>;
+    bindTextbook: (nodeId: string, textbookId: number) => Promise<{ bound: boolean; nodeId: string; textbookId: number }>;
+  };
   dashboard: () => Promise<DashboardData>;
   listQuestions: (filters: QuestionFilters) => Promise<Question[]>;
   getQuestion: (id: number) => Promise<Question | null>;
@@ -106,6 +197,7 @@ export interface AppApi {
   listReviewLogs: (questionId: number) => Promise<ReviewLog[]>;
   addReviewLog: (input: ReviewInput) => Promise<Question>;
   submitReviewResult: (input: ReviewSubmitInput) => Promise<ReviewSubmitResult>;
+  undoReviewResult: (questionId: number, reviewLogId: number) => Promise<import('./agent/v1/contracts').QuestionUndoReviewResult>;
   getReviewBuckets: () => Promise<ReviewBuckets>;
   getStats: () => Promise<StatsData>;
   getPaths: () => Promise<AppPaths>;
@@ -115,13 +207,15 @@ export interface AppApi {
   clearAllData: (deleteImages: boolean) => Promise<boolean>;
   chooseRoot: () => Promise<string | null>;
   setRoot: (root: string, migrate: boolean) => Promise<AppPaths>;
-  createDatabaseBackup: (type?: DatabaseBackupKind) => Promise<DatabaseBackupResult>;
+  createDatabaseBackup: () => Promise<ManagedGlobalJob>;
   ensureDailyAutoBackup: () => Promise<DatabaseBackupResult | null>;
-  listDatabaseBackups: () => Promise<DatabaseBackupInfo[]>;
+  listDatabaseBackups: () => Promise<readonly ManagedBackup[]>;
+  listLegacyDatabaseBackups: () => Promise<DatabaseBackupInfo[]>;
   restoreDatabaseBackup: (fileName: string) => Promise<RestoreDatabaseBackupResult>;
   deleteDatabaseBackup: (fileName: string) => Promise<boolean>;
   openBackupsFolder: () => Promise<boolean>;
-  exportQuestionsToPdf: (options: PdfExportOptions) => Promise<PdfExportResult>;
+  exportQuestionsToPdf: (options: Pick<PdfExportOptions, 'scope' | 'mode' | 'questionIds'>) => Promise<ManagedGlobalJob>;
+  getManagedExport: (assetId: string) => Promise<ManagedExport>;
   openExportedPdf: (filePath: string) => Promise<boolean>;
   openExportsFolder: () => Promise<boolean>;
   createImportTemplate: () => Promise<string>;
@@ -130,6 +224,17 @@ export interface AppApi {
   prepareZipImport: () => Promise<StructuredImportPreview | null>;
   confirmStructuredImport: (sessionId: string) => Promise<StructuredImportResult>;
   cancelStructuredImport: (sessionId: string) => Promise<boolean>;
+  imports: {
+    selectImages: () => Promise<{ readonly selectionToken: string; readonly filePaths: readonly string[] }>;
+    createDraft: (payload: import('./imports/v1').ImportsCreateDraftCommand['payload']) => Promise<import('./imports/v1').ImportDraft>;
+    addDraftImage: (payload: import('./imports/v1').ImportsAddDraftImageCommand['payload']) => Promise<import('./imports/v1').ImportDraft>;
+    validateDraft: (draftId: string) => Promise<import('./imports/v1').ImportDraftValidation>;
+    previewDraft: (draftId: string) => Promise<import('./imports/v1').ImportDraftValidation>;
+    applyDraft: (draftId: string, previewHash: string) => Promise<import('./imports/v1').ImportsCommandValues['imports.apply_draft']>;
+    get: (draftId: string) => Promise<import('./imports/v1').ImportDraft>;
+    cancel: (draftId: string) => Promise<import('./imports/v1').ImportsCommandValues['imports.cancel']>;
+    stageSelectedImages: (selectionToken: string) => Promise<readonly { assetId: string; fileName: string; sha256: string; size: number }[]>;
+  };
   importKnowledgeMapZip: () => Promise<KnowledgeMapImportResult | null>;
   importQuestionBankZip: () => Promise<QuestionBankImportResult | null>;
   listExternalQuestions: (filters: ExternalQuestionFilters) => Promise<ExternalQuestion[]>;
@@ -178,6 +283,11 @@ export interface AppApi {
   getDailyReview: (date: string) => Promise<DailyReview | null>;
   saveDailyReview: (input: DailyReviewInput) => Promise<DailyReview | null>;
   getStudySupervisorDashboard: (date?: string) => Promise<StudySupervisorDashboard>;
+  getStudyToday: (date?: string) => Promise<import('./agent/v1/contracts').StudyTodaySummary>;
+  getStudyWeekSummary: (date?: string) => Promise<import('./agent/v1/contracts').StudyWeekSummary>;
+  createStudyPlanDraft: (date: string, tasks: import('./agent/v1/contracts').StudyCreatePlanDraftCommand['payload']['tasks']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.create_plan_draft']>;
+  applyStudyPlanAdjustment: (payload: import('./agent/v1/contracts').StudyApplyPlanAdjustmentCommand['payload']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.apply_plan_adjustment']>;
+  recordStudyManualProgress: (payload: import('./agent/v1/contracts').StudyRecordManualProgressCommand['payload']) => Promise<import('./agent/v1/contracts').StudyCommandValues['study.record_manual_progress']>;
   saveWindowState: (state: WindowState) => void;
   loadWindowState: () => Promise<WindowState | null>;
 
@@ -195,7 +305,6 @@ export interface AppApi {
 
   // AI error diagnosis
   diagnoseError: (questionId: number) => Promise<AiDiagnosisResult>;
-  recordAiImport: (questionId: number) => Promise<{ batchId: string }>;
 
   // TickTick Lists
   listTickTickLists: () => Promise<TickTickList[]>;

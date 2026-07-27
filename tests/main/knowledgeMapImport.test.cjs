@@ -87,6 +87,8 @@ test.beforeEach(async () => {
 test('importKnowledgeMapZip imports textbook, knowledge points, and import batch records', async () => {
   const { tempDir, zipPath } = writeKnowledgeMapZip('knowledge_map_import.zip', validEntries('km-manual'));
   setDialogFile(zipPath);
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
 
   const result = await knowledgeMapService.importKnowledgeMapZip();
 
@@ -95,6 +97,7 @@ test('importKnowledgeMapZip imports textbook, knowledge points, and import batch
   assert.equal(result.importedCount, 2);
   assert.equal(result.updatedCount, 0);
   assert.equal(result.failedCount, 0);
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
 
   const { textbooks, points, batches, items } = await dbRows();
   assert.equal(textbooks.length, 1);

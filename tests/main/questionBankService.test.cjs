@@ -1,13 +1,17 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const test = require('node:test');
 const {
   cleanupTestRoot,
   databaseService,
   requireMain,
-  resetTestDatabase
+  resetTestDatabase,
+  testRoot
 } = require('./helpers/mainTestEnv.cjs');
 
 const questionBankService = requireMain('services/questionBankService.js');
+const pathService = requireMain('services/pathService.js');
 
 test.after(cleanupTestRoot);
 
@@ -62,6 +66,8 @@ test('recordExternalQuestionAttempt writes external_question_attempts row', asyn
   const externalQuestionId = await createExternalQuestion();
   assert.ok(externalQuestionId > 0);
   assert.ok(await questionBankService.getExternalQuestion(externalQuestionId));
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
 
   const attempt = await questionBankService.recordExternalQuestionAttempt({
     externalQuestionId,
@@ -74,6 +80,7 @@ test('recordExternalQuestionAttempt writes external_question_attempts row', asyn
   assert.equal(attempt.note, '计算错误');
   assert.equal(attempt.added_to_mistakes, 0);
   assert.equal(attempt.created_question_id, null);
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
 
   const db = await databaseService.getDatabase();
   const rows = db.exec('SELECT result, note FROM external_question_attempts WHERE external_question_id = ?', [externalQuestionId]);
@@ -81,28 +88,58 @@ test('recordExternalQuestionAttempt writes external_question_attempts row', asyn
   assert.deepEqual(rows[0].values[0], ['wrong', '计算错误']);
 });
 
+test('deleteExternalQuestionBatch publishes its database deletion once', async () => {
+  const externalQuestionId = await createExternalQuestion({ id: 1002, import_batch_id: 'batch-delete' });
+  await questionBankService.recordExternalQuestionAttempt({ externalQuestionId, result: 'wrong' });
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
+
+  const result = await questionBankService.deleteExternalQuestionBatch('batch-delete');
+
+  assert.deepEqual(result, { deletedQuestions: 1, deletedAttempts: 1, movedAssetPath: '' });
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
+  assert.equal(await questionBankService.getExternalQuestion(externalQuestionId), null);
+});
+
 test('addExternalQuestionToMistakes creates mistake question and updates external links', async () => {
+  const imagePath = path.join(testRoot, 'question-bank-source.png');
+  fs.writeFileSync(imagePath, Buffer.from('question-bank-image'));
   const externalQuestionId = await createExternalQuestion({
     title: '题库加入错题测试',
-    content: '题库原题内容',
+    content: `题库原题内容\n![原题](${imagePath})`,
     solution: '题库解析内容',
     answer: '42',
-    tags: '题库,错题'
+    tags: '题库,错题',
+    knowledge_points: '极限定义'
+  });
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  await coordinator.executeWrite({
+    requestId: 'question-bank-test-knowledge',
+    concurrency: 'none',
+    execute(database) {
+      const now = new Date().toISOString();
+      database.run("INSERT INTO knowledge_points (node_id, title, level, sort_order, created_at, updated_at) VALUES ('limit-definition', '极限定义', 1, 1, ?, ?)", [now, now]);
+      return { changed: true, value: null };
+    }
   });
   const attempt = await questionBankService.recordExternalQuestionAttempt({
     externalQuestionId,
     result: 'wrong',
     note: '不会做'
   });
+  const versionBefore = coordinator.currentVersion();
 
   const result = await questionBankService.addExternalQuestionToMistakes(externalQuestionId);
 
+  assert.equal(coordinator.currentVersion().dataRevision, versionBefore.dataRevision + 1);
   assert.equal(result.question.title, '题库加入错题测试');
   assert.equal(result.question.content, '题库原题内容');
   assert.equal(result.question.correct_solution, '题库解析内容');
   assert.equal(result.question.answer, '42');
   assert.equal(result.question.mastery_level, '较弱');
   assert.equal(result.attempt.id, attempt.id);
+  assert.equal(result.question.question_images.length, 1);
+  assert.equal(fs.existsSync(path.join(pathService.getPaths().root, result.question.question_images[0].file_path)), true);
 
   const external = await questionBankService.getExternalQuestion(externalQuestionId);
   assert.equal(external.added_to_mistakes, 1);
@@ -114,6 +151,11 @@ test('addExternalQuestionToMistakes creates mistake question and updates externa
   );
   assert.equal(attempts[0].values.length, 1);
   assert.deepEqual(attempts[0].values[0], [1, result.question.id]);
+  const links = (await databaseService.getDatabase()).exec(
+    'SELECT knowledge_node_id FROM question_knowledge_points WHERE question_id = ?',
+    [result.question.id]
+  );
+  assert.deepEqual(links[0].values, [['limit-definition']]);
 });
 
 test('addExternalQuestionToMistakes rejects duplicate add', async () => {
@@ -123,9 +165,12 @@ test('addExternalQuestionToMistakes rejects duplicate add', async () => {
     result: 'no_idea'
   });
   await questionBankService.addExternalQuestionToMistakes(externalQuestionId);
+  const coordinator = await databaseService.getDatabaseCoordinator();
+  const versionBefore = coordinator.currentVersion();
 
   await assert.rejects(
     () => questionBankService.addExternalQuestionToMistakes(externalQuestionId),
     /已经加入错题本/
   );
+  assert.deepEqual(coordinator.currentVersion(), versionBefore);
 });
