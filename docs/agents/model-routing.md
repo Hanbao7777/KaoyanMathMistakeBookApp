@@ -4,6 +4,8 @@
 
 Select models by task difficulty only. Task type does not create a persistent agent role. Before every creation, use Paseo discovery to verify that the provider, model, mode, thinking option, and requested features remain available.
 
+After discovery, use the selected provider's highest available permission mode for every Worker. Permission mode is an execution convenience only; it does not expand the dispatched scope or authorize destructive or external actions. Always keep `notifyOnFinish: true` and wait for daemon notifications instead of polling.
+
 ## Difficulty levels
 
 ### Simple

@@ -41,7 +41,7 @@ test('C12 contracts are exact, bounded, and reject secret or arbitrary remote fi
 });
 
 test('C12 inventory and Renderer adapter prove the bounded writer boundary', () => {
-  const inventory = fs.readFileSync(path.join(root, 'docs/tasks/2026-07-20-agent-control-plane-c12-write-entry-inventory.md'), 'utf8');
+  const inventory = fs.readFileSync(path.join(root, 'docs/archive/completed/tasks/2026-07-20-agent-control-plane-c12-write-entry-inventory.md'), 'utf8');
   const adapter = fs.readFileSync(path.join(root, 'src/main/ipc/adapters/ticktickIpc.ts'), 'utf8');
   assert.match(inventory, /Renderer|Timer|Startup|Network|Cross-domain bridge sync|remoteOutcome/);
   assert.match(inventory, /ticktick\.lists\.list[\s\S]*ticktick\.bridges\.update/);

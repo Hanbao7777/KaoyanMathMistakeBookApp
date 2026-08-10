@@ -249,7 +249,7 @@ Each task inherits: isolated roots; no real data; exact owned files only; narrow
 
 **Owned files:** `tests/main/agent/phaseBCompletion.test.cjs`, `tests/main/agent/agentGatewayStaticGate.test.cjs`, `tests/electron/agentControlCenter.e2e.cjs`.
 
-**Implementation:** static scan proves no migrated Renderer/external write bypasses Gateway and no Gateway direct coordinator call. Complete cross-process restart and isolated-root matrix. Keep Phase A documents historical: Phase B evidence stays in these gate tests and this plan; B10 must not edit `docs/tasks/2026-07-15-agent-control-plane-write-entry-inventory.md`. Do not edit production source to make a gate pass.
+**Implementation:** static scan proves no migrated Renderer/external write bypasses Gateway and no Gateway direct coordinator call. Complete cross-process restart and isolated-root matrix. Keep Phase A documents historical: Phase B evidence stays in these gate tests and this plan; B10 must not edit `2026-07-15-agent-control-plane-write-entry-inventory.md`. Do not edit production source to make a gate pass.
 
 **Final validation:** `npm run build:main`; `node --test tests/main/agent/*.test.cjs`; focused Phase A gates; `npm run test:main`; `npm test`; `npm run typecheck`; targeted Electron test; `git diff --check`; final `git status --short`. Existing unrelated failures are recorded, not masked.
 

@@ -21,7 +21,7 @@ test('C10 catalog and schemas expose exactly five bounded study operations', () 
 });
 
 test('C10 inventory and application/Renderer boundaries contain no direct legacy bypass', () => {
-  const inventory = fs.readFileSync(path.join(root, 'docs/tasks/2026-07-18-agent-control-plane-c10-write-entry-inventory.md'), 'utf8');
+  const inventory = fs.readFileSync(path.join(root, 'docs/archive/completed/tasks/2026-07-18-agent-control-plane-c10-write-entry-inventory.md'), 'utf8');
   const application = fs.readFileSync(path.join(root, 'src/main/application/study/commands.ts'), 'utf8');
   const adapter = fs.readFileSync(path.join(root, 'src/main/ipc/adapters/studyIpc.ts'), 'utf8');
   assert.match(inventory, /initializeStudySupervisor|rolloverStudyTasks|createStudySession|saveDailyReview/);

@@ -54,4 +54,6 @@ Use the narrowest validation that covers the change, then expand validation in p
 
 - Paseo MCP is the default orchestration channel for this repository.
 - Model and provider availability is dynamic; the coordinator must run Paseo discovery before agent creation.
+- User orchestration preference: every Worker receives the provider's highest available permission mode, while its dispatch scope and safety boundaries remain binding.
+- User notification preference: never poll running Workers; wait for daemon completion, error, or permission forwarding. Inspect status only for an explicit user status request or notification-driven diagnosis.
 - Existing CCB-oriented history or artifacts do not override the root orchestration boundary.

@@ -12,7 +12,7 @@
 
 ## Background
 
-配套设计：`docs/superpowers/specs/2026-07-02-ticktick-p0-closure-design.md`。该 spec 的 P0 重新验收结论：
+配套设计：`../specs/2026-07-02-ticktick-p0-closure-design.md`。该 spec 的 P0 重新验收结论：
 
 - `P0-1` 主内容区宽度塌陷：源码核对显示**代码已修，待重新验收**（`src/renderer/App.tsx` 已用 `ticktick-root`+`TickTickShell`，`ticktick.css` 已补齐 min-width/height/overflow）。
 - `P0-2` 侧边栏工具区定位：源码核对显示**代码已修，待重新验收**（`TickTickSidebar.tsx` 已移除 inline `marginTop:auto`，改用 `.tt-sidebar-scroll`/`.tt-sidebar-tools`）。

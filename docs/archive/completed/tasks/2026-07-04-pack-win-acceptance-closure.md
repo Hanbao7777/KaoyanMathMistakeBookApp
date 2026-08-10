@@ -76,13 +76,13 @@
 # 错题本主线 Windows 打包验收 Checklist（可直接照做）
 
 > 适用范围：**错题本主线**（错题管理 / 复习 / 知识地图 / 题库 / 备考监督 / 数据管理 / AI-OCR 入口）。
-> TickTick 模式仅做“能进入、不崩溃”冒烟，**全量验收非本轮范围**，详见 [TICKTICK_KNOWN_BUGS.md](../../TICKTICK_KNOWN_BUGS.md)。
+> TickTick 模式仅做“能进入、不崩溃”冒烟，**全量验收非本轮范围**，详见 [TICKTICK_KNOWN_BUGS.md](../../../../TICKTICK_KNOWN_BUGS.md)。
 > 环境：Windows 10/11 x64。每次发布候选打一次，逐项打勾并留痕。
 
 ## 阶段 0：打包前准备
 
 - [ ] 确认在项目根目录，分支/commit 记录清楚（`git rev-parse --short HEAD`）。
-- [ ] 依赖干净安装：`npm install`（若曾报 Rollup 可选依赖缺失，删 `node_modules` 后重装，见 [KNOWN_ISSUES.md](../../KNOWN_ISSUES.md) 构建环境节）。
+- [ ] 依赖干净安装：`npm install`（若曾报 Rollup 可选依赖缺失，删 `node_modules` 后重装，见 [KNOWN_ISSUES.md](../../../../KNOWN_ISSUES.md) 构建环境节）。
 - [ ] 前置门槛全绿（任一失败则不打包）：
   - [ ] `npm run typecheck`
   - [ ] `npm test`
@@ -91,7 +91,7 @@
 
 ## 阶段 1：启动环境清理（`ELECTRON_RUN_AS_NODE`）
 
-> 已知坑：若 shell/系统继承了 `ELECTRON_RUN_AS_NODE`，exe 双击无窗口或进程一闪而过（[KNOWN_ISSUES.md](../../KNOWN_ISSUES.md)）。
+> 已知坑：若 shell/系统继承了 `ELECTRON_RUN_AS_NODE`，exe 双击无窗口或进程一闪而过（[KNOWN_ISSUES.md](../../../../KNOWN_ISSUES.md)）。
 
 - [ ] 当前 PowerShell 会话清理：`$env:ELECTRON_RUN_AS_NODE = $null`
 - [ ] 检查系统环境变量中无残留 `ELECTRON_RUN_AS_NODE`（用户级/系统级都看）。

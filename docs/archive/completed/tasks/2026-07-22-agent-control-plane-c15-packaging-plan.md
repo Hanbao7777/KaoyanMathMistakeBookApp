@@ -4,9 +4,9 @@
 
 **Implementation status: COMPLETE (2026-07-22).** Validation and artifact
 evidence is recorded in
-`docs/tasks/2026-07-22-agent-control-plane-c15-evidence.md`; the Phase C closure
+`2026-07-22-agent-control-plane-c15-evidence.md`; the Phase C closure
 decision is recorded in
-`docs/tasks/2026-07-22-agent-control-plane-phase-c-completion.md`.
+`2026-07-22-agent-control-plane-phase-c-completion.md`.
 
 This plan closes the remaining Phase C delivery work after C14 landed on
 `main`. It preserves the accepted single-Gateway, local-first, CurrentUser-only
@@ -46,8 +46,8 @@ already implemented by C7-C14.
 - `src/renderer/pages/AgentControlCenterPage.tsx`
 - focused C15 tests under `tests/mcp/c15/`, `tests/main/controlPlane/`, and
   `tests/ipc/`
-- `docs/tasks/2026-07-22-agent-control-plane-c15-evidence.md`
-- `docs/tasks/2026-07-22-agent-control-plane-phase-c-completion.md`
+- `2026-07-22-agent-control-plane-c15-evidence.md`
+- `2026-07-22-agent-control-plane-phase-c-completion.md`
 - relevant user-facing MCP documentation in `README.md`
 
 No schema, Gateway catalog, OAuth token, Root CA, business-domain, stdio

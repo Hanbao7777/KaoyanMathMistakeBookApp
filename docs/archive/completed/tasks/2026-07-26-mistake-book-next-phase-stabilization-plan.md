@@ -79,9 +79,9 @@
 | 结论 | 证据或复现命令 |
 | --- | --- |
 | 当前 `main` HEAD | `22f450c feat: close Phase C packaging` |
-| Phase C 测试基线 | `docs/tasks/2026-07-22-agent-control-plane-phase-c-completion.md`：700 项测试，699 通过，0 失败，1 项可选测试跳过 |
-| Phase C 包结构与启动证据 | `docs/tasks/2026-07-22-agent-control-plane-c15-evidence.md` |
-| 错题本打包人工验收未完成 | `docs/tasks/2026-07-04-pack-win-acceptance-closure.md` 的“验收记录”仍为 `_待填_` |
+| Phase C 测试基线 | `2026-07-22-agent-control-plane-phase-c-completion.md`：700 项测试，699 通过，0 失败，1 项可选测试跳过 |
+| Phase C 包结构与启动证据 | `2026-07-22-agent-control-plane-c15-evidence.md` |
+| 错题本打包人工验收未完成 | `2026-07-04-pack-win-acceptance-closure.md` 的“验收记录”仍为 `_待填_` |
 | 本地领先远端 69 个提交 | `git log --oneline origin/main..HEAD`；`git status --short --branch` |
 | GitHub 开放 Issue 为 0 | `gh issue list --state open --limit 100 --json number,title` |
 | 图谱规模与热点 | code-review-graph：2775 个节点、23198 条边、203 个文件、18 个模块群、11 处高耦合警告 |

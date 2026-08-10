@@ -13,8 +13,8 @@ The coordinator owns decomposition, difficulty classification, Paseo dispatch, c
 5. Read `~/.paseo/orchestration-preferences.json` before choosing a provider. If it is missing, report that once and use the approved project routing.
 6. Use Paseo provider/model discovery; never guess model, mode, thinking, or feature IDs.
 7. Choose current workspace or a worktree and assign one writer per file area.
-8. Create a Paseo `subagent` with `notifyOnFinish: true`.
-9. Continue other work until the daemon sends completion, error, or permission notification. Do not poll.
+8. Create a Paseo `subagent` with `notifyOnFinish: true` and the provider's highest available permission mode (`full-access`, `bypassPermissions`, or the discovered equivalent). Full runtime permission never overrides the prompt's allowed scope, forbidden scope, file ownership, destructive-action rules, or external-side-effect boundaries.
+9. Continue other work until the daemon sends completion, error, or permission notification. Do not poll agent status, activity, terminals, or shared-workspace changes. Inspect status once only when the user explicitly requests a status update or a daemon notification needs diagnosis.
 10. Directly inspect the Worker's files, validation evidence, self-review, and report. Either accept the work, send the same Worker a focused follow-up, escalate that Worker's model when needed, or report a blocker.
 11. Archive the agent when its context is no longer needed.
 
@@ -69,6 +69,7 @@ Use the configured fallback when the primary model is unavailable, errors, or re
 
 - Do not replace Paseo MCP with CCB, Orca, native subagents, or persistent CLI waiting.
 - Do not treat a daemon heartbeat or running status as completion.
+- Do not poll a running agent merely to provide reassurance or estimate progress; wait for daemon forwarding unless the user explicitly asks for a status check.
 - Do not accept an agent response as proof without validation.
 - Do not automatically create a reviewer or independent review task, including for hard or high-risk work.
 - Do not broaden user authorization to solve a coordination problem.

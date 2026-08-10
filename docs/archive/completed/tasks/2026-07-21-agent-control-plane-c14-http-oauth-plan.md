@@ -6,7 +6,7 @@ This is the proposed C14 execution plan after accepted C13 commit
 `04a8427 feat(global): add C13 global R4 control plane`.
 
 C14 implements the direct Streamable HTTPS OAuth lane described in
-`docs/tasks/2026-07-16-agent-control-plane-phase-c-plan.md`. It must not add
+`2026-07-16-agent-control-plane-phase-c-plan.md`. It must not add
 a second business path: every accepted HTTP request authenticates into an
 immutable `AgentPrincipal` and then reaches business capabilities only through
 `AgentGateway.execute` or `AgentGateway.query`.
@@ -17,7 +17,7 @@ This plan is not dispatchable until an independent reviewer accepts it.
 
 **C0-E6 (2026-07-21): GO for implementation planning with an explicitly
 approved current-user Root CA lifecycle.** See
-`docs/tasks/2026-07-21-agent-control-plane-c0-http-oauth-renewal.md`.
+`2026-07-21-agent-control-plane-c0-http-oauth-renewal.md`.
 Codex CLI 0.144.3 and Claude Code 2.1.216 expose usable HTTP/OAuth
 registration inputs. A temporary Root CA installed only into Windows
 CurrentUser Root made the local HTTPS mock trusted by Windows HTTPS clients and

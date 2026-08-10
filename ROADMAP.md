@@ -4,17 +4,15 @@
 
 ---
 
-## 当前阶段重点
+## 当前状态与后续重点
 
-当前主线已切回**错题本本体**的稳定化交付，目标不是新增大功能，而是把已实现的 wide surface 收敛为可稳定交付的状态。错题本主线 P0 详见 [docs/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md](docs/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md)。
+**个人日用稳定版已经完成。** portable 核心链路、备份恢复、复习提交与持久化撤销、MCP 导入、打包校验、Windows CI 和最终人工使用均已通过；证据见[个人稳定版执行记录](docs/archive/completed/tasks/2026-07-26-mistake-book-personal-stable-execution-record.md)。该目标不要求所有 Beta 页面、未来功能和历史技术债同时完成。
 
-1. **打包版验收闭环** — `typecheck`/`build`/CI 已稳定通过；下一步确保 `pack:win` 与错题本主链路的打包版人工验收可复现、可留痕（P0）。
-2. **错题本主链路最小回归** — 现有 `npm test` 覆盖集中在 main/service 层，renderer/Electron 端到端仍空白；先产出最小回归方案与首批落地点，避免高估页面主链路稳定性（P0）。
-3. **文档口径一致性** — README / ROADMAP / KNOWN_ISSUES 与仓库现状对齐；`TICKTICK_FEATURES.md` / `TICKTICK_KNOWN_BUGS.md` 后续择机合并归档。
-4. **TickTick 收口（并行推进，非当前主线）** — 按 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md) 处理剩余 P0/P1/P2，作为后台收口项，不占用错题本主线优先级。
-5. **PDF 教材联动** — 已降级为非主线，保持 P1（见 V1.4 / V2.0），本阶段不推进。
-
-> 已收口不再单列：最小回归套件（`npm test`，约 41+ 用例，覆盖 schema/备份恢复/导入解析/导入批次删除/复习算法/TickTick 创建更新/桥接同步/题库/IPC 契约/migration 升级/知识地图导入/study supervisor）与最小 CI（GitHub Actions 在 push/PR 到 main 运行 test/typecheck/build）已落地；行尾符（CRLF/LF）治理已随 `.gitattributes` 完成，不再是当前事项。
+1. **错题本本体按需维护** — 当前没有阻断个人日用的已知问题；后续以真实使用反馈驱动修复，不为扩展功能重新打开已完成的稳定版门禁。
+2. **测试覆盖继续增强（非阻断）** — 已有 main/service 回归、Electron 启动与 Agent Control Plane E2E、portable 隔离验收；未来可继续补错题本 renderer 业务流的自动化覆盖。
+3. **TickTick Beta 可选收口（非当前主线）** — 按 [TICKTICK_KNOWN_BUGS.md](TICKTICK_KNOWN_BUGS.md) 完成剩余人工验收、占位功能和低频错误提示，不影响错题本个人稳定版结论。
+4. **文档与仓库治理** — 保持 README / ROADMAP / KNOWN_ISSUES 与真实状态一致；完成记录进入 `docs/archive/`，构建产物和本地备份不进入产品源码提交。
+5. **PDF 教材联动及其他增强** — 保持后续优先级（见 V1.4 / V2.0），当前不推进。
 
 ---
 
@@ -35,7 +33,7 @@
 
 ---
 
-## V1.1 — 交互体验升级（✅ 已大量实现，🔧 待归档/确认）
+## V1.1 — 交互体验升级（✅ 已实现并归档）
 
 目标：消除项目中所有的 `alert()` / `confirm()` 原生弹窗，建立统一的交互基础设施。
 
@@ -53,11 +51,11 @@
 - **窗口状态记忆** — 窗口大小、位置持久化到 localStorage
 - 🎨 **全局搜索 Ctrl+K** — 弹窗搜索框，跨错题 + 知识点即时匹配，回车直接跳转
 
-> 注：V1.1 功能已在代码中实现，计划文档 `docs/superpowers/plans/2026-05-25-v1.1-interaction-upgrade.md` 待评估后归档。
+> 注：V1.1 功能已在代码中实现；其计划文档已归档至 `docs/archive/completed/plans/2026-05-25-v1.1-interaction-upgrade.md`。
 
 ---
 
-## V1.2 — AI + OCR 智能导入（✅ 已大量实现，🔧 待稳定化）
+## V1.2 — AI + OCR 智能导入（✅ Beta 保留，个人稳定版暂不推进）
 
 目标：用户拍照或选图即可自动生成结构化错题，不再需要离开 App 手动整理。
 
@@ -71,11 +69,11 @@
 
 - **AI 错因深度诊断** — 读取题目 + 用户错误思考文本，分析真正的知识盲点，建议回顾的知识点，推荐同类练习方向
 
-> 注：V1.2 功能已在代码中实现，但 OCR 环境依赖和 AI 输出校验仍需补齐。计划文档 `docs/superpowers/plans/2026-05-25-v1.2-ai-ocr-import.md` 待评估后归档。
+> 注：现有 AI/OCR 能力仍作为可选 Beta 功能保留并已记录；个人稳定版范围暂不继续其环境依赖、输出校验等稳定化/正式化工作。当前个人工作流通过 Codex/MCP 直接导入错题。相关计划已保留至 `docs/archive/deferred/plans/2026-05-25-v1.2-ai-ocr-import.md`，并非功能移除或完成声明。
 
 ---
 
-## V1.3 — TickTick 收口与稳定化（🔧 当前重点）
+## V1.3 — TickTick 收口与稳定化（🔧 可选 Beta 收口，非当前主线）
 
 ### TickTick P0 / P1 修复
 

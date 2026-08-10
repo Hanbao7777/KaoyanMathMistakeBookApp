@@ -29,7 +29,7 @@ test('C11 validators reject paths, unknown fields, excess batches, disclosure ex
 });
 
 test('C11 inventory and Renderer/AI boundaries contain no direct import writer fallback', () => {
-  const inventory = fs.readFileSync(path.join(root, 'docs/tasks/2026-07-20-agent-control-plane-c11-write-entry-inventory.md'), 'utf8');
+  const inventory = fs.readFileSync(path.join(root, 'docs/archive/completed/tasks/2026-07-20-agent-control-plane-c11-write-entry-inventory.md'), 'utf8');
   const adapter = fs.readFileSync(path.join(root, 'src/main/ipc/adapters/importsIpc.ts'), 'utf8');
   const aiPage = fs.readFileSync(path.join(root, 'src/renderer/pages/AiImportPage.tsx'), 'utf8');
   assert.match(inventory, /Structured Excel\/JSON\/zip|Question bank import|AI\/OCR|Batch deletion|Temporary cleanup|Image binding|Renderer|IPC|Startup|Timer\/internal writers/);

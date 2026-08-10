@@ -60,4 +60,4 @@
 ## Verification
 
 - `git diff -- ROADMAP.md KNOWN_ISSUES.md README.md`
-- 人工比对 `docs/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md` 的已确认结论
+- 人工比对 `docs/archive/superseded/tasks/2026-07-04-mistake-book-mainline-p0-stabilization.md` 的已确认结论

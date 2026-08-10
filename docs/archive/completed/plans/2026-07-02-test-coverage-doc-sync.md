@@ -45,7 +45,7 @@ The current docs still describe some of those areas as uncovered, so the public/
   `- 剩余缺口：未覆盖数据库 migration 升级路径（当前仅验证全新初始化）；未覆盖 renderer 组件与 Electron 端到端；知识地图导入（knowledgeMapService）与 study supervisor 尚未纳入。`
   Three claims here are now FALSE (migration, knowledge-map import, study supervisor). The renderer + Electron E2E claim is still TRUE and must remain.
 - `ROADMAP.md`, the "最小测试体系" bullet, currently ends with `🔧 仍需补 migration 升级路径与知识地图导入覆盖。` — this is a directly-adjacent, now-false test-coverage claim, so it qualifies for correction under the conditional ROADMAP clause in Scope.
-- `docs/tasks/2026-06-27-minimal-test-system.md` contains a batch note (around the structured-import section) saying knowledge-map import `未纳入本批次`. That was accurate as a *historical batch boundary* and is not necessarily false now; treat the ledger as append-only history — only add a short "后续已单独立项覆盖" note if it actively misleads, do not rewrite completed batch records.
+- `../tasks/2026-06-27-minimal-test-system.md` contains a batch note (around the structured-import section) saying knowledge-map import `未纳入本批次`. That was accurate as a *historical batch boundary* and is not necessarily false now; treat the ledger as append-only history — only add a short "后续已单独立项覆盖" note if it actively misleads, do not rewrite completed batch records.
 
 ## Non-Goals
 
@@ -63,7 +63,7 @@ The current docs still describe some of those areas as uncovered, so the public/
 
 ### Conditional / minimal-touch
 
-- `docs/tasks/2026-06-27-minimal-test-system.md` — append-only history. Leave completed batch records as-is; add at most a one-line pointer only if a note actively misleads (see Background).
+- `../tasks/2026-06-27-minimal-test-system.md` — append-only history. Leave completed batch records as-is; add at most a one-line pointer only if a note actively misleads (see Background).
 
 ### Out of Scope
 
@@ -96,7 +96,7 @@ The current docs still describe some of those areas as uncovered, so the public/
 **Files:**
 - Modify: `KNOWN_ISSUES.md`
 - Modify: `ROADMAP.md` (trailing test-coverage fragment only)
-- Modify (conditional, append-only): `docs/tasks/2026-06-27-minimal-test-system.md`
+- Modify (conditional, append-only): `../tasks/2026-06-27-minimal-test-system.md`
 
 **Interfaces:**
 - Consumes: current automated coverage in `tests/main/` and `tests/ipc/`
@@ -145,7 +145,7 @@ Do not imply testing is "complete" or "done" — keep a "仍需 / 剩余" qualif
 - [ ] **Step 4: Verify the diff stays narrow**
 
 ```bash
-git diff -- KNOWN_ISSUES.md ROADMAP.md docs/tasks/2026-06-27-minimal-test-system.md
+git diff -- KNOWN_ISSUES.md ROADMAP.md ../tasks/2026-06-27-minimal-test-system.md
 git status --short
 ```
 
@@ -165,7 +165,7 @@ git add KNOWN_ISSUES.md ROADMAP.md
 git commit -m "docs: sync test coverage status"
 ```
 
-Add `docs/tasks/2026-06-27-minimal-test-system.md` to the commit only if Step 2's conditional note was actually applied.
+Add `../tasks/2026-06-27-minimal-test-system.md` to the commit only if Step 2's conditional note was actually applied.
 
 ## Verification
 
