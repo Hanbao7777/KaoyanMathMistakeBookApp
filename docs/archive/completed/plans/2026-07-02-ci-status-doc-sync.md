@@ -55,7 +55,7 @@ These are the only known false-because-of-CI statements. If a search turns up no
 ### Out of Scope
 
 - `README.md`
-- `docs/tasks/2026-06-27-minimal-test-system.md`
+- `../tasks/2026-06-27-minimal-test-system.md`
 - `docs/archive/**`
 - `.github/workflows/ci.yml`
 

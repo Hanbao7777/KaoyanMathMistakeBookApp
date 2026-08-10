@@ -554,7 +554,7 @@ The task is split into file-exclusive subtasks. A10g1-A10g3 may run in parallel 
 - `tests/main/controlPlane/databaseWriterGate.test.cjs`
 - `tests/main/controlPlane/questionsEndToEnd.test.cjs`
 - `tests/ipc/questions-command-adapter.test.cjs` (append gate cases only)
-- `docs/tasks/2026-07-15-agent-control-plane-write-entry-inventory.md` (update dispositions/evidence only in the implementation session that owns this gate)
+- `2026-07-15-agent-control-plane-write-entry-inventory.md` (update dispositions/evidence only in the implementation session that owns this gate)
 
 **Allowed edits:** only the files above.
 

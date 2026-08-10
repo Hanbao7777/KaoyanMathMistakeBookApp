@@ -8,7 +8,7 @@ test.after(() => cleanupControlPlaneRoot());
 test.beforeEach(resetControlPlaneEnvironment);
 
 test('C9 inventory and external manifest keep the exact bounded slice', () => {
-  const inventory = fs.readFileSync(path.join(projectRoot, 'docs/tasks/2026-07-18-agent-control-plane-c9-write-entry-inventory.md'), 'utf8');
+  const inventory = fs.readFileSync(path.join(projectRoot, 'docs/archive/completed/tasks/2026-07-18-agent-control-plane-c9-write-entry-inventory.md'), 'utf8');
   const manifest = require(path.join(projectRoot, 'dist/main/shared/mcp/v1/exposureManifest.js'));
   const expected = ['knowledge.list_nodes', 'knowledge.get_node', 'knowledge.list_links', 'textbooks.list', 'textbooks.get', 'analytics.get_weak_areas', 'knowledge.link_question', 'knowledge.unlink_question', 'knowledge.bind_textbook'];
   for (const operation of expected) assert.ok(manifest.mcpExternalBusinessOperations.includes(operation));

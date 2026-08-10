@@ -32,8 +32,8 @@
 未跟踪文件中包含多种 Agent、MCP 和编辑器本地配置。后续候选提交采用允许清单，
 只纳入以下稳定化文档：
 
-- `docs/tasks/2026-07-26-mistake-book-next-phase-stabilization-plan.md`
-- `docs/tasks/2026-07-26-mistake-book-personal-stable-execution-record.md`
+- `2026-07-26-mistake-book-next-phase-stabilization-plan.md`
+- `2026-07-26-mistake-book-personal-stable-execution-record.md`
 
 其余未跟踪文件不得因稳定化提交被顺带加入。
 
@@ -288,9 +288,9 @@ signing, installer, auto-update, and public release work.
 ## Evidence
 
 - Stabilization plan:
-  `docs/tasks/2026-07-26-mistake-book-next-phase-stabilization-plan.md`
+  `2026-07-26-mistake-book-next-phase-stabilization-plan.md`
 - Execution record:
-  `docs/tasks/2026-07-26-mistake-book-personal-stable-execution-record.md`
+  `2026-07-26-mistake-book-personal-stable-execution-record.md`
 ```
 
 ## portable 候选版本验收模板

@@ -39,7 +39,7 @@ Status: keep.
 - `AGENTS.md`
 - `.ccb/collaboration_protocol.md`
 - `docs/design/2026-06-27-project-assessment-and-roadmap.md`
-- `docs/tasks/2026-06-27-worktree-change-triage.md`
+- `2026-06-27-worktree-change-triage.md`
 
 Acceptance:
 
@@ -447,7 +447,7 @@ Accepted commit grouping:
    - `AGENTS.md`
    - `.ccb/collaboration_protocol.md`
    - `docs/design/2026-06-27-project-assessment-and-roadmap.md`
-   - `docs/tasks/2026-06-27-worktree-change-triage.md`
+   - `2026-06-27-worktree-change-triage.md`
 
 3. Public docs consistency:
    - `README.md`

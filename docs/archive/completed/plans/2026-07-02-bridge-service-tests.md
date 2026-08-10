@@ -23,7 +23,7 @@
 
 **Files:**
 - Create: `tests/main/bridgeService.test.cjs`
-- Modify: `docs/tasks/2026-06-27-minimal-test-system.md`
+- Modify: `../tasks/2026-06-27-minimal-test-system.md`
 
 **Interfaces:**
 - Consumes:
@@ -47,7 +47,7 @@
 
 **Files:**
 - Review: `tests/main/bridgeService.test.cjs`
-- Review: `docs/tasks/2026-06-27-minimal-test-system.md`
+- Review: `../tasks/2026-06-27-minimal-test-system.md`
 
 **Interfaces:**
 - Consumes:

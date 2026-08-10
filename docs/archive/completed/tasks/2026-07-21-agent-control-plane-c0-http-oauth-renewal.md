@@ -158,8 +158,8 @@ claude mcp add --help
 claude mcp login --help
 node --check tools/mcp-spikes/httpsOAuthProbeServer.cjs
 node --test tests/mcp/spikes/*.test.cjs
-git diff --check -- docs/tasks/2026-07-21-agent-control-plane-c14-http-oauth-plan.md
-git diff --no-index --check -- NUL docs/tasks/2026-07-21-agent-control-plane-c0-http-oauth-renewal.md
+git diff --check -- 2026-07-21-agent-control-plane-c14-http-oauth-plan.md
+git diff --no-index --check -- NUL 2026-07-21-agent-control-plane-c0-http-oauth-renewal.md
 git diff --no-index --check -- NUL tools/mcp-spikes/httpsOAuthProbeServer.cjs
 ```
 
