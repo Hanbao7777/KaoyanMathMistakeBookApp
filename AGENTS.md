@@ -29,6 +29,8 @@ Before starting work:
 - Classify each delegated task as simple, medium, hard, or ultra-hard and follow `docs/agents/model-routing.md`.
 - Define objective, allowed scope, forbidden scope, file ownership, validation, and expected response before dispatch.
 - Default to `relationship: subagent` and `notifyOnFinish: true`.
+- Give every Worker the provider's highest available permission mode (for example `full-access` or `bypassPermissions`) after provider discovery. Runtime permission level does not broaden the task's allowed scope, file ownership, destructive-action authority, or external-side-effect authority.
+- After dispatch, do not poll agent status, activity, terminals, or worktree changes. Wait for Paseo daemon notifications. A single status inspection is allowed only when the user explicitly asks for status or a daemon notification requires diagnosis.
 - Use `detached` only for an explicit full ownership transfer requested by the user.
 - Verify every returned claim, test result, and file change before accepting it.
 - Directly inspect the Worker's files, validation evidence, and report for final acceptance. Do not create a separate reviewer unless the user explicitly requests independent review in the current request.

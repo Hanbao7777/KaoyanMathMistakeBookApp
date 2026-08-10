@@ -4,6 +4,8 @@ This directory separates portable collaboration rules from project-specific fact
 
 Paseo MCP is the default channel for agent orchestration in this manual set.
 
+All Workers run in the provider's highest available permission mode. This avoids permission stalls but does not relax the dispatch's scope, ownership, safety, or external-side-effect boundaries. Coordinators rely on `notifyOnFinish: true` and daemon notifications instead of polling; inspect status only for an explicit user status request or notification-driven diagnosis.
+
 ## Reading paths
 
 - Coordinator: read `../../AGENTS.md`, `coordinator.md`, `model-routing.md`, and `project-overrides.md`.
