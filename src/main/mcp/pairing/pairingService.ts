@@ -26,6 +26,8 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const REAL_DATA_ROOT = 'D:\\KaoyanMathMistakeBook';
 const DEFAULT_SCOPES = Object.freeze(['system.read'] as const);
 const DEFAULT_TRUST = 'observer' as const;
+const WINDOWS_LAUNCHER_PUBLISH_RETRY_MS = 2_000;
+const retryableWindowsFileLockCodes = new Set(['EACCES', 'EBUSY', 'EPERM']);
 
 export interface LauncherArtifact {
   readonly root: string;
@@ -171,6 +173,19 @@ async function flushDirectory(directory: string): Promise<void> {
   let handle; try { handle = await open(directory, 'r'); await handle.sync(); } catch (error) {
     if (process.platform !== 'win32') throw error;
   } finally { await handle?.close().catch(() => undefined); }
+}
+async function publishLauncher(from: string, to: string): Promise<void> {
+  const deadline = Date.now() + WINDOWS_LAUNCHER_PUBLISH_RETRY_MS; let delay = 25;
+  while (true) {
+    try { await rename(from, to); return; }
+    catch (error) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      if (process.platform !== 'win32' || !retryableWindowsFileLockCodes.has(code)) throw error;
+      const remaining = deadline - Date.now(); if (remaining <= 0) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(delay, remaining)));
+      delay = Math.min(delay * 2, 200);
+    }
+  }
 }
 async function atomicWrite(target: string, bytes: Buffer): Promise<void> {
   const directory = path.dirname(target); await mkdir(directory, { recursive: true });
@@ -319,7 +334,7 @@ export class PairingService {
       const temporary = path.join(directory, `.kaoyan-mcp.${process.pid}.${randomUUID()}.tmp`); let handle;
       try { handle = await open(temporary, 'wx', 0o700); await handle.writeFile(source); await handle.sync(); await handle.close(); handle = undefined;
         if (sha256(await readFile(temporary)) !== this.options.launcherArtifact.sha256) throw new Error('Launcher copy verification failed');
-        await this.selfTest(temporary); await this.fault('install:before-version-publish'); await rename(temporary, target); await flushDirectory(directory);
+        await this.selfTest(temporary); await this.fault('install:before-version-publish'); await publishLauncher(temporary, target); await flushDirectory(directory);
       } finally { await handle?.close().catch(() => undefined); await rm(temporary, { force: true }).catch(() => undefined); }
     }
     await this.selfTest(target);
